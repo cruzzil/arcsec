@@ -7,155 +7,132 @@ use rsfitsio::fitsio::{LONGLONG, READONLY, READWRITE, fitsfile};
 
 use arcsec_core::types::{ImageBuffer, WcsSolution};
 
+use crate::image_io;
+
 /// Reinterpret a byte slice as a `c_char` slice for the rsfitsio wrappers.
 ///
 /// `libc::c_char` is `i8` on x86_64 and `u8` on aarch64, so `b"KEY\0"` literals
 /// cannot be passed directly on every platform. Same size and alignment either way.
 #[inline]
-fn cc(b: &[u8]) -> &[c_char] {
+const fn cc(b: &[u8]) -> &[c_char] {
     // Safety: c_char is i8 or u8; identical layout, and we only read.
-    unsafe { core::slice::from_raw_parts(b.as_ptr() as *const c_char, b.len()) }
+    unsafe { core::slice::from_raw_parts(b.as_ptr().cast::<c_char>(), b.len()) }
+}
+
+/// An open CFITSIO file, closed when dropped.
+///
+/// Every reader used to open, read and then close by hand on each exit path, and
+/// a `?` in between leaked the handle. Closing in `Drop` makes that impossible.
+struct FitsFile(Option<Box<fitsfile>>);
+
+impl FitsFile {
+    /// Open the primary image of `path` with `mode` (`READONLY`/`READWRITE`).
+    ///
+    /// Callers reach this only through `image_io`, which has already checked that
+    /// the file exists and is FITS: `rsfitsio` panics rather than reporting a
+    /// status for a file it cannot open (cruzzil/rsfitsio#136).
+    fn open(path: &Path, mode: c_int) -> Result<Self, String> {
+        let path_str = path.to_str().ok_or("non-UTF-8 path")?;
+        let cpath = CString::new(path_str).map_err(|e| e.to_string())?;
+        let mut fptr: Option<Box<fitsfile>> = None;
+        let mut status: c_int = 0;
+        fits_open_image(&mut fptr, cc(cpath.to_bytes_with_nul()), mode, &mut status);
+        let file = Self(fptr);
+        if status != 0 {
+            return Err(format!("fits_open_image failed: status {status}"));
+        }
+        if file.0.is_none() {
+            return Err("fits_open_image returned no file".to_string());
+        }
+        Ok(file)
+    }
+
+    fn fp(&mut self) -> &mut fitsfile {
+        self.0
+            .as_deref_mut()
+            .unwrap_or_else(|| unreachable!("FitsFile is only built around an open file"))
+    }
+
+    /// A header keyword as a double, or `None` if absent or not numeric.
+    fn key_f64(&mut self, key: &[u8]) -> Option<f64> {
+        let mut val = 0.0f64;
+        let mut st: c_int = 0;
+        fits_read_key_dbl(self.fp(), cc(key), &mut val, None, &mut st);
+        (st == 0).then_some(val)
+    }
+
+    /// A header keyword as an integer, or `None` if absent or not numeric.
+    fn key_i64(&mut self, key: &[u8]) -> Option<i64> {
+        // fits_read_key_lng writes a c_long, which is i32 on Windows and i64 on
+        // unix, so the destination must be c_long and widen on the way out.
+        let mut val: c_long = 0;
+        let mut st: c_int = 0;
+        fits_read_key_lng(self.fp(), cc(key), &mut val, None, &mut st);
+        // A no-op where c_long is already i64, which clippy flags on those targets.
+        #[allow(clippy::useless_conversion)]
+        let val = i64::from(val);
+        (st == 0).then_some(val)
+    }
+
+    /// Close now and report CFITSIO's status, which for a file opened for writing
+    /// is where a failed flush of the updated header shows up.
+    fn close(mut self) -> c_int {
+        let mut status: c_int = 0;
+        if let Some(b) = self.0.take() {
+            fits_close_file(b, &mut status);
+        }
+        status
+    }
+}
+
+impl Drop for FitsFile {
+    fn drop(&mut self) {
+        if let Some(b) = self.0.take() {
+            let mut status: c_int = 0;
+            fits_close_file(b, &mut status);
+        }
+    }
 }
 
 /// Read RA and DEC (in degrees) from a FITS header.
 /// Tries `RA`/`DEC` first (telescope pointing, NINA style), then `CRVAL1`/`CRVAL2`.
 pub fn read_fits_ra_dec(path: &Path) -> Option<(f64, f64)> {
-    let path_str = path.to_str()?;
-    let cpath = CString::new(path_str).ok()?;
-
-    let mut fptr: Option<Box<fitsfile>> = None;
-    let mut status: c_int = 0;
-    fits_open_image(
-        &mut fptr,
-        cc(cpath.to_bytes_with_nul()),
-        READONLY,
-        &mut status,
-    );
-    if status != 0 {
-        return None;
-    }
-    let fp = fptr.as_deref_mut()?;
-
-    let read_dbl = |fp: &mut fitsfile, key: &[u8]| -> Option<f64> {
-        let mut val = 0.0f64;
-        let mut st: c_int = 0;
-        fits_read_key_dbl(fp, cc(key), &mut val, None, &mut st);
-        if st == 0 { Some(val) } else { None }
-    };
-
-    // Read both before returning: a `?` here would leak the open handle, and a
-    // header with no pointing is the normal case for the blind solver, so this
-    // path is taken routinely rather than exceptionally.
-    let ra = read_dbl(fp, b"RA\0").or_else(|| read_dbl(fp, b"CRVAL1\0"));
-    let dec = read_dbl(fp, b"DEC\0").or_else(|| read_dbl(fp, b"CRVAL2\0"));
-
-    let mut close_status: c_int = 0;
-    if let Some(b) = fptr {
-        fits_close_file(b, &mut close_status);
-    }
-
-    Some((ra?, dec?))
+    let mut f = FitsFile::open(path, READONLY).ok()?;
+    image_io::ra_dec_from(
+        f.key_f64(b"RA\0"),
+        f.key_f64(b"DEC\0"),
+        f.key_f64(b"CRVAL1\0"),
+        f.key_f64(b"CRVAL2\0"),
+    )
 }
 
 /// Read NAXIS1/NAXIS2 from a FITS header without loading the pixel data.
 ///
 /// Used by `arcsec catalog recommend --like`, which only needs the field size.
 pub fn read_fits_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let path_str = path.to_str()?;
-    let cpath = CString::new(path_str).ok()?;
-
-    let mut fptr: Option<Box<fitsfile>> = None;
-    let mut status: c_int = 0;
-    fits_open_image(
-        &mut fptr,
-        cc(cpath.to_bytes_with_nul()),
-        READONLY,
-        &mut status,
-    );
-    if status != 0 {
-        return None;
-    }
-    let fp = fptr.as_deref_mut()?;
-
-    let read_lng = |fp: &mut fitsfile, key: &[u8]| -> Option<i64> {
-        // fits_read_key_lng writes a c_long, which is i32 on Windows and i64 on
-        // unix, so the destination must be c_long and widen on the way out.
-        let mut val: c_long = 0;
-        let mut st: c_int = 0;
-        fits_read_key_lng(fp, cc(key), &mut val, None, &mut st);
-        if st == 0 { Some(val as i64) } else { None }
-    };
-    let w = read_lng(fp, b"NAXIS1\0");
-    let h = read_lng(fp, b"NAXIS2\0");
-
-    let mut close_status: c_int = 0;
-    if let Some(b) = fptr {
-        fits_close_file(b, &mut close_status);
-    }
-    Some((w? as u32, h? as u32))
+    let mut f = FitsFile::open(path, READONLY).ok()?;
+    let w = u32::try_from(f.key_i64(b"NAXIS1\0")?).ok()?;
+    let h = u32::try_from(f.key_i64(b"NAXIS2\0")?).ok()?;
+    Some((w, h))
 }
 
 /// Read pixel scale (arcsec/pixel, accounting for XBINNING) from FITS header.
 /// Returns `None` if FOCALLEN or XPIXSZ are missing or non-positive.
 pub fn read_fits_pixel_scale(path: &Path) -> Option<f64> {
-    let path_str = path.to_str()?;
-    let cpath = CString::new(path_str).ok()?;
-
-    let mut fptr: Option<Box<fitsfile>> = None;
-    let mut status: c_int = 0;
-    fits_open_image(
-        &mut fptr,
-        cc(cpath.to_bytes_with_nul()),
-        READONLY,
-        &mut status,
-    );
-    if status != 0 {
-        return None;
-    }
-    let fp = fptr.as_deref_mut()?;
-
-    let read_dbl = |fp: &mut fitsfile, key: &[u8]| -> Option<f64> {
-        let mut val = 0.0f64;
-        let mut st: c_int = 0;
-        fits_read_key_dbl(fp, cc(key), &mut val, None, &mut st);
-        if st == 0 { Some(val) } else { None }
-    };
-
-    let focallen = read_dbl(fp, b"FOCALLEN\0");
-    let xpixsz = read_dbl(fp, b"XPIXSZ\0");
-    let xbinning = read_dbl(fp, b"XBINNING\0").unwrap_or(1.0);
-
-    let mut close_status: c_int = 0;
-    if let Some(b) = fptr {
-        fits_close_file(b, &mut close_status);
-    }
-
-    let fl = focallen.filter(|&v| v > 0.0)?;
-    let ps = xpixsz.filter(|&v| v > 0.0)?;
-    // plate_scale [arcsec/px] = pixel_size_µm × binning / focal_length_mm × 206.265
-    Some(ps * xbinning / fl * 206.265)
+    let mut f = FitsFile::open(path, READONLY).ok()?;
+    image_io::pixel_scale_from(
+        f.key_f64(b"FOCALLEN\0"),
+        f.key_f64(b"XPIXSZ\0"),
+        f.key_f64(b"XBINNING\0"),
+    )
 }
 
 /// Open a FITS image and return its pixel data as an `ImageBuffer`.
+///
+/// A data cube (NAXIS = 3, e.g. an RGB image) is read as its first plane.
 pub fn read_fits_image(path: &Path) -> Result<ImageBuffer, String> {
-    let path_str = path.to_str().ok_or("non-UTF-8 path")?;
-    let cpath = CString::new(path_str).map_err(|e| e.to_string())?;
-
-    let mut fptr: Option<Box<fitsfile>> = None;
+    let mut f = FitsFile::open(path, READONLY)?;
     let mut status: c_int = 0;
-
-    // Open file — cc() adapts the &[u8] literal to the platform's c_char
-    fits_open_image(
-        &mut fptr,
-        cc(cpath.to_bytes_with_nul()),
-        READONLY,
-        &mut status,
-    );
-    if status != 0 {
-        return Err(format!("fits_open_image failed: status {status}"));
-    }
-
-    let fp = fptr.as_deref_mut().ok_or("null fptr after open")?;
 
     // Read image header: SIMPLE, BITPIX, NAXIS, NAXIS1/2, PCOUNT, GCOUNT, EXTEND
     let mut simple: c_int = 0;
@@ -166,7 +143,7 @@ pub fn read_fits_image(path: &Path) -> Result<ImageBuffer, String> {
     let mut gcount: c_long = 0;
     let mut extend: c_int = 0;
     fits_read_imghdr(
-        fp,
+        f.fp(),
         9,
         &mut simple,
         &mut bitpix,
@@ -178,40 +155,27 @@ pub fn read_fits_image(path: &Path) -> Result<ImageBuffer, String> {
         &mut status,
     );
     if status != 0 {
-        let _ = fptr.map(|b| {
-            let mut s = 0i32;
-            fits_close_file(b, &mut s);
-        });
         return Err(format!("fits_read_imghdr failed: status {status}"));
     }
-
     if naxis < 2 {
-        let _ = fptr.map(|b| {
-            let mut s = 0i32;
-            fits_close_file(b, &mut s);
-        });
         return Err(format!("FITS image has only {naxis} axes (need ≥ 2)"));
     }
 
-    let width = naxes[0] as usize;
-    let height = naxes[1] as usize;
-    if width == 0 || height == 0 {
-        let _ = fptr.map(|b| {
-            let mut s = 0i32;
-            fits_close_file(b, &mut s);
-        });
-        return Err(format!("invalid image dimensions {width}×{height}"));
-    }
-
-    // Re-borrow (fptr was partially moved in error paths above — here we're past those)
-    let fp = fptr.as_deref_mut().ok_or("null fptr")?;
-
-    let npix = width * height;
+    let dim = |n: c_long| usize::try_from(n).ok().filter(|&d| d > 0);
+    let (Some(width), Some(height)) = (dim(naxes[0]), dim(naxes[1])) else {
+        return Err(format!(
+            "invalid image dimensions {}×{}",
+            naxes[0], naxes[1]
+        ));
+    };
+    let npix = width
+        .checked_mul(height)
+        .ok_or_else(|| format!("FITS image dimensions {width}×{height} overflow"))?;
     let mut data: Vec<f32> = vec![0.0f32; npix];
 
     // fits_read_img_flt = ffgpve_safe: reads directly as f32, any BITPIX
     fits_read_img_flt(
-        fp,
+        f.fp(),
         1, // group 1
         1, // firstelem 1-based
         npix as LONGLONG,
@@ -220,13 +184,6 @@ pub fn read_fits_image(path: &Path) -> Result<ImageBuffer, String> {
         None, // anynul
         &mut status,
     );
-
-    // Close (consume the Box)
-    let mut close_status: c_int = 0;
-    if let Some(b) = fptr {
-        fits_close_file(b, &mut close_status);
-    }
-
     if status != 0 {
         return Err(format!("fits_read_img_flt failed: status {status}"));
     }
@@ -242,31 +199,36 @@ pub fn read_fits_image(path: &Path) -> Result<ImageBuffer, String> {
 
 /// Format a float as a right-justified 20-char FITS scientific notation value.
 /// e.g.  1.608758172485E+002  or -5.952377960677E+001
+///
+/// A non-finite value has no exponent to reformat and is written as Rust prints it
+/// (`NaN`, `inf`), right-justified, rather than panicking.
 fn fits_f64(v: f64) -> String {
-    let raw = format!("{:.12E}", v);
-    let (mantissa, exp_str) = raw.split_once('E').unwrap();
+    let raw = format!("{v:.12E}");
+    let Some((mantissa, exp_str)) = raw.split_once('E') else {
+        return format!("{raw:>20}");
+    };
     let exp: i32 = exp_str.parse().unwrap_or(0);
     // {:>20} right-justifies; {:+04} gives e.g. "+002" or "-004"
-    format!("{:>20}", format!("{}E{:+04}", mantissa, exp))
+    format!("{:>20}", format!("{mantissa}E{exp:+04}"))
 }
 
 /// Build a float FITS card: `KEYWORD = <20-char value> / <comment>` (80 chars).
 fn dbl_card(keyword: &str, value: f64, comment: &str) -> String {
-    let card = format!("{:<8}= {} / {:<47}", keyword, fits_f64(value), comment);
+    let card = format!("{keyword:<8}= {} / {comment:<47}", fits_f64(value));
     format!("{:<80}", &card[..80.min(card.len())])
 }
 
 /// Build a string FITS card: `KEYWORD = '<value>'<pad>  / <comment>` (80 chars).
 fn str_card(keyword: &str, value: &str, comment: &str) -> String {
     let quoted = format!("'{value}'");
-    let card = format!("{:<8}= {:<20} / {:<47}", keyword, quoted, comment);
+    let card = format!("{keyword:<8}= {quoted:<20} / {comment:<47}");
     format!("{:<80}", &card[..80.min(card.len())])
 }
 
 /// Build a logical FITS card: `KEYWORD =                    T / <comment>` (80 chars).
 fn log_card(keyword: &str, value: bool, comment: &str) -> String {
     let v = if value { "T" } else { "F" };
-    let card = format!("{:<8}= {:>20} / {:<47}", keyword, v, comment);
+    let card = format!("{keyword:<8}= {v:>20} / {comment:<47}");
     format!("{:<80}", &card[..80.min(card.len())])
 }
 
@@ -321,7 +283,7 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
             wcs.cd2_2,
             "CD matrix to convert (x,y) to (Ra, Dec)",
         ),
-        log_card("PLTSOLVD", true, "Astrometric solved by arcsec 0.1.0"),
+        log_card("PLTSOLVD", true, SOLVED_BY),
     ];
 
     for card in &cards {
@@ -348,165 +310,102 @@ pub fn write_ini_file(path: &Path, wcs: &WcsSolution, nstars: usize) -> std::io:
     Ok(())
 }
 
+/// Write the `.ini` for a failed solve: `PLTSOLVD=F` and the command line, as
+/// ASTAP does.
+pub fn write_unsolved_ini_file(path: &Path, cmdline: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    writeln!(f, "PLTSOLVD=F")?;
+    writeln!(f, "CMDLINE={cmdline}")?;
+    Ok(())
+}
+
+/// `PLTSOLVD` comment, naming the version that wrote the solution.
+const SOLVED_BY: &str = concat!("Astrometric solved by arcsec ", env!("CARGO_PKG_VERSION"));
+
 /// Write WCS keywords back into the FITS file header in-place (`--update` flag).
 pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
-    let path_str = path.to_str().ok_or("non-UTF-8 path")?;
-    let cpath = CString::new(path_str).map_err(|e| e.to_string())?;
+    // CFITSIO wants NUL-terminated strings; every literal here is ASCII without
+    // an interior NUL, so the conversion cannot fail.
+    fn c(s: &str) -> CString {
+        CString::new(s).unwrap_or_default()
+    }
 
-    let mut fptr: Option<Box<fitsfile>> = None;
+    let mut f = FitsFile::open(path, READWRITE).map_err(|e| format!("{e} (opening for update)"))?;
+    let fp = f.fp();
     let mut status: c_int = 0;
+    let decim: c_int = 12;
 
-    fits_open_image(
-        &mut fptr,
-        cc(cpath.to_bytes_with_nul()),
-        READWRITE,
+    // CFITSIO routines do nothing once `status` is non-zero, so the first failure
+    // is the one reported, and the file is still closed on drop.
+    for (key, val, com) in [
+        (
+            "CTYPE1",
+            "RA---TAN",
+            "first parameter RA,    projection TANgential",
+        ),
+        (
+            "CTYPE2",
+            "DEC--TAN",
+            "second parameter DEC,  projection TANgential",
+        ),
+        ("CUNIT1", "deg", "Unit of coordinates"),
+        ("CUNIT2", "deg", "Unit of coordinates"),
+    ] {
+        let (key, val, com) = (c(key), c(val), c(com));
+        fits_update_key_str(
+            fp,
+            cc(key.as_bytes_with_nul()),
+            cc(val.as_bytes_with_nul()),
+            Some(cc(com.as_bytes_with_nul())),
+            &mut status,
+        );
+    }
+    for (key, val, com) in [
+        ("CRPIX1", wcs.crpix1, "X of reference pixel"),
+        ("CRPIX2", wcs.crpix2, "Y of reference pixel"),
+        (
+            "CRVAL1",
+            wcs.ra0.to_degrees(),
+            "RA of reference pixel (deg)",
+        ),
+        (
+            "CRVAL2",
+            wcs.dec0.to_degrees(),
+            "DEC of reference pixel (deg)",
+        ),
+        ("CDELT1", wcs.cdelt1.abs(), "X pixel size (deg)"),
+        ("CDELT2", wcs.cdelt2.abs(), "Y pixel size (deg)"),
+        ("CROTA1", wcs.crota2, "Image twist of X axis (deg)"),
+        ("CROTA2", wcs.crota2, "Image twist of Y axis (deg)"),
+        ("CD1_1", wcs.cd1_1, "CD matrix element"),
+        ("CD1_2", wcs.cd1_2, "CD matrix element"),
+        ("CD2_1", wcs.cd2_1, "CD matrix element"),
+        ("CD2_2", wcs.cd2_2, "CD matrix element"),
+    ] {
+        let (key, com) = (c(key), c(com));
+        fits_update_key_dbl(
+            fp,
+            cc(key.as_bytes_with_nul()),
+            val,
+            decim,
+            Some(cc(com.as_bytes_with_nul())),
+            &mut status,
+        );
+    }
+    let (key, com) = (c("PLTSOLVD"), c(SOLVED_BY));
+    fits_update_key_log(
+        fp,
+        cc(key.as_bytes_with_nul()),
+        1,
+        Some(cc(com.as_bytes_with_nul())),
         &mut status,
     );
-    if status != 0 {
-        return Err(format!("fits_open_image (RW) failed: status {status}"));
+    let close_status = f.close();
+
+    if status == 0 && close_status != 0 {
+        status = close_status;
     }
-
-    {
-        let fp = fptr.as_deref_mut().ok_or("null fptr")?;
-        let decim: c_int = 12;
-
-        // Helper closures capture fp + status
-        let upd_s = |fp: &mut fitsfile, key: &[u8], val: &[u8], com: &[u8], st: &mut c_int| {
-            fits_update_key_str(fp, cc(key), cc(val), Some(cc(com)), st);
-        };
-        let upd_d = |fp: &mut fitsfile, key: &[u8], val: f64, com: &[u8], st: &mut c_int| {
-            fits_update_key_dbl(fp, cc(key), val, decim, Some(cc(com)), st);
-        };
-        let upd_l = |fp: &mut fitsfile, key: &[u8], val: bool, com: &[u8], st: &mut c_int| {
-            fits_update_key_log(fp, cc(key), if val { 1 } else { 0 }, Some(cc(com)), st);
-        };
-
-        upd_s(
-            fp,
-            b"CTYPE1\0",
-            b"RA---TAN\0",
-            b"first parameter RA,    projection TANgential\0",
-            &mut status,
-        );
-        upd_s(
-            fp,
-            b"CTYPE2\0",
-            b"DEC--TAN\0",
-            b"second parameter DEC,  projection TANgential\0",
-            &mut status,
-        );
-        upd_s(
-            fp,
-            b"CUNIT1\0",
-            b"deg\0",
-            b"Unit of coordinates\0",
-            &mut status,
-        );
-        upd_s(
-            fp,
-            b"CUNIT2\0",
-            b"deg\0",
-            b"Unit of coordinates\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CRPIX1\0",
-            wcs.crpix1,
-            b"X of reference pixel\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CRPIX2\0",
-            wcs.crpix2,
-            b"Y of reference pixel\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CRVAL1\0",
-            wcs.ra0.to_degrees(),
-            b"RA of reference pixel (deg)\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CRVAL2\0",
-            wcs.dec0.to_degrees(),
-            b"DEC of reference pixel (deg)\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CDELT1\0",
-            wcs.cdelt1.abs(),
-            b"X pixel size (deg)\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CDELT2\0",
-            wcs.cdelt2.abs(),
-            b"Y pixel size (deg)\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CROTA1\0",
-            wcs.crota2,
-            b"Image twist of X axis (deg)\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CROTA2\0",
-            wcs.crota2,
-            b"Image twist of Y axis (deg)\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CD1_1\0",
-            wcs.cd1_1,
-            b"CD matrix element\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CD1_2\0",
-            wcs.cd1_2,
-            b"CD matrix element\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CD2_1\0",
-            wcs.cd2_1,
-            b"CD matrix element\0",
-            &mut status,
-        );
-        upd_d(
-            fp,
-            b"CD2_2\0",
-            wcs.cd2_2,
-            b"CD matrix element\0",
-            &mut status,
-        );
-        upd_l(
-            fp,
-            b"PLTSOLVD\0",
-            true,
-            b"Astrometric solved by arcsec 0.1.0\0",
-            &mut status,
-        );
-    }
-
-    let mut close_status: c_int = 0;
-    if let Some(b) = fptr {
-        fits_close_file(b, &mut close_status);
-    }
-
     if status != 0 {
         return Err(format!("update_fits_wcs failed: status {status}"));
     }

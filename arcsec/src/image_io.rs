@@ -30,11 +30,11 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
-            ImageFormat::Fits => "FITS",
-            ImageFormat::Xisf => "XISF",
-            ImageFormat::Asdf => "ASDF",
+            Self::Fits => "FITS",
+            Self::Xisf => "XISF",
+            Self::Asdf => "ASDF",
         }
     }
 }
@@ -49,8 +49,10 @@ impl ImageFormat {
 ///
 /// Two things reach CFITSIO deliberately:
 ///
-/// - Compressed FITS. CFITSIO decompresses gzip, bzip2 and Unix `compress`
+/// - Compressed FITS. CFITSIO decompresses bzip2 and Unix `compress`
 ///   transparently, so those magic numbers are reported as [`ImageFormat::Fits`].
+///   gzip is the exception: rsfitsio 0.470 panics opening it, so it is refused
+///   here with an error (exit 16) until that is fixed upstream.
 /// - Extended filename syntax (`image.fits[1]`, `image.fits[col>3]`). Those paths
 ///   do not name a file on disk, so when the open fails and the path carries a
 ///   `[`, it is passed through for CFITSIO to parse.
@@ -72,8 +74,14 @@ pub fn detect_format(path: &Path) -> Result<ImageFormat, String> {
         Ok(ImageFormat::Xisf)
     } else if head.starts_with(b"#ASDF ") {
         Ok(ImageFormat::Asdf)
+    } else if head.starts_with(b"\x1f\x8b") {
+        // rsfitsio 0.470 panics opening a gzip file rather than returning an error,
+        // so refuse it here, with a message that says what to do.
+        Err(format!(
+            "{}: gzip-compressed FITS is not supported; decompress it first (gunzip)",
+            path.display()
+        ))
     } else if head.starts_with(b"SIMPLE  =")
-        || head.starts_with(b"\x1f\x8b")  // gzip
         || head.starts_with(b"BZh")      // bzip2
         || head.starts_with(b"\x1f\x9d")
     // Unix compress
@@ -218,9 +226,13 @@ mod tests {
 
     #[test]
     fn compressed_fits_and_extended_syntax_still_reach_cfitsio() {
-        // CFITSIO decompresses these itself, so the magic bytes are its, not ours.
+        // CFITSIO decompresses these itself, so the magic bytes are its, not ours;
+        // except gzip, which rsfitsio currently panics on.
         let g = write("arcsec_fmt_e.fits", b"\x1f\x8b\x08\x00rest-is-deflate");
-        assert_eq!(detect_format(&g), Ok(ImageFormat::Fits), "gzip");
+        assert!(
+            detect_format(&g).is_err_and(|e| e.contains("gzip")),
+            "gzip is refused"
+        );
         std::fs::remove_file(&g).ok();
         let b = write("arcsec_fmt_f.fits", b"BZh91AY&SY");
         assert_eq!(detect_format(&b), Ok(ImageFormat::Fits), "bzip2");

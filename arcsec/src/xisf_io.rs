@@ -160,7 +160,7 @@ pub fn read_xisf_dimensions(path: &Path) -> Option<(u32, u32)> {
     Some((w as u32, h as u32))
 }
 
-/// The file's FITS keywords as a lookup, keyed by upper-case name.
+/// A numeric FITS keyword of the image, matched case-insensitively.
 ///
 /// PixInsight preserves the keywords of whatever it opened, so a light frame
 /// converted from FITS still carries RA, DEC, FOCALLEN and the rest.
