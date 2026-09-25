@@ -11,17 +11,17 @@ readme = "../README.md"
 workspace = true
 
 [dependencies]
-clap = "4.6.1"
+clap = "4.6.7"
 env_logger = { workspace = true }
 log = { workspace = true }
 arcsec-core = { path = "../arcsec-core" }
 rsfitsio = "0.470.2"
-bytemuck = "1"
+bytemuck = "1.25"
 libc = "0.2"
-ureq = "3.4.0"
+ureq = "3.4.2"
 zip = "8.6.0"
 tar = "0.4.46"
 lzma-rs = "0.3.0"
 xisf = "0.5.1"
-asdf-rs = "0.2.0"
+asdf-rs = "0.2.1"
 
