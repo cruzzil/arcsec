@@ -1,5 +1,5 @@
-// GIVENS rotation-based least-squares solver.
-// Reference: Montenbruck & Pfleger, "Astronomy on the Personal Computer"
+//! GIVENS rotation-based least-squares solver.
+//! Reference: Montenbruck & Pfleger, "Astronomy on the Personal Computer"
 
 use crate::error::{ArcsecError, Result};
 use crate::types::PlateConstants;
@@ -14,15 +14,24 @@ use crate::types::PlateConstants;
 /// `b_matrix`: right-hand side (reference positions for one axis).
 ///
 /// Returns the solution vector `[coeff_x, coeff_y, coeff_const]`.
+///
+/// # Errors
+///
+/// [`ArcsecError::Singular`] if the system is degenerate, has fewer equations than
+/// unknowns, or the columns and `b_matrix` differ in length.
 pub fn lsq_fit(a_matrix: &[Vec<f64>], b_matrix: &[f64]) -> Result<Vec<f64>> {
     const TINY: f64 = 1e-10;
 
     let nr_columns = a_matrix.len();
-    let nr_equations = if nr_columns == 0 {
+    let nr_equations = b_matrix.len();
+    // Fewer equations than unknowns cannot be solved, and the elimination below
+    // indexes row j of column j, so it would also run off the end of the columns.
+    if nr_columns == 0
+        || nr_equations < nr_columns
+        || a_matrix.iter().any(|col| col.len() != nr_equations)
+    {
         return Err(ArcsecError::Singular);
-    } else {
-        a_matrix[0].len()
-    };
+    }
 
     // Duplicate matrices so the caller's originals are not modified
     let mut temp: Vec<Vec<f64>> = a_matrix.to_vec();
@@ -80,11 +89,22 @@ pub fn lsq_fit(a_matrix: &[Vec<f64>], b_matrix: &[f64]) -> Result<Vec<f64>> {
 
 /// Solves for all 6 plate constants by calling `lsq_fit` for each axis.
 /// Validates that the X and Y pixel scales are within 10% of each other.
+///
+/// `img_xy[i]` and `ref_xy[i]` must be the same star; at least three pairs are needed.
+///
+/// # Errors
+///
+/// - [`ArcsecError::Singular`] if the slices differ in length, hold fewer than three
+///   pairs, or the points are degenerate (e.g. collinear).
+/// - [`ArcsecError::BadSolution`] if the X and Y scales disagree by more than 10%.
 pub fn solve_plate_constants(
     img_xy: &[(f64, f64)],
     ref_xy: &[(f64, f64)],
 ) -> Result<PlateConstants> {
     let n = img_xy.len();
+    if ref_xy.len() != n {
+        return Err(ArcsecError::Singular);
+    }
 
     // Build column-major A matrix: [x_pixels, y_pixels, 1.0]
     let col_x: Vec<f64> = img_xy.iter().map(|&(x, _)| x).collect();
@@ -175,7 +195,7 @@ mod tests {
         assert_close(pc.e, 2.0, 1e-8);
     }
 
-    /// 90° rotation: ref_x = -img_y, ref_y = img_x
+    /// 90° rotation: `ref_x = -img_y`, `ref_y = img_x`
     #[test]
     fn rotation_90() {
         let img = grid_stars();
@@ -198,7 +218,7 @@ mod tests {
         ));
     }
 
-    /// Bad scale ratio → BadSolution error
+    /// Bad scale ratio → `BadSolution` error
     #[test]
     fn bad_solution_ratio() {
         // X scale = 1, Y scale = 10 → ratio = 0.01 → out of [0.9, 1.1]
@@ -212,7 +232,7 @@ mod tests {
         ));
     }
 
-    /// lsq_fit directly: simple 1-unknown system ax = b → x = b/a
+    /// `lsq_fit` directly: simple 1-unknown system ax = b → x = b/a
     #[test]
     fn lsq_fit_1d() {
         // Overdetermined: 5 equations, 1 unknown (simplify: constant 1, no x/y)
@@ -220,5 +240,26 @@ mod tests {
         let b = vec![6.0, 6.0, 6.0, 6.0, 6.0];
         let x = lsq_fit(&a, &b).unwrap();
         assert_close(x[0], 3.0, 1e-10);
+    }
+
+    /// Fewer than three points, or mismatched slices, must be an error, not a panic.
+    #[test]
+    fn too_few_or_mismatched_points_are_errors() {
+        for n in 0..3 {
+            let img: Vec<(f64, f64)> = (0..n).map(|i| (i as f64, 2.0 * i as f64)).collect();
+            assert!(
+                matches!(
+                    solve_plate_constants(&img, &img),
+                    Err(ArcsecError::Singular)
+                ),
+                "n = {n}"
+            );
+        }
+        let img = grid_stars();
+        assert!(matches!(
+            solve_plate_constants(&img, &img[1..]),
+            Err(ArcsecError::Singular)
+        ));
+        assert!(matches!(lsq_fit(&[], &[]), Err(ArcsecError::Singular)));
     }
 }

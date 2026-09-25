@@ -1,3 +1,6 @@
+//! Star catalogue readers: ASTAP `.1476`/`.290`/`.001` databases and
+//! Astrometry.net index files, plus the sky tilings used to find the right files.
+
 pub mod anet;
 pub mod areas;
 pub mod areas_290;

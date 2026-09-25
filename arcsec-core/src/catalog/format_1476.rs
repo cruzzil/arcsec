@@ -1,17 +1,24 @@
-// Binary reader for ASTAP's packed Gaia catalog formats, .1476 and .290.
-//
-// Both carry an identical 110-byte ASCII header (byte 109 = record size) followed by
-// the same packed records, so this reader handles both; only the sky tiling differs
-// (`areas.rs` for 1476, `areas_290.rs` for 290).
-// Record format (5 bytes):
-//   ra7, ra8, ra9  — 24-bit LE unsigned integer for RA
-//   dec7, dec8     — low 2 bytes of a 24-bit two's-complement DEC integer
-//
-// Header records have ra_raw == 0xFF_FF_FF and carry the high DEC byte (dec9_storage)
-// and magnitude for the following group of star records.
-//
-// RA  = ra_raw / (2^24 - 1) * 2π
-// DEC = signed_24bit_int(dec9_storage:dec8:dec7) / (2^23 - 1) * (π/2)
+//! Binary reader for ASTAP's packed Gaia catalog formats, .1476 and .290.
+//!
+//! Both carry an identical 110-byte ASCII header (byte 109 = record size) followed by
+//! the same packed records, so this reader handles both; only the sky tiling differs
+//! (`areas.rs` for 1476, `areas_290.rs` for 290).
+//!
+//! Record format (5 bytes; a 6th, Gaia colour, is present in some databases and
+//! ignored here):
+//!
+//! ```text
+//! ra7, ra8, ra9  — 24-bit LE unsigned integer for RA
+//! dec7, dec8     — low 2 bytes of a 24-bit two's-complement DEC integer
+//! ```
+//!
+//! Header records have `ra_raw == 0xFF_FF_FF` and carry the high DEC byte
+//! (`dec9_storage`) and magnitude for the following group of star records.
+//!
+//! ```text
+//! RA  = ra_raw / (2^24 - 1) * 2π
+//! DEC = signed_24bit_int(dec9_storage:dec8:dec7) / (2^23 - 1) * (π/2)
+//! ```
 
 use core::f64::consts::PI;
 use std::io;
@@ -29,8 +36,11 @@ const HEADER_SENTINEL: u32 = 0xFF_FF_FF;
 /// A catalog star — just RA/DEC in radians and magnitude.
 #[derive(Debug, Clone)]
 pub struct CatalogStar {
+    /// Right ascension, radians.
     pub ra: f64,
+    /// Declination, radians.
     pub dec: f64,
+    /// Magnitude (Gaia BP for the ASTAP databases).
     pub mag: f64,
 }
 
@@ -39,8 +49,14 @@ pub struct CatalogStar {
 /// - `file_path`: full path to the area file (e.g. `/db/d20_0101.1476`)
 /// - `telescope_ra/dec`: centre of the field (radians)
 /// - `field_diameter`: diameter of the square area to collect (radians)
-/// - `cos_telescope_dec`: pre-computed cos(telescope_dec) for fast RA delta check
+/// - `cos_telescope_dec`: pre-computed `cos(telescope_dec)` for fast RA delta check
 /// - `max_stars`: maximum stars to return (stops reading after this many)
+///
+/// # Errors
+///
+/// [`ArcsecError::CatalogIo`] if the file cannot be opened or mapped (a missing
+/// file is `io::ErrorKind::NotFound`), or its header declares an unsupported
+/// record size.
 pub fn read_area_file(
     file_path: &Path,
     telescope_ra: f64,
@@ -134,6 +150,13 @@ pub fn read_area_file(
 /// - `telescope_ra/dec`: pointing centre (radians)
 /// - `fov`: square FOV side length (radians); capped to 5.14°
 /// - `max_stars`: max stars to return in total
+///
+/// Missing area files are skipped silently (sparse databases are normal).
+///
+/// # Errors
+///
+/// [`ArcsecError::CatalogIo`] if an area file exists but cannot be read or is
+/// malformed.
 pub fn read_catalog_stars(
     db_path: &Path,
     db_name: &str,
@@ -173,17 +196,14 @@ pub fn read_catalog_stars(
 /// Which sky tiling a database directory uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogLayout {
-    /// 1476 tiles across 36 equal-declination rings (D80, D50, D20, D05, V50, V05).
+    /// 1476 tiles across 36 equal-declination rings (D80, D50, D20, D05, V50).
     Areas1476,
-    /// 290 equal-area tiles across 18 rings (G05, for 3°–20° fields).
+    /// 290 equal-area tiles across 18 rings (G05 for 3°–20° fields; also V05).
     Areas290,
     /// A single all-sky file of f32 triples (W08, for 20°–80° fields).
     AllSky001,
 }
 
-/// Detect the layout of `db_name` in `db_path` by probing for its first area file,
-/// which is named `0101` in every format. Defaults to 1476 when none is present, so
-/// a missing database still reports through the usual not-found path.
 /// Whether `db_path` holds a database called `db_name` in any supported layout.
 ///
 /// [`detect_layout`] cannot answer this: it falls back to [`CatalogLayout::Areas1476`]
@@ -191,12 +211,19 @@ pub enum CatalogLayout {
 /// 1476 one whose tiles are all absent. Callers check this first so a wrong `-d`
 /// or `-D` reports "database not found" rather than reading nothing from every
 /// spiral position and concluding the image is unsolvable.
+#[must_use]
 pub fn catalog_present(db_path: &Path, db_name: &str) -> bool {
     ["1476", "290", "001"]
         .iter()
         .any(|ext| db_path.join(format!("{db_name}_0101.{ext}")).exists())
 }
 
+/// Detect the layout of `db_name` in `db_path`.
+///
+/// Probes for its first area file, which is named `0101` in every format. Defaults
+/// to 1476 when none is present, so a missing database still reports through the
+/// usual not-found path.
+#[must_use]
 pub fn detect_layout(db_path: &Path, db_name: &str) -> CatalogLayout {
     if db_path.join(format!("{db_name}_0101.1476")).exists() {
         CatalogLayout::Areas1476
@@ -252,7 +279,7 @@ fn read_catalog_stars_290(
             per_area,
         ) {
             Ok(mut stars) => all_stars.append(&mut stars),
-            Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
     }
@@ -287,7 +314,7 @@ fn read_catalog_stars_1476(
 
     for (area_nr, _frac) in areas {
         let fname = filename_1476(area_nr);
-        let file_path = db_path.join(format!("{}_{}", db_name, fname));
+        let file_path = db_path.join(format!("{db_name}_{fname}"));
 
         match read_area_file(
             &file_path,
@@ -323,8 +350,8 @@ mod tests {
     }
 
     /// Build a minimal synthetic .1476 file in memory.
-    /// Emits a header record before each star so dec9_storage is always correct.
-    /// Returns raw bytes: 110-byte file header + (header_record + star_record) pairs.
+    /// Emits a header record before each star so `dec9_storage` is always correct.
+    /// Returns raw bytes: 110-byte file header + (`header_record` + `star_record`) pairs.
     fn make_synthetic_file(record_size: u8, stars: &[(f64, f64, f64)]) -> Vec<u8> {
         // File header: 110 bytes, last byte = record_size
         let mut buf = vec![0u8; 110];

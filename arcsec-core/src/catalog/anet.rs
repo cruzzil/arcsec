@@ -1,28 +1,38 @@
-// Astrometry.net index file reader.
-//
-// Reads the raw "quads", "kdtree_data_stars", and "kdtree_data_codes" binary-
-// table extensions from a FITS index file (e.g. index-4112.fits, DIMQUADS=3).
-//
-// Both stars and codes use TFORM='nA' (raw bytes) with native-endian encoding:
-//   Stars:  3 × u32 LE (x,y,z) on unit sphere, fixed-point mapped [-1,+1]→[0,2³²-1]
-//   Quads:  dim_quads × u32 LE — star indices A, B, C[, D] into the star table
-//   Codes:  n_code_dims × u16 LE — decoded via range table
-//
-// In astrometry.net's convention:
-//   A = star[0], B = star[1] are the two most-separated stars (define the AB frame).
-//
-// DIMQUADS=3 (triangles): 2 code dims (CX, CY) — position of C in the AB frame.
-// DIMQUADS=4 (quads):     4 code dims (CX, CY, DX, DY) — C and D in the AB frame.
-//
-// Canonical form: CX ≤ 0.5 (swap A↔B and invert all codes if violated).
-// For DIMQUADS=4 additionally: CX ≤ DX (swap C↔D if violated).
+//! Astrometry.net index file reader.
+//!
+//! Reads the raw `quads`, `kdtree_data_stars`, and `kdtree_data_codes` binary-table
+//! extensions from a FITS index file (e.g. `index-4112.fits`, DIMQUADS=3).
+//!
+//! All three use TFORM='nA' (raw bytes). astrometry.net writes them in the builder's
+//! native byte order; every distributed index is little-endian, and that is what
+//! this reader assumes:
+//!
+//! ```text
+//! Stars:  3 × u32 LE (x,y,z) on unit sphere, fixed-point mapped [-1,+1]→[0,2³²-1]
+//! Quads:  dim_quads × u32 LE — star indices A, B, C[, D] into the star table
+//! Codes:  n_code_dims × u16 LE — decoded via range table
+//! ```
+//!
+//! In astrometry.net's convention A = `star[0]` and B = `star[1]` are the two
+//! most-separated stars, and define the AB frame.
+//!
+//! DIMQUADS=3 (triangles): 2 code dims (CX, CY) — position of C in the AB frame.
+//! DIMQUADS=4 (quads):     4 code dims (CX, CY, DX, DY) — C and D in the AB frame.
+//!
+//! Canonical form (swap A↔B and invert all codes if violated): CX ≤ 0.5 for
+//! triangles, CX + DX ≤ 1 for quads. For DIMQUADS=4 additionally CX ≤ DX (swap C↔D
+//! if violated). See `pipeline::blind::make_quad4` for why the two rules differ.
 
 use core::f64::consts::PI;
 use std::io;
 use std::path::Path;
 
 use libc::{c_char, c_int, c_long, c_void};
-use rsfitsio::aliases::rust_api::*;
+use rsfitsio::aliases::rust_api::{
+    fits_close_file, fits_get_colnum, fits_get_num_rowsll, fits_movabs_hdu, fits_movnam_hdu,
+    fits_movrel_hdu, fits_open_image, fits_open_memfile, fits_read_col_byt, fits_read_key_dbl,
+    fits_read_key_lng, fits_read_key_str,
+};
 use rsfitsio::fitsio::{ANY_HDU, FLEN_VALUE, LONGLONG, READONLY, fitsfile};
 
 use crate::error::ArcsecError;
@@ -33,7 +43,9 @@ use crate::math::coords::ang_sep;
 /// A star in the index, in sky coordinates (radians).
 #[derive(Debug, Clone, Copy)]
 pub struct AnetStar {
+    /// Right ascension, radians in `[0, 2π)`.
     pub ra: f64,
+    /// Declination, radians.
     pub dec: f64,
 }
 
@@ -47,13 +59,15 @@ pub struct AnetStar {
 pub struct AnetIndexEntry {
     /// Code values: [CX, CY] for triangles; [CX, CY, DX, DY] for quads.
     pub code: [f64; 4],
+    /// Number of valid stars (3 or 4).
     pub n_stars: usize,
     /// RA of constituent stars in file order.
     pub star_ra: [f64; 4],
     /// Dec of constituent stars in file order.
     pub star_dec: [f64; 4],
-    /// Approximate centroid RA/Dec.
+    /// Approximate centroid RA (radians).
     pub center_ra: f64,
+    /// Approximate centroid Dec (radians).
     pub center_dec: f64,
 }
 
@@ -67,8 +81,9 @@ pub struct AnetIndex {
     pub codes: Vec<[f32; 4]>,
     /// All catalog stars in the index (for WCS verification).
     pub stars: Vec<AnetStar>,
-    /// FOV scale range covered by this index file (radians).
+    /// Smallest quad scale (A-B separation) in this index file, radians.
     pub scale_lo: f64,
+    /// Largest quad scale (A-B separation) in this index file, radians.
     pub scale_hi: f64,
     /// Stars per quad entry (DIMQUADS in the header; 3 or 4).
     pub dim_quads: usize,
@@ -78,13 +93,13 @@ pub struct AnetIndex {
 
 /// Reinterpret a byte slice as a `c_char` slice for the rsfitsio wrappers.
 ///
-/// `libc::c_char` is `i8` on x86_64 and `u8` on aarch64, so `b"KEY\0"` literals
+/// `libc::c_char` is `i8` on `x86_64` and `u8` on aarch64, so `b"KEY\0"` literals
 /// cannot be passed directly on every platform. The two types always have the same
 /// size and alignment, so the cast is a no-op at runtime.
 #[inline]
 fn cc(b: &[u8]) -> &[c_char] {
     // Safety: c_char is i8 or u8; identical layout, and we only read.
-    unsafe { core::slice::from_raw_parts(b.as_ptr() as *const c_char, b.len()) }
+    unsafe { core::slice::from_raw_parts(b.as_ptr().cast::<c_char>(), b.len()) }
 }
 
 /// Decode a NUL-terminated `c_char` buffer filled in by CFITSIO into a String.
@@ -117,7 +132,7 @@ fn move_to_hdu(fp: &mut fitsfile, target: &[u8]) -> Result<(), String> {
         let mut status: c_int = 0;
         fits_movrel_hdu(fp, 1, None, &mut status);
         if status != 0 {
-            return Err(format!("HDU with TTYPE1='{}' not found", target_str));
+            return Err(format!("HDU with TTYPE1='{target_str}' not found"));
         }
 
         let mut val = vec![0 as c_char; FLEN_VALUE];
@@ -191,19 +206,15 @@ fn parse_stars(bytes: &[u8]) -> Vec<AnetStar> {
 
 // ── Code and quad-index parsing ────────────────────────────────────────────────
 
-/// Parse `bytes` as little-endian u32s, `dim_quads` per entry.
-fn parse_quad_indices(bytes: &[u8], dim_quads: usize) -> Vec<Vec<u32>> {
-    let row_bytes = dim_quads * 4;
+/// Parse `bytes` as little-endian u32s. Rows of `dim_quads` are contiguous, so the
+/// caller walks the result with `chunks_exact(dim_quads)`; one flat vector avoids an
+/// allocation per quad (millions of them in a large index).
+fn parse_quad_indices(bytes: &[u8]) -> Vec<u32> {
     bytes
-        .chunks_exact(row_bytes)
-        .map(|chunk| {
-            (0..dim_quads)
-                .map(|k| {
-                    let off = k * 4;
-                    u32::from_le_bytes(chunk[off..off + 4].try_into().unwrap())
-                })
-                .collect()
-        })
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&b| u32::from_le_bytes(b))
         .collect()
 }
 
@@ -227,7 +238,7 @@ fn parse_codes(bytes: &[u8], n_code_dims: usize, code_lo: f64, code_scale: f64) 
 
 // ── Entry builder ──────────────────────────────────────────────────────────────
 
-/// Build an AnetIndexEntry from star indices and pre-computed code values.
+/// Build an `AnetIndexEntry` from star indices and pre-computed code values.
 fn entry_from_sky(
     stars: &[AnetStar],
     indices: &[u32],
@@ -277,58 +288,21 @@ fn entry_from_sky(
 
 impl AnetIndex {
     /// Number of code dimensions: 2 for DIMQUADS=3, 4 for DIMQUADS=4.
+    #[must_use]
     pub fn n_code_dims(&self) -> usize {
-        2 * (self.dim_quads - 2)
+        2 * self.dim_quads.saturating_sub(2)
     }
 
-    /// Find index entries whose code is within `tol` (Euclidean in n_code_dims space)
+    /// Find index entries whose code is within `tol` (Euclidean in `n_code_dims` space)
     /// of `code[0..n_code_dims()]`.
     ///
     /// Binary-searches the compact f32 `codes` array (9 MB, L3-resident) rather
     /// than the full `entries` array (70 MB, DRAM). Reduces cache-miss rate ~7.5×
     /// and avoids loading star RA/Dec data for non-matching entries.
+    #[must_use]
     pub fn find_code_matches(&self, code: &[f64; 4], tol: f64) -> Vec<usize> {
-        let n = self.n_code_dims().min(4);
-        // Small safety margin absorbs f32 rounding at window boundaries.
-        let lo = (code[0] - tol) as f32;
-        let hi = (code[0] + tol) as f32;
-        let start = self.codes.partition_point(|c| c[0] < lo);
-        let end = self.codes.partition_point(|c| c[0] <= hi);
-
-        let tol_sq = (tol * tol) as f32;
-        let code_f32 = [
-            code[0] as f32,
-            code[1] as f32,
-            code[2] as f32,
-            code[3] as f32,
-        ];
         let mut out = Vec::new();
-        for i in start..end {
-            let c = &self.codes[i];
-            let d1 = c[1] - code_f32[1];
-            if d1 * d1 > tol_sq {
-                continue;
-            }
-            let d0 = c[0] - code_f32[0];
-            let mut dist_sq = d0 * d0 + d1 * d1;
-            if n > 2 {
-                let d2 = c[2] - code_f32[2];
-                if d2 * d2 > tol_sq {
-                    continue;
-                }
-                dist_sq += d2 * d2;
-                if n > 3 {
-                    let d3 = c[3] - code_f32[3];
-                    if d3 * d3 > tol_sq {
-                        continue;
-                    }
-                    dist_sq += d3 * d3;
-                }
-            }
-            if dist_sq <= tol_sq {
-                out.push(i);
-            }
-        }
+        self.find_code_matches_into(code, tol, &mut out);
         out
     }
 
@@ -348,8 +322,7 @@ impl AnetIndex {
             code[2] as f32,
             code[3] as f32,
         ];
-        for i in start..end {
-            let c = &self.codes[i];
+        for (i, c) in (start..end).zip(&self.codes[start..end]) {
             let d1 = c[1] - code_f32[1];
             if d1 * d1 > tol_sq {
                 continue;
@@ -458,17 +431,11 @@ fn read_code_range(fp: &mut fitsfile, n_code_dims: usize) -> (f64, f64) {
     (-0.207_107, 46_340.2)
 }
 
-/// Load an Astrometry.net FITS index file and return an `AnetIndex`.
-///
-/// The entire file is pre-read into memory with a single `read()` syscall, then
-/// handed to CFITSIO's in-memory driver (`fits_open_memfile`).  CFITSIO parses
-/// the FITS structure as usual but accesses data through a memory pointer with
-/// zero `read()` syscalls — eliminating the ~30 s of WSL2 per-syscall overhead
-/// seen with file-backed I/O (CFITSIO's default 2880-byte block reads).
 /// What `load_anet_index` pulls out of the file before the CFITSIO handle is closed.
 struct AnetParts {
     stars: Vec<AnetStar>,
-    quad_indices: Vec<Vec<u32>>,
+    /// Flat star indices, `dim_quads` per quad.
+    quad_indices: Vec<u32>,
     codes: Vec<[f64; 4]>,
     n_quad_rows: usize,
     scale_lo: f64,
@@ -476,19 +443,31 @@ struct AnetParts {
     dim_quads: usize,
 }
 
+/// Load an Astrometry.net FITS index file and return an `AnetIndex`.
+///
+/// The entire file is pre-read into memory with a single `read()` syscall, then
+/// handed to CFITSIO's in-memory driver (`fits_open_memfile`).  CFITSIO parses
+/// the FITS structure as usual but accesses data through a memory pointer with
+/// zero `read()` syscalls — eliminating the ~30 s of WSL2 per-syscall overhead
+/// seen with file-backed I/O (CFITSIO's default 2880-byte block reads).
+///
+/// # Errors
+///
+/// [`ArcsecError::CatalogIo`] if the file cannot be read, is not a FITS file, has a
+/// DIMQUADS other than 3 or 4, or lacks the expected binary-table extensions.
 pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
+    // Stub realloc: never called for a read-only fixed-size buffer (deltasize=0).
+    unsafe extern "C" fn no_realloc(_p: *mut c_void, _n: usize) -> *mut c_void {
+        core::ptr::null_mut()
+    }
+
     // One bulk read — Vec stays alive for the entire CFITSIO session below.
     let mut file_bytes = std::fs::read(path).map_err(ArcsecError::CatalogIo)?;
     let mut buf_size = file_bytes.len();
     // Taken as *mut because that is what fits_open_memfile's signature wants; the
     // file is opened READONLY with deltasize = 0 and a no-op realloc, so CFITSIO
     // never writes through it or tries to grow it.
-    let mut buf_ptr: *mut c_void = file_bytes.as_mut_ptr() as *mut c_void;
-
-    // Stub realloc: never called for a read-only fixed-size buffer (deltasize=0).
-    unsafe extern "C" fn no_realloc(_p: *mut c_void, _n: usize) -> *mut c_void {
-        core::ptr::null_mut()
-    }
+    let mut buf_ptr: *mut c_void = file_bytes.as_mut_ptr().cast::<c_void>();
 
     let name = cc(b"arcsec_index\0");
 
@@ -499,7 +478,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
         name,
         READONLY,
         // buffptr is *mut *mut c_void: address of the data pointer.
-        &mut buf_ptr as *mut *mut c_void,
+        &raw mut buf_ptr,
         &mut buf_size,
         0, // deltasize = 0: never grow the read-only buffer
         no_realloc,
@@ -554,7 +533,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
 
         // ── Code range parameters ─────────────────────────────────────────────────
         let (code_lo, code_scale) = read_code_range(fp, n_code_dims);
-        log::debug!("Code range: lo={:.6}, scale={:.3e}", code_lo, code_scale);
+        log::debug!("Code range: lo={code_lo:.6}, scale={code_scale:.3e}");
 
         // ── Read star positions from "kdtree_data_stars" ──────────────────────────
         move_to_hdu(fp, b"kdtree_data_stars\0").map_err(&io_err)?;
@@ -569,7 +548,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
         let quad_col = get_colnum(fp, b"quads\0").map_err(&io_err)?;
         let row_bytes = dim_quads * 4;
         let quad_bytes = read_raw_bytes(fp, quad_col, n_quad_rows * row_bytes).map_err(&io_err)?;
-        let quad_indices = parse_quad_indices(&quad_bytes, dim_quads);
+        let quad_indices = parse_quad_indices(&quad_bytes);
 
         // ── Read codes from "kdtree_data_codes" ──────────────────────────────────
         move_to_hdu(fp, b"kdtree_data_codes\0").map_err(&io_err)?;
@@ -607,7 +586,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
 
     // ── Build entry descriptors ───────────────────────────────────────────────
     let mut entries: Vec<AnetIndexEntry> = Vec::with_capacity(n_quad_rows);
-    for (i, indices) in quad_indices.iter().enumerate() {
+    for (i, indices) in quad_indices.chunks_exact(dim_quads).enumerate() {
         let code = codes.get(i).copied().unwrap_or([0.0; 4]);
         if let Some(entry) = entry_from_sky(&stars, indices, code, dim_quads) {
             entries.push(entry);
@@ -643,8 +622,13 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
 }
 
 /// Read only the primary header of an index file.
+///
 /// Returns `(dim_quads, scale_lo_rad, scale_hi_rad)` without loading any data tables.
 /// Very fast — use this before `load_anet_index` to filter candidates.
+///
+/// # Errors
+///
+/// [`ArcsecError::CatalogIo`] if the path is not UTF-8 or CFITSIO cannot open it.
 pub fn peek_anet_scale(path: &Path) -> Result<(usize, f64, f64), ArcsecError> {
     let path_str = path.to_str().ok_or_else(|| {
         ArcsecError::CatalogIo(io::Error::new(
@@ -668,7 +652,7 @@ pub fn peek_anet_scale(path: &Path) -> Result<(usize, f64, f64), ArcsecError> {
         .as_deref_mut()
         .ok_or_else(|| ArcsecError::CatalogIo(std::io::Error::other("null fptr")))?;
 
-    let dim_quads = (read_key_int(fp, b"DIMQUADS\0").max(3) as usize).max(3);
+    let dim_quads = read_key_int(fp, b"DIMQUADS\0").max(3) as usize;
     let scale_lo = read_key_dbl(fp, b"SCALE_L\0").unwrap_or(0.0);
     let scale_hi = read_key_dbl(fp, b"SCALE_U\0").unwrap_or(PI);
 

@@ -1,7 +1,8 @@
-// Sky area lookup for the .1476 catalog format.
-// The sky is divided into 1476 tiles of ~5° × 5°.
-// Rows of constant DEC are indexed 0 (south pole) to 35 (north pole).
-// Each row is subdivided into N_RA RA cells (see RING_TABLE).
+//! Sky area lookup for the .1476 catalog format.
+//!
+//! The sky is divided into 1476 tiles of ~5° × 5°.
+//! Rows of constant DEC are indexed 0 (south pole) to 35 (north pole).
+//! Each row is subdivided into `n_ra_cells` RA cells (see `RING_TABLE`).
 
 use core::f64::consts::PI;
 
@@ -47,9 +48,9 @@ pub const DEC_BOUNDARIES_1476: [f64; 37] = [
     90.0_f64 * PI / 180.0,
 ];
 
-/// Per-ring table: (n_ra_cells, base_area_1indexed).
+/// Per-ring table: (`n_ra_cells`, `base_area_1indexed`).
 /// Index 0 = south pole (1 cell), index 35 = north pole (1 cell).
-/// All other rings subdivide the RA circle into n_ra_cells equal cells.
+/// All other rings subdivide the RA circle into `n_ra_cells` equal cells.
 const RING_TABLE: [(usize, usize); 36] = [
     (1, 1),     // ring  0: south pole
     (3, 2),     // ring  1
@@ -94,14 +95,18 @@ const RING_TABLE: [(usize, usize); 36] = [
 pub struct AreaBounds {
     /// 1-indexed area number in the 1476 grid.
     pub area_nr: usize,
+    /// Distance to the cell's eastern edge (radians on the sky).
     pub space_east: f64,
+    /// Distance to the cell's western edge (radians on the sky).
     pub space_west: f64,
+    /// Distance to the cell's northern edge (radians).
     pub space_north: f64,
+    /// Distance to the cell's southern edge (radians).
     pub space_south: f64,
 }
 
 /// Find the 1476 area number and bounding distances for a given (ra, dec).
-///
+#[must_use]
 pub fn area_and_boundaries_1476(ra: f64, dec: f64) -> AreaBounds {
     let cos_dec = dec.cos();
 
@@ -150,6 +155,7 @@ pub fn area_and_boundaries_1476(ra: f64, dec: f64) -> AreaBounds {
 
 /// Return the filename segment for a 1476 area number (e.g. area 1 → "0101.1476").
 /// Filename format: `{ring:02}{cell:02}.1476` where ring and cell are 1-based.
+#[must_use]
 pub fn filename_1476(area_nr: usize) -> String {
     let area = area_nr.clamp(1, 1476);
 
@@ -177,6 +183,7 @@ pub fn filename_1476(area_nr: usize) -> String {
 /// Returns `(area_nr, fraction)` pairs, where fraction is the approximate fraction
 /// of the FOV covered by that area.  Areas with fraction < 0.01 are omitted.
 /// Duplicate areas are deduplicated.
+#[must_use]
 pub fn find_areas_1476(ra: f64, dec: f64, fov: f64) -> Vec<(usize, f64)> {
     let fov = fov.min(5.142857_f64.to_radians()); // one ring height: four-corner sampling cannot express a taller field
     let fov_half = fov * 0.5;

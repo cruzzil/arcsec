@@ -1,6 +1,7 @@
-// Coordinate transforms between equatorial (RA/Dec) and tangent-plane (standard) coordinates.
-// Gnomonic (TAN) projection, per Calabretta & Greisen (2002), "Representations of
-// celestial coordinates in FITS", A&A 395, 1077, section 5.1.
+//! Coordinate transforms between equatorial (RA/Dec) and tangent-plane (standard) coordinates.
+//!
+//! Gnomonic (TAN) projection, per Calabretta & Greisen (2002), "Representations of
+//! celestial coordinates in FITS", A&A 395, 1077, section 5.1.
 
 use core::f64::consts::PI;
 
@@ -19,6 +20,7 @@ fn arcsec_to_rad(cdelt: f64) -> f64 {
 ///
 /// Returns `(x, y)` in pixels from center (or standard coords when `cdelt = 1.0`).
 ///
+#[must_use]
 pub fn equatorial_standard(ra0: f64, dec0: f64, ra: f64, dec: f64, cdelt: f64) -> (f64, f64) {
     let (sin_dec0, cos_dec0) = dec0.sin_cos();
     let (sin_dec, cos_dec) = dec.sin_cos();
@@ -41,6 +43,7 @@ pub fn equatorial_standard(ra0: f64, dec0: f64, ra: f64, dec: f64, cdelt: f64) -
 ///
 /// Returns `(ra, dec)` in radians, with RA normalised to [0, 2π).
 ///
+#[must_use]
 pub fn standard_equatorial(ra0: f64, dec0: f64, x: f64, y: f64, cdelt: f64) -> (f64, f64) {
     let (sin_dec0, cos_dec0) = dec0.sin_cos();
     let scale = arcsec_to_rad(cdelt);
@@ -48,7 +51,7 @@ pub fn standard_equatorial(ra0: f64, dec0: f64, x: f64, y: f64, cdelt: f64) -> (
     let ys = y * scale;
 
     let mut ra = ra0 + (-xs).atan2(cos_dec0 - ys * sin_dec0);
-    if ra > 2.0 * PI {
+    if ra >= 2.0 * PI {
         ra -= 2.0 * PI;
     }
     if ra < 0.0 {
@@ -60,6 +63,7 @@ pub fn standard_equatorial(ra0: f64, dec0: f64, x: f64, y: f64, cdelt: f64) -> (
 }
 
 /// Angular separation between two positions (radians in, radians out).
+#[must_use]
 pub fn ang_sep(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
     let (sin_d1, cos_d1) = dec1.sin_cos();
     let (sin_d2, cos_d2) = dec2.sin_cos();
@@ -77,7 +81,7 @@ mod tests {
     // 1e-9 radians ≈ 0.2 milliarcseconds: tight but achievable for small offsets
     const TOL: f64 = 1e-9;
 
-    /// Round-trip: equatorial_standard → standard_equatorial recovers original position.
+    /// Round-trip: `equatorial_standard` → `standard_equatorial` recovers original position.
     /// Offsets kept small (< 20 arcmin at 2.5 arcsec/px = 480 px) for numerical stability.
     #[test]
     fn round_trip() {

@@ -1,24 +1,26 @@
-// Reader for ASTAP's .001 all-sky star database format (W08).
-//
-// Unlike .1476 and .290, which tile the sky into per-area files of packed 5-byte
-// records, .001 is a single whole-sky file of plain little-endian f32 triples. W08
-// is the only database shipped in this form: it targets 20°–80° fields, where any
-// tiling would be read in its entirety anyway, and at magnitude 8 the whole sky is
-// only ~41k stars.
-//
-// Layout, derived from the shipped `w08_star_database_mag08_astap` file and
-// confirmed against known stars — the first two records decode to Sirius
-// (mag -1.5, RA 101.28°, Dec -16.72°) and Canopus (mag -0.6, RA 95.99°, Dec -52.70°):
-//
-//     u32  star_count                     (little-endian)
-//     star_count × {
-//         f32  magnitude × 10
-//         f32  right ascension, radians
-//         f32  declination, radians
-//     }
-//
-// Records are ordered brightest first, so a truncated read is still the brightest
-// subset. `star_count * 12 + 4` accounts for the file exactly.
+//! Reader for ASTAP's .001 all-sky star database format (W08).
+//!
+//! Unlike .1476 and .290, which tile the sky into per-area files of packed 5-byte
+//! records, .001 is a single whole-sky file of plain little-endian f32 triples. W08
+//! is the only database shipped in this form: it targets 20°–80° fields, where any
+//! tiling would be read in its entirety anyway, and at magnitude 8 the whole sky is
+//! only ~41k stars.
+//!
+//! Layout, derived from the shipped `w08_star_database_mag08_astap` file and
+//! confirmed against known stars — the first two records decode to Sirius
+//! (mag -1.5, RA 101.28°, Dec -16.72°) and Canopus (mag -0.6, RA 95.99°, Dec -52.70°):
+//!
+//! ```text
+//! u32  star_count                     (little-endian)
+//! star_count × {
+//!     f32  magnitude × 10
+//!     f32  right ascension, radians
+//!     f32  declination, radians
+//! }
+//! ```
+//!
+//! Records are ordered brightest first, so a truncated read is still the brightest
+//! subset. `star_count * 12 + 4` accounts for the file exactly.
 
 use core::f64::consts::PI;
 use std::io;
@@ -38,6 +40,11 @@ const HEADER_LEN: usize = 4;
 ///
 /// Arguments mirror `format_1476::read_area_file` so the two are interchangeable
 /// from the caller's point of view.
+///
+/// # Errors
+///
+/// [`ArcsecError::CatalogIo`] if the file cannot be opened or mapped, or its
+/// declared star count does not match its length.
 pub fn read_001_file(
     file_path: &Path,
     telescope_ra: f64,

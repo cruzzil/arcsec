@@ -1,4 +1,4 @@
-// WCS solution derivation from plate constants.
+//! WCS solution derivation from plate constants.
 
 use crate::math::coords::standard_equatorial;
 use crate::types::{PlateConstants, WcsSolution};
@@ -9,6 +9,7 @@ use crate::types::{PlateConstants, WcsSolution};
 /// - `ra_db`, `dec_db`: the reference position used to build the catalog quads (radians)
 /// - `plate`: the solved plate constants (standard-coordinate arcsec per image pixel)
 /// - `width`, `height`: image dimensions in pixels
+#[must_use]
 pub fn derive_wcs(
     ra_db: f64,
     dec_db: f64,

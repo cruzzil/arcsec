@@ -1,3 +1,5 @@
+//! Star patterns (quads and triangles), their matching, and match filtering.
+
 pub mod build;
 pub mod r#match;
 pub mod tetra;
