@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# hips_extended_test.sh — 20 additional diverse sky fields at 1.5° FOV.
-# Complements the original hips_solve_test.sh (different positions, field types).
+# hips_extended_test.sh — 20 additional diverse sky fields at 1.5° FOV, blind solver.
+# Complements hips_solve_test.sh (different positions, field types); same requirements.
+# Run from the repository root.
 #
-# Usage: scripts/hips_extended_test.sh [--skip-download] [--survey <hips>]
+# Usage: scripts/hips_extended_test.sh [--fov <deg>] [--index <path>] [--arcsec <path>]
+#                                      [--work-dir <dir>] [--survey <hips>] [--skip-download]
+#   --fov <deg>       image FOV in degrees [default: 1.5]
+#   --index <path>    index dir or file [default: the output of `arcsec catalog path`]
+#   --arcsec <path>   arcsec binary [default: ./target/release/arcsec]
+#   --work-dir <dir>  download and output directory [default: /tmp/hips_ext_test]
 #   --survey <hips>   HiPS survey string [default: CDS/P/DSS2/blue]
+#   --skip-download   reuse FITS files already in work-dir
 
 set -uo pipefail
 
 ARCSEC_BIN="./target/release/arcsec"
-INDEX_PATH="resources/indexes/4100"
+INDEX_PATH=""
 FOV="1.5"
 WORK_DIR="/tmp/hips_ext_test"
 SKIP_DOWNLOAD=0
@@ -57,6 +64,10 @@ declare -a TARGETS=(
     "M17-Nebula        275.09  -16.18"   # Omega nebula (emission)
     "LMC-center         80.89  -69.75"   # Large Magellanic Cloud
 )
+
+# Default to the catalogue directory, where `arcsec catalog install anet-4100` puts the
+# astrometry.net index files.
+[[ -n "$INDEX_PATH" ]] || INDEX_PATH="$("$ARCSEC_BIN" catalog path)"
 
 mkdir -p "$WORK_DIR"
 

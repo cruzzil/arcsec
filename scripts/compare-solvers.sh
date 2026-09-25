@@ -3,9 +3,20 @@
 # Usage: compare-solvers.sh <fits_file> [--ra <hours>] [--spd <degrees>] [--fov <degrees>]
 #                           [--db <path>] [--db-name <name>] [--astap <path>] [--arcsec <path>]
 #
-# --ra   right ascension in hours (0-24)   — passed to both solvers
-# --spd  south-pole-distance in degrees    — passed to both solvers
-# --fov  field-of-view in degrees          — if omitted, each solver auto-detects
+# --ra       right ascension in hours (0-24)   — passed to both solvers
+# --spd      south-pole-distance in degrees    — passed to both solvers
+# --fov      field-of-view in degrees          — if omitted, each solver auto-detects
+# --db       star database directory           — passed to both as -d [default: each
+#            solver's own default; arcsec's is the `arcsec catalog` directory]
+# --db-name  database for arcsec (-D)          [default: d80; ASTAP picks its own]
+# --astap    ASTAP binary                      [default: $ASTAP, else `astap` on PATH]
+# --arcsec   arcsec binary                     [default: $ARCSEC, else target/release, else
+#            target/debug]
+#
+# WARNING: ASTAP is run with -update, so it writes its solution into the input FITS
+# header, and its .ini/.wcs land next to the image. arcsec runs afterwards and, without
+# --ra/--spd, takes its position hint from that header (RA/DEC if present, otherwise
+# the CRVAL1/2 ASTAP just wrote). Work on a copy.
 
 set -uo pipefail
 
@@ -38,7 +49,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$FITS_FILE" ]]; then
-    echo "Usage: compare-solvers.sh <fits_file> [--ra <hours>] [--spd <deg>] [--fov <deg>] [--db <path>]" >&2
+    echo "Usage: compare-solvers.sh <fits_file> [--ra <hours>] [--spd <deg>] [--fov <deg>] [--db <path>] [--db-name <name>] [--astap <path>] [--arcsec <path>]" >&2
     exit 1
 fi
 

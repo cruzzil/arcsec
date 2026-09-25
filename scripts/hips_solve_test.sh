@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
-# hips_solve_test.sh — download test FITS images from HiPS2FITS, run arcsec blind solver,
-# report solve rate and positional accuracy vs the known ground truth.
+# hips_solve_test.sh — download 20 test fields (1000x1000 px) from HiPS2FITS, run the
+# arcsec blind solver (-i) on each, and report solve rate and positional accuracy against
+# the known ground truth. Run from the repository root.
+#
+# Needs the astrometry.net 4100 indexes (`arcsec catalog install anet-4100`) and an ASTAP
+# star database in the catalogue directory, since the blind estimate is refined by the
+# catalogue solve.
 #
 # Usage:
 #   scripts/hips_solve_test.sh [--fov <deg>] [--index <path>] [--arcsec <path>]
-#                              [--work-dir <dir>] [--skip-download]
+#                              [--work-dir <dir>] [--survey <hips>] [--skip-download]
 #
 # Options:
 #   --fov <deg>       image FOV in degrees [default: 1.5]
-#   --index <path>    index dir or file [default: resources/indexes/4100]
+#   --index <path>    index dir or file [default: the output of `arcsec catalog path`]
 #   --arcsec <path>   arcsec binary [default: ./target/release/arcsec]
 #   --work-dir <dir>  where to store downloaded FITS and outputs [default: /tmp/hips_test]
+#   --survey <hips>   HiPS survey [default: CDS/P/DSS2/blue]
 #   --skip-download   reuse FITS files already in work-dir
 
 set -uo pipefail
 
 ARCSEC_BIN="./target/release/arcsec"
-INDEX_PATH="resources/indexes/4100"
+INDEX_PATH=""
 FOV="1.5"
 WORK_DIR="/tmp/hips_test"
 SKIP_DOWNLOAD=0
@@ -60,6 +66,10 @@ declare -a TARGETS=(
 
 WIDTH=1000
 HEIGHT=1000
+
+# Default to the catalogue directory, where `arcsec catalog install anet-4100` puts the
+# astrometry.net index files.
+[[ -n "$INDEX_PATH" ]] || INDEX_PATH="$("$ARCSEC_BIN" catalog path)"
 
 mkdir -p "$WORK_DIR"
 
