@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+    # No ignore rule for patch/minor here, unlike a library. arcsec ships a
+    # binary, so the lockfile is what users actually run and its dependencies
+    # should be kept current rather than left to a consumer's own resolution.

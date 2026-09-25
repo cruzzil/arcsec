@@ -1,0 +1,18 @@
+[package]
+name = "arcsec-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Core astrometry for the arcsec plate solver"
+repository = "https://github.com/cruzzil/arcsec"
+readme = "../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = "0.2"
+log = { workspace = true }
+memmap2 = "0.9"
+rsfitsio = "0.470.2"
+

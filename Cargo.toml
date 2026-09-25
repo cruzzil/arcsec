@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = [
+    "arcsec",
+    "arcsec-core",
+]
+
+# Prefer core:: and alloc:: over std:: wherever the item lives there. Nothing here is
+# no_std, but the distinction documents which parts of the code actually depend on the
+# operating system, and keeps that dependency from creeping into the pure maths.
+[workspace.lints.clippy]
+std_instead_of_core = "deny"
+std_instead_of_alloc = "deny"
+
+[profile.release]
+# Keep symbols and line tables in release builds: this is the profile we benchmark and
+# flamegraph. Defined here because Cargo ignores profiles in member manifests - these
+# settings previously sat in arcsec/ and arcsec-core/ and had no effect at all.
+debug = true
+strip = false
+
+[workspace.dependencies]
+log = { version = "0.4", features = ["std"] }
+env_logger = "0.11"

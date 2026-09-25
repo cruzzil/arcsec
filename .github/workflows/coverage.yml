@@ -1,0 +1,90 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # Lifted to job level so the upload step can test whether it is present.
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      # The toolchain comes from rust-toolchain.toml; rustup installs it on the
+      # first cargo invocation. Do not pin a version here as well - two places
+      # to change is how local and CI drifted apart in the first place.
+      - name: Show the toolchain
+        run: rustup show active-toolchain && cargo --version
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate code coverage
+        run: |
+          set -euo pipefail
+          # Remove artifacts that would otherwise skew the result.
+          cargo llvm-cov clean --workspace
+
+          # Unit tests: all of arcsec-core and the in-file tests in the CLI crate.
+          cargo llvm-cov --workspace --no-report
+
+          # main.rs has no unit tests, so without this the CLI crate's argument
+          # handling, database selection and error mapping show as uncovered.
+          # A solve needs star catalogues and images that are not in the repo, so
+          # what is exercised here is everything up to that point.
+          python3 - <<'PY'
+          cards = ["SIMPLE  =                    T",
+                   "BITPIX  =                    8",
+                   "NAXIS   =                    2",
+                   "NAXIS1  =                    4",
+                   "NAXIS2  =                    4",
+                   "END"]
+          hdr = "".join(c.ljust(80) for c in cards).ljust(2880)
+          open("tiny.fits", "wb").write(hdr.encode("ascii") + b"\0" * 2880)
+          PY
+          printf 'not an image' > not-an-image.dat
+
+          cargo llvm-cov run --no-report -- --help
+          cargo llvm-cov run --no-report -- --version
+          cargo llvm-cov run --no-report -- catalog list
+          cargo llvm-cov run --no-report -- catalog path
+          cargo llvm-cov run --no-report -- catalog recommend --fov 0.5
+          cargo llvm-cov run --no-report -- catalog recommend --fov 2.5 --photometry
+          cargo llvm-cov run --no-report -- catalog recommend --fov 15
+          cargo llvm-cov run --no-report -- catalog verify || true
+
+          # These exit non-zero by design: they are the error paths, which is
+          # exactly the part of main.rs worth covering.
+          cargo llvm-cov run --no-report -- -f /nonexistent/nope.fits || true
+          cargo llvm-cov run --no-report -- -f not-an-image.dat || true
+          cargo llvm-cov run --no-report -- -f tiny.fits -d /nonexistent/catalogs -D d50 || true
+          cargo llvm-cov run --no-report -- --sip -f tiny.fits || true
+          cargo llvm-cov run --no-report -- --analyse 10 -f tiny.fits || true
+          cargo llvm-cov run --no-report -- --speed slow -f tiny.fits || true
+          cargo llvm-cov run --no-report -- -f tiny.fits --ra 5.5 --spd 120 --fov 1.5 || true
+          cargo llvm-cov run --no-report -- || true
+
+          rm -f tiny.fits not-an-image.dat
+          cargo llvm-cov report --lcov --output-path lcov.info
+
+      # Dependabot-triggered runs do not receive repository secrets - GitHub keeps
+      # those in a separate Dependabot scope - so the token is empty there and the
+      # upload is rejected. Skipping is right for that case and wrong for every
+      # other: an absent token on a normal run is a misconfiguration worth failing
+      # on, which is what fail_ci_if_error below is for. Add CODECOV_TOKEN under
+      # Settings > Secrets > Dependabot if you want coverage on those PRs too.
+      - name: Upload coverage reports to Codecov
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: cruzzil/arcsec
+          files: lcov.info
+          # Without this the action reports success even when the upload is
+          # rejected, so the job goes green having sent nothing and the badge
+          # sits at "unknown" with no indication why. A missing or wrong
+          # CODECOV_TOKEN should be a visible failure, not a silent one.
+          fail_ci_if_error: true

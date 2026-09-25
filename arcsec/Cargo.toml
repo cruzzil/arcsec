@@ -1,0 +1,27 @@
+[package]
+name = "arcsec"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Astrometric plate solver: find where a telescope was pointing from an image"
+repository = "https://github.com/cruzzil/arcsec"
+readme = "../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = "4.6.1"
+env_logger = { workspace = true }
+log = { workspace = true }
+arcsec-core = { path = "../arcsec-core" }
+rsfitsio = "0.470.2"
+bytemuck = "1"
+libc = "0.2"
+ureq = "3.4.0"
+zip = "8.6.0"
+tar = "0.4.46"
+lzma-rs = "0.3.0"
+xisf = "0.5.1"
+asdf-rs = "0.2.0"
+

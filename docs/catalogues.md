@@ -1,0 +1,137 @@
+# Installing Star Catalogues
+
+arcsec cannot solve anything without a star catalogue, and cannot do photometric
+colour calibration without a *photometric* one. Both are one command away:
+
+```bash
+arcsec catalog recommend --like ~/lights/M42_0001.fits --photometry
+arcsec catalog install d50 v05
+```
+
+Everything lands in one place that the solver already reads, so after installing you
+can just run `arcsec -f image.fits` with no `-d` and no `-D`.
+
+---
+
+## 1. Which catalogue do I need?
+
+Ask arcsec, and give it either a field size or an image to read one from:
+
+```bash
+arcsec catalog recommend --fov 1.5                 # field size in degrees
+arcsec catalog recommend --like image.fits         # read FOCALLEN/XPIXSZ from a header
+arcsec catalog recommend --fov 1.5 --photometry    # include colour calibration
+```
+
+It prints the **smallest** download that covers your field, because there is no point
+pulling 1.2 GB for a rig that a 102 MB catalogue serves perfectly well.
+
+The full set:
+
+| Name | Purpose | Download | Fields | Notes |
+|---|---|---|---|---|
+| `d05` | solving | 102 MB | 0.6°–6° | Gaia DR3, 500 stars/deg². Smallest that works. |
+| `d20` | solving | 400 MB | 0.3°–6° | 2000 stars/deg². |
+| `d50` | solving | 901 MB | 0.2°–6° | 5000 stars/deg². The usual choice. |
+| `d80` | solving | 1.2 GB | 0.15°–6° | 8000 stars/deg². Needed below ~0.2°. |
+| `g05` | solving | 102 MB | 3°–20° | Wide fields. The D-series stops at 6°. |
+| `w08` | solving | 330 kB | 20°–80° | Very wide fields, to magnitude 8. |
+| `v05` | photometry | 117 MB | 0.6°–6° | Johnson-V + Gaia BP-RP colour, 500 stars/deg². |
+| `v50` | photometry | 1.0 GB | 0.2°–6° | Johnson-V + BP-RP, 5000 stars/deg². |
+| `anet-4100` | blind | 160 MB | 0.7°+ | Astrometry.net Tycho-2 indexes. Solve with no hint. |
+| `anet-5200` | blind | 8.8 GB | 0.1°–2° | Astrometry.net Gaia LITE indexes. Large. |
+
+Rules of thumb:
+
+* **Solving**: one D-series database is enough for a telescope. Add `g05` if you also
+  shoot with a camera lens, and `w08` if you shoot all-sky. They are small.
+* **Colour calibration**: `v05` unless you need the depth of `v50`.
+* **Blind solving** (`-i`): only if you cannot supply an approximate position. With a
+  mount that reports where it is pointing, you do not need these at all.
+
+---
+
+## 2. Installing
+
+```bash
+arcsec catalog install d50               # asks for confirmation, shows the size first
+arcsec catalog install d50 v05 g05 --yes # several at once, no prompt
+arcsec catalog list                      # everything, with what is installed
+arcsec catalog verify                    # check for missing or truncated files
+arcsec catalog remove d80                # free the space again
+arcsec catalog path                      # where they live
+```
+
+Installs are **resumable**: interrupt one and re-run the same command, and the
+download continues from where it stopped rather than starting again. Files are written
+to a temporary name and only moved into place once complete, so a half-finished
+download can never look like an installed catalogue.
+
+---
+
+## 3. Where they go
+
+| Platform | Default location |
+|---|---|
+| Linux | `$XDG_DATA_HOME/arcsec/catalogs`, else `~/.local/share/arcsec/catalogs` |
+| macOS | `~/Library/Application Support/arcsec/catalogs` |
+| Windows | `%LOCALAPPDATA%\arcsec\catalogs` |
+
+Override for a single command with `--dir`, or permanently with the
+`ARCSEC_CATALOG_DIR` environment variable — useful when the catalogues live on a
+different disk, or are shared with an ASTAP install:
+
+```bash
+export ARCSEC_CATALOG_DIR=/mnt/data/star_databases
+```
+
+The solver reads this directory automatically. `-d` is only needed to point somewhere
+else for one run, and `-D` only to force a particular database — otherwise arcsec picks
+the densest installed one whose field range covers the image.
+
+---
+
+## 4. Formats, and why there are three
+
+The ASTAP databases come in three on-disk layouts, which arcsec reads transparently.
+You do not need to care, but `catalog verify` reports file counts by layout, so:
+
+| Layout | Grid | Used by |
+|---|---|---|
+| `.1476` | 1476 tiles, 36 equal-declination rings | D80, D50, D20, V50 |
+| `.290` | 290 tiles, 18 equal-area rings | G05, V05 |
+| `.001` | one all-sky file | W08 |
+
+Which database uses which is not predictable from its name — `v05` is `.290` even
+though it covers the same field range as the `.1476` D-series. `catalog` probes for
+whichever is present rather than assuming.
+
+See [plate-solving.md §9.1b](plate-solving.md#91b-the-three-astap-database-formats)
+for the format details.
+
+---
+
+## 5. Building your own
+
+Not yet possible, and worth being straight about it. Generating a catalogue from Gaia,
+or a pre-computed quad index, is designed and costed in
+[offline-index.md](offline-index.md) but not implemented. The plan's own conclusion is
+that it is **not** currently the highest-value work — read §1 there before starting.
+
+Until then, `arcsec catalog install` is the supported route, and it needs no external
+tools: downloads and unpacking (both `.zip` and `.deb`) are built in, so nothing has to
+be on `PATH`.
+
+---
+
+## 6. If you already have ASTAP databases
+
+Point arcsec at them and skip the download entirely:
+
+```bash
+export ARCSEC_CATALOG_DIR=~/star_database    # or wherever ASTAP keeps them
+arcsec catalog list                          # confirms what it found
+```
+
+arcsec reads ASTAP's files directly and does not modify them, so the two can share a
+directory.
