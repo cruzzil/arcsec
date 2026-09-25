@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
@@ -14,11 +21,10 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v7
-      # The toolchain comes from rust-toolchain.toml; rustup installs it on the
-      # first cargo invocation. Do not pin a version here as well - two places
-      # to change is how local and CI drifted apart in the first place.
-      - name: Show the toolchain
-        run: rustup show active-toolchain && cargo --version
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 

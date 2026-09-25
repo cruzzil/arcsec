@@ -1,0 +1,55 @@
+name: Publish to crates.io
+
+# Manual only. Run it from the Actions tab after the release tag exists, choosing the
+# tag (not a branch) in "Use workflow from". Leave "dry run" ticked first to see what
+# would be uploaded.
+#
+# Needs a crates.io API token with the publish-new and publish-update scopes, stored as
+# the CARGO_REGISTRY_TOKEN secret of the "crates-io" environment (Settings >
+# Environments), where it can be protected with required reviewers.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Dry run (package and verify, upload nothing)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish arcsec-core, then arcsec
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - name: Refuse to publish from a branch
+        if: ${{ !inputs.dry-run && github.ref_type != 'tag' }}
+        run: |
+          echo "::error::publish from a release tag, not ${{ github.ref_name }}"
+          exit 1
+
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `--workspace` publishes in dependency order - arcsec-core first - and waits for
+      # each crate to reach the index before publishing the one that depends on it. A
+      # dry run packages arcsec-core into a temporary local registry so the CLI can be
+      # verified against it before it is on crates.io.
+      - name: Dry run
+        if: ${{ inputs.dry-run }}
+        run: cargo publish --workspace --locked --dry-run
+
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --locked

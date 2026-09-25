@@ -5,12 +5,47 @@ members = [
     "arcsec-core",
 ]
 
+# Shared by both crates; each opts in with `field.workspace = true`. Bump `version`
+# here and in [workspace.dependencies] below together - see CONTRIBUTING.md.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# The oldest toolchain that builds the workspace. Set by the dependencies rather than
+# the code: rsfitsio declares 1.96. CI builds and tests on exactly this version, so
+# raise it deliberately when a dependency update requires it.
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/cruzzil/arcsec"
+
 # Prefer core:: and alloc:: over std:: wherever the item lives there. Nothing here is
 # no_std, but the distinction documents which parts of the code actually depend on the
 # operating system, and keeps that dependency from creeping into the pure maths.
 [workspace.lints.clippy]
 std_instead_of_core = "deny"
 std_instead_of_alloc = "deny"
+# A curated handful of pedantic lints both crates already pass. They are style-only;
+# anything that would rewrite float maths (suboptimal_flops, imprecise_flops,
+# manual_midpoint, cast lints) is deliberately absent, because results must stay
+# bit-identical to the benchmarked behaviour.
+borrow_as_ptr = "warn"
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+flat_map_option = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+items_after_statements = "warn"
+manual_let_else = "warn"
+manual_string_new = "warn"
+map_unwrap_or = "warn"
+match_wildcard_for_single_variants = "warn"
+needless_continue = "warn"
+ptr_as_ptr = "warn"
+redundant_closure_for_method_calls = "warn"
+redundant_else = "warn"
+ref_option_ref = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
 
 [profile.release]
 # Keep symbols and line tables in release builds: this is the profile we benchmark and
@@ -19,6 +54,18 @@ std_instead_of_alloc = "deny"
 debug = true
 strip = false
 
+# The binaries attached to GitHub Releases (.github/workflows/release.yml). The same
+# optimisation as release, which is what the benchmarks measure, minus the profiling
+# debug info. Symbol names are kept so a panic backtrace in a bug report is readable.
+# `cargo install` ignores workspace profiles and uses Cargo's default release profile.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = "debuginfo"
+
 [workspace.dependencies]
+# `version` alongside `path` so the CLI can be published: crates.io ignores `path` and
+# resolves this from the registry, so arcsec-core must be published first.
+arcsec-core = { version = "0.1.0", path = "arcsec-core" }
 log = { version = "0.4.34", features = ["std"] }
 env_logger = "0.11.11"

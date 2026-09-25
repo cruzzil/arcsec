@@ -1,11 +1,17 @@
 [package]
 name = "arcsec-core"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-description = "Core astrometry for the arcsec plate solver"
-repository = "https://github.com/cruzzil/arcsec"
-readme = "../README.md"
+description = "Plate-solving library behind the arcsec CLI: star detection, quad matching, blind solving and WCS fitting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/arcsec-core"
+readme = "README.md"
+keywords = ["astronomy", "astrometry", "plate-solving", "star-catalog", "wcs"]
+categories = ["science", "algorithms", "multimedia::images"]
+# Only what a build needs. The README is added automatically via `readme`.
+include = ["src/**/*.rs", "LICENSE"]
 
 [lints]
 workspace = true

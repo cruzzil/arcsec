@@ -1,11 +1,17 @@
 [package]
 name = "arcsec"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
 description = "Astrometric plate solver: find where a telescope was pointing from an image"
-repository = "https://github.com/cruzzil/arcsec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://github.com/cruzzil/arcsec/tree/main/docs"
 readme = "../README.md"
+keywords = ["astronomy", "astrometry", "plate-solving", "fits", "wcs"]
+categories = ["science", "command-line-utilities", "multimedia::images"]
+# Only what a build needs. The README is added automatically via `readme`.
+include = ["src/**/*.rs", "LICENSE"]
 
 [lints]
 workspace = true
@@ -14,7 +20,7 @@ workspace = true
 clap = "4.6.7"
 env_logger = { workspace = true }
 log = { workspace = true }
-arcsec-core = { path = "../arcsec-core" }
+arcsec-core = { workspace = true }
 rsfitsio = "0.470.2"
 bytemuck = "1.25"
 libc = "0.2"
