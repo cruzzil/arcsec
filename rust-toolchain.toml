@@ -1,14 +1,15 @@
-# Pinned to a dated nightly so local builds and CI agree. They once did not: a
-# clippy lint added in 1.98 (chunks_exact_to_as_chunks) failed CI while the local
-# toolchain was 1.97.1 and had no such lint, so it could not be reproduced before
-# pushing. rustup installs this automatically on the first cargo invocation.
-#
-# Nightly is for the newest lints only: the code uses no unstable features, and
-# CI also builds and tests on stable and on the declared MSRV (`rust-version`),
-# which is what `cargo install` users compile with.
+# Pinned so local builds and CI agree. They did not: a clippy lint added in
+# 1.98 (chunks_exact_to_as_chunks) failed CI while the local toolchain was
+# 1.97.1 and had no such lint, so it could not be reproduced before pushing.
+# rustup installs this automatically on the first cargo invocation.
 #
 # Bump deliberately, and run `cargo clippy --all-targets -- -D warnings`
-# afterwards: each nightly adds lints, and CI treats them as errors.
+# afterwards: each release adds lints, and CI treats them as errors.
 [toolchain]
-channel = "nightly-2026-09-24"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
+#
+# This file only selects the toolchain for work inside this repository; it has
+# no effect on anyone depending on or `cargo install`ing the crates. Nightly is
+# used ad hoc for its newer lints (`cargo +nightly clippy --all-targets`), and
+# CI runs that as an advisory job, but the code must not need nightly.
