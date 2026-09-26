@@ -14,10 +14,12 @@ works out where the telescope was pointing, writing a WCS solution.
 arcsec -f image.fits
 ```
 
-- **A drop-in replacement for `astap_cli`.** The same solving flags, stdout report,
-  `.wcs` and `.ini` files and exit codes, and it reads ASTAP's star databases. ASTAP's
-  single-dash spellings (`-fov`, `-ra`, `-spd`) work as well as `--fov`, `--ra`,
-  `--spd`, so an existing solving command line runs unchanged.
+- **A drop-in replacement for `astap_cli`**, so imaging software that drives ASTAP -
+  [N.I.N.A.](https://nighttime-imaging.eu/) in particular - can use arcsec instead,
+  unchanged. The same solving flags, stdout report, `.wcs` and `.ini` files and exit
+  codes, and it reads ASTAP's star databases. ASTAP's single-dash spellings (`-fov`,
+  `-ra`, `-spd`) work as well as `--fov`, `--ra`, `--spd`. See
+  [Using arcsec from N.I.N.A.](#using-arcsec-from-nina)
 - **Solves more images.** On a 103-image benchmark corpus with known answers, it
   solves 90 of the 98 solvable images correctly with no false positives, against 47
   for ASTAP given the same hints, in comparable time per image. Details in
@@ -71,10 +73,12 @@ cd arcsec
 cargo build --release          # binary at target/release/arcsec
 ```
 
-Building needs a C compiler (`cc` on Linux and macOS, the MSVC build tools on Windows),
-because a few dependencies of the download code compile bundled C. Nothing else is
-required: FITS support comes from [rsfitsio](https://crates.io/crates/rsfitsio), a Rust
-port of CFITSIO, so no system CFITSIO is needed.
+Building needs a C compiler (`cc` on Linux and macOS, the MSVC build tools on Windows)
+for one dependency: [`ring`](https://crates.io/crates/ring), the cryptography behind the
+HTTPS that `arcsec catalog install` downloads over, which compiles some C and assembly.
+Nothing else is required: FITS support comes from
+[rsfitsio](https://crates.io/crates/rsfitsio), a Rust port of CFITSIO, so no system
+CFITSIO is needed. The `arcsec-core` library on its own is pure Rust.
 
 ## Quick start
 
@@ -91,6 +95,24 @@ after an install you need neither `-d` nor `-D`. Override it with `--dir` or the
 `ARCSEC_CATALOG_DIR` environment variable. If you already have ASTAP databases, point
 `ARCSEC_CATALOG_DIR` (or `-d`) at them; both programs can share one directory. See
 [docs/catalogues.md](docs/catalogues.md) for which catalogue suits which field size.
+
+## Using arcsec from N.I.N.A.
+
+N.I.N.A. runs ASTAP as a command-line program and reads the `.ini` file it writes, so
+arcsec takes its place without any change on N.I.N.A.'s side:
+
+1. Install a star database for arcsec, e.g. `arcsec catalog install d50` (run
+   `arcsec catalog recommend --fov <your field height in degrees>` to choose). N.I.N.A.
+   does not pass `-d`, so arcsec uses its own catalogue directory. To reuse the
+   databases an existing ASTAP install already has instead, set `ARCSEC_CATALOG_DIR`
+   to ASTAP's folder (by default `C:\Program Files\astap`).
+2. In N.I.N.A., under **Options > Plate Solving**, choose **ASTAP** as the plate
+   solver (and as the blind solver, if you like), and set **ASTAP location** to
+   `arcsec.exe`.
+
+N.I.N.A.'s own settings - search radius, downsampling, maximum stars - are passed
+through as the corresponding ASTAP options. Its `-fov` is the image height, which is
+what arcsec takes it to be too.
 
 ## Solving
 

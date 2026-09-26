@@ -883,8 +883,8 @@ alternative **triangle** matcher (§4.1).
                       │ normalise: replace NaN/Inf; rescale      │
                       │   float data spanning < 4096 counts      │
                       │ RA/Dec hint from --ra/--spd, else header │
-                      │ pixel scale from --fov, else header      │
-                      │   optics keywords, else assume 1″/px     │
+                      │ pixel scale from --fov (image height),   │
+                      │   else header optics, else 1″/px         │
                       │ FOV = scale × max(width, height)         │
                       └────────────────────┬─────────────────────┘
                                            │
@@ -1303,11 +1303,12 @@ cannot succeed and the failure mode gives the user no hint that the scale was th
 There is no scale search, no scale refinement, and no warning. astrometry.net sweeps scale
 bands by design; tetra3 takes an `fov_estimate` with an explicit `fov_max_error`.
 
-Still open as of 0.1.0. A related trap: the FOV is computed from the **larger** image
-dimension, both when derived from the header and when `--fov` is given (the pixel scale is
-`--fov / max(width, height)`). ASTAP documents `-fov` as the image *height*, so on a
-landscape frame an ASTAP-style `-fov` value is read as the width and the scale comes out
-low by the aspect ratio.
+Still open as of 0.1.0. A related trap, now fixed: `--fov` used to be read as the
+**larger** image dimension (pixel scale `--fov / max(width, height)`), but ASTAP defines
+`-fov` as the image *height* and N.I.N.A. sends exactly that (`FoVH`), so on a landscape
+frame the scale came out low by the aspect ratio. The pixel scale is now
+`--fov / height`; the internal field size used for database selection and the search
+window is still the larger dimension.
 
 ### 11.4 The plate fit uses quad centroids, not stars — FIXED 2026-09-02
 

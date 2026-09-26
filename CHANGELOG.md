@@ -30,6 +30,11 @@ First public release.
 - `--method tetra` (experimental): an alternative matcher using three-star triangles
   instead of quads. It currently solves far fewer images than the default (20 of the 98
   solvable benchmark images, against 90) and is not recommended yet.
+- **N.I.N.A. support**: arcsec can be set as N.I.N.A.'s "ASTAP" solver. `--fov` is the
+  image height, as N.I.N.A. sends it; the `.ini` carries the keys N.I.N.A. reads
+  (`CRPIX1/2` and the `CD` matrix, as well as ASTAP's others); and the Windows
+  executable has a version resource, without which N.I.N.A. refuses automatic
+  downsampling.
 - **Input formats**: FITS, XISF (PixInsight) and ASDF (Roman/astropy), detected from
   the file's contents rather than its extension. Pointing and pixel scale are taken
   from the image's metadata where present and interpreted the same way for every

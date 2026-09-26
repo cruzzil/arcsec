@@ -21,8 +21,8 @@ Two other toolchains matter:
   runs this as an advisory job that does not block merging. The code must never
   require nightly.
 
-There are no system dependencies beyond a C compiler, which a few dependencies use
-to build bundled C code.
+There are no system dependencies beyond a C compiler, which `ring` (the TLS
+cryptography behind the catalogue downloader) uses to build bundled C and assembly.
 
 ## Building and testing
 
