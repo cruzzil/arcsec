@@ -69,6 +69,17 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked --verbose
 
+      # N.I.N.A. reads the executable's FileVersion and, when it is missing, refuses
+      # to run it with automatic downsampling (its default). build.rs embeds it and
+      # only warns if it cannot, so assert it here.
+      - name: Check the Windows version resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = (Get-Item target/debug/arcsec.exe).VersionInfo
+          $v | Format-List FileVersion, ProductVersion, FileDescription
+          if (-not $v.FileVersion) { throw "arcsec.exe has no FileVersion resource" }
+
       # The solver itself needs star catalogues and a corpus that are not in the
       # repo, so CI cannot check a solve. These paths need no data and are the
       # ones a user hits first when something is wrong.

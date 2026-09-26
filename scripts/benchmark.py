@@ -264,6 +264,8 @@ def run_one(entry, args):
 
     ps_deg = truth.pixscale()
     fov_deg = ps_deg * max(naxis1, naxis2)
+    # What -fov means to ASTAP (and what N.I.N.A. sends): the image height.
+    fov_height_deg = ps_deg * naxis2
     cra, cdec = truth.pix2sky((naxis1 + 1) / 2.0, (naxis2 + 1) / 2.0)
     res["fov_deg"] = round(fov_deg, 4)
     res["pixscale_as"] = round(ps_deg * 3600.0, 3)
@@ -285,7 +287,7 @@ def run_one(entry, args):
     cmd += [
         "--ra", f"{(hint_ra % 360.0) / 15.0:.9f}",
         "--spd", f"{hint_dec + 90.0:.9f}",
-        "--fov", f"{fov_deg:.9f}",
+        "--fov", f"{fov_height_deg:.9f}",
         "-r", str(args.radius),
         "-o", out_base,
     ]
@@ -308,7 +310,7 @@ def run_one(entry, args):
 
     def with_astap(r):
         if args.astap:
-            r.update(run_astap(args, path, hint_ra, hint_dec, fov_deg,
+            r.update(run_astap(args, path, hint_ra, hint_dec, fov_height_deg,
                                out_base + "_astap", truth, naxis1, naxis2))
         return r
 
@@ -340,7 +342,7 @@ def run_one(entry, args):
     res["rot_err_deg"] = round(min(dr, 360.0 - dr), 4)
 
     if args.astap:
-        res.update(run_astap(args, path, hint_ra, hint_dec, fov_deg,
+        res.update(run_astap(args, path, hint_ra, hint_dec, fov_height_deg,
                              out_base + "_astap", truth, naxis1, naxis2))
 
     ini = out_base + ".ini"

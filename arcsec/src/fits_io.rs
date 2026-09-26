@@ -295,15 +295,34 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
 }
 
 /// Write an `.ini` summary file with key=value pairs (ASTAP-compatible layout).
-pub fn write_ini_file(path: &Path, wcs: &WcsSolution, nstars: usize) -> std::io::Result<()> {
+///
+/// The keys and their order follow ASTAP's `.ini`. N.I.N.A. reads `CRPIX1/2` and the
+/// `CD` matrix from it unconditionally (and nothing from the `.wcs`), so a solve
+/// without them is a failed solve there. `NSTARS`, `NQUADS` and `RMS` are arcsec's
+/// own additions; readers look keys up by name.
+pub fn write_ini_file(
+    path: &Path,
+    wcs: &WcsSolution,
+    nstars: usize,
+    cmdline: &str,
+) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
     writeln!(f, "PLTSOLVD=T")?;
+    writeln!(f, "CRPIX1={:.13E}", wcs.crpix1)?;
+    writeln!(f, "CRPIX2={:.13E}", wcs.crpix2)?;
     writeln!(f, "CRVAL1={:.9}", wcs.ra0.to_degrees())?;
     writeln!(f, "CRVAL2={:.9}", wcs.dec0.to_degrees())?;
     writeln!(f, "CDELT1={:.13E}", wcs.cdelt1)?;
     writeln!(f, "CDELT2={:.13E}", wcs.cdelt2)?;
+    // One rotation, as in the .wcs file, which also writes it as both.
+    writeln!(f, "CROTA1={:.4}", wcs.crota2)?;
     writeln!(f, "CROTA2={:.4}", wcs.crota2)?;
+    writeln!(f, "CD1_1={:.13E}", wcs.cd1_1)?;
+    writeln!(f, "CD1_2={:.13E}", wcs.cd1_2)?;
+    writeln!(f, "CD2_1={:.13E}", wcs.cd2_1)?;
+    writeln!(f, "CD2_2={:.13E}", wcs.cd2_2)?;
+    writeln!(f, "CMDLINE={cmdline}")?;
     writeln!(f, "NSTARS={nstars}")?;
     writeln!(f, "NQUADS={}", wcs.stars_matched)?;
     writeln!(f, "RMS={:.4}", wcs.residual_rms)?;
@@ -410,4 +429,85 @@ pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
         return Err(format!("update_fits_wcs failed: status {status}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcsec_core::types::PlateConstants;
+
+    fn solution() -> WcsSolution {
+        WcsSolution {
+            ra0: 15f64.to_radians(),
+            dec0: 0.0,
+            crpix1: 1450.5,
+            crpix2: 1450.5,
+            cd1_1: -3.448e-4,
+            cd1_2: -1.8e-8,
+            cd2_1: -1.1e-8,
+            cd2_2: 3.448e-4,
+            cdelt1: -3.448e-4,
+            cdelt2: 3.448e-4,
+            crota2: -0.0019,
+            residual_rms: 0.7,
+            stars_matched: 144,
+            plate: PlateConstants {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 1.0,
+                f: 0.0,
+            },
+            mag_limit: 20.0,
+            search_dist_deg: 0.0,
+            step_distances: Vec::new(),
+            raw_matches: 144,
+        }
+    }
+
+    /// Parse an .ini the way N.I.N.A.'s ASTAP solver does: split each non-blank line
+    /// on the first `=`, into a dictionary that rejects duplicate keys.
+    fn read_like_nina(path: &Path) -> std::collections::HashMap<String, String> {
+        let mut dict = std::collections::HashMap::new();
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let (k, v) = line.split_once('=').expect("every line has a '='");
+            assert!(
+                dict.insert(k.to_string(), v.to_string()).is_none(),
+                "duplicate {k}"
+            );
+        }
+        dict
+    }
+
+    #[test]
+    fn solved_ini_has_every_key_nina_reads() {
+        let path = std::env::temp_dir().join(format!("arcsec_ini_{}.ini", std::process::id()));
+        write_ini_file(&path, &solution(), 500, "arcsec -f x.fits -fov 1").unwrap();
+        let dict = read_like_nina(&path);
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(dict["PLTSOLVD"], "T");
+        // N.I.N.A. indexes these directly and parses them as invariant-culture doubles.
+        for key in [
+            "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2", "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+        ] {
+            let v = dict.get(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert!(v.parse::<f64>().is_ok_and(f64::is_finite), "{key}={v}");
+        }
+        assert_eq!(dict["CRPIX1"].parse::<f64>().unwrap(), 1450.5);
+        assert_eq!(dict["CMDLINE"], "arcsec -f x.fits -fov 1");
+    }
+
+    #[test]
+    fn unsolved_ini_says_so() {
+        let path = std::env::temp_dir().join(format!("arcsec_unini_{}.ini", std::process::id()));
+        write_unsolved_ini_file(&path, "arcsec -f x.fits").unwrap();
+        let dict = read_like_nina(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(dict["PLTSOLVD"], "F");
+    }
 }

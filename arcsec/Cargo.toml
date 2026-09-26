@@ -11,7 +11,7 @@ readme = "../README.md"
 keywords = ["astronomy", "astrometry", "plate-solving", "fits", "wcs"]
 categories = ["science", "command-line-utilities", "multimedia::images"]
 # Only what a build needs. The README is added automatically via `readme`.
-include = ["src/**/*.rs", "LICENSE"]
+include = ["src/**/*.rs", "build.rs", "LICENSE"]
 
 [lints]
 workspace = true
@@ -25,9 +25,15 @@ rsfitsio = "0.470.2"
 bytemuck = "1.25"
 libc = "0.2"
 ureq = "3.4.2"
-zip = "8.6.0"
+# ASTAP's catalogue zips are all deflate (checked 2026-09-26), so only that
+# method is enabled. The defaults add zstd, bzip2, lzma, ppmd and AES, and zstd
+# compiles bundled C.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4.46"
 lzma-rs = "0.3.0"
 xisf = "0.5.1"
 asdf-rs = "0.2.1"
 
+# Gives arcsec.exe a Windows version resource; see build.rs.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"

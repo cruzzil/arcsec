@@ -122,12 +122,18 @@ fn main() {
 
     // ── Pixel scale and FOV ──────────────────────────────────────────────────
     // Priority: explicit --fov flag > header FOCALLEN/XPIXSZ > 1"/px fallback.
+    //
+    // `--fov` is the image *height*, as ASTAP defines it and as N.I.N.A. sends it
+    // (`FoVH`). `fov_rad` below is the field along the longer side, which is what
+    // database selection and the search window use; for a square image the two are
+    // the same number.
     let fov_hint = matches.get_one::<f64>("fov").copied().unwrap_or(0.0);
     let naxis = img.width.max(img.height) as f64;
+    let height = img.height as f64;
     let (arcsec_per_px, fov_rad) = if fov_hint > 0.0 {
-        let fov = fov_hint * PI / 180.0;
-        let ps = fov.to_degrees() * 3600.0 / naxis;
-        (ps, fov)
+        let fov_height = fov_hint * PI / 180.0;
+        let ps = fov_height.to_degrees() * 3600.0 / height;
+        (ps, fov_height * (naxis / height))
     } else {
         let ps = image_io::read_pixel_scale(file).unwrap_or(1.0);
         let fov = naxis * ps / 3600.0 * PI / 180.0;
@@ -178,7 +184,10 @@ fn main() {
         "Start position: {}",
         format_radec(ra_hint_rad, dec_hint_rad)
     );
-    println!("Image height: {:.2} degrees", fov_rad.to_degrees());
+    println!(
+        "Image height: {:.2} degrees",
+        (fov_rad * (height / naxis)).to_degrees()
+    );
     println!("Binning: {binning}x{binning}");
     println!(
         "Image dimensions: {}x{}",
@@ -220,7 +229,8 @@ fn main() {
                 hfd_min,
                 max_stars,
                 binning,
-                fov_deg: fov_rad.to_degrees(),
+                // The blind scale filter maps this through the image height.
+                fov_deg: (fov_rad * (height / naxis)).to_degrees(),
             };
             match blind::estimate_position(&img, &index_files, &params) {
                 BlindOutcome::Found(ra, dec) => {
@@ -283,7 +293,7 @@ fn main() {
     if let Err(e) = fits_io::write_wcs_file(&wcs_path, &wcs) {
         eprintln!("Warning: could not write {}: {e}", wcs_path.display());
     }
-    if let Err(e) = fits_io::write_ini_file(ini_path, &wcs, max_stars) {
+    if let Err(e) = fits_io::write_ini_file(ini_path, &wcs, max_stars, &unsolved.cmdline) {
         eprintln!("Warning: could not write {}: {e}", ini_path.display());
     }
 

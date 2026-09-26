@@ -109,6 +109,13 @@ jobs:
       # for profiling.
       - name: Build
         run: cargo build --profile dist --locked -p arcsec --target ${{ matrix.target }}
+      # N.I.N.A. needs a FileVersion on the executable (see arcsec/build.rs).
+      - name: Check the Windows version resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = (Get-Item target/${{ matrix.target }}/dist/arcsec.exe).VersionInfo
+          if (-not $v.FileVersion) { throw "arcsec.exe has no FileVersion resource" }
 
       - name: Package
         id: package
