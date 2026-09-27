@@ -108,6 +108,9 @@ arcsec takes its place without any change on N.I.N.A.'s side:
    to ASTAP's folder (by default `C:\Program Files\astap`).
 2. In N.I.N.A., under **Options > Plate Solving**, choose **ASTAP** as the plate
    solver (and as the blind solver, if you like), and set **ASTAP location** to
+   `arcsec.exe`. Type or paste the full path into the field, e.g.
+   `C:\Users\<you>\.cargo\bin\arcsec.exe` after `cargo install`: N.I.N.A.'s file
+   browser for this setting only shows files named `astap.exe`, so it cannot select
    `arcsec.exe`.
 
 N.I.N.A.'s own settings - search radius, downsampling, maximum stars - are passed
