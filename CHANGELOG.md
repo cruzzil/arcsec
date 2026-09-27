@@ -11,6 +11,27 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rotation error when the hint is off-centre.** The plate was fitted in the tangent
+  plane of the search position that matched rather than at the image centre, so the
+  reported rotation (and so the corners) drifted with the distance from the hint and
+  with declination: 0.1° at Dec −20 to 1.7° at Dec −80 with the hint 0.3 fields off,
+  and up to 1600″ at the corners of a 10° field. The centre position was unaffected.
+  Solves are now refitted at the image centre. With the benchmark's hint 0.3 fields off,
+  false positives fall from 47 to 0 and correct tier-A solves rise from 8 to 55.
+- `--method tetra`: outlier clipping gave up when gross outliers skewed its first fit,
+  and so abandoned positions it could solve. Tetra now solves 29 of the 98 solvable
+  benchmark images, up from 20.
+- Blind solving builds its patterns from the brightest detected stars on sparse fields
+  too; they were taken in scan order when fewer than `-s` stars were detected.
+
+### Added
+
+- Much wider test coverage of `arcsec-core` (library lines 55% to 96%), including
+  end-to-end solves against synthetic catalogues in all three database formats and
+  synthetic Astrometry.net indexes.
+
 ## [0.1.0] - 2026-09-27
 
 First public release.

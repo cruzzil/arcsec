@@ -59,7 +59,12 @@ scripts/fetch-test-images.sh                 # the 103-image corpus, about 2.2 G
 arcsec catalog install d80                   # or point --db at an existing ASTAP directory
 cargo build --release
 scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db
+scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db --offset-hint 0.3
 ```
+
+The second run starts each solve 0.3 fields away from the true centre, as a mount's
+reported position would. A perfect hint once hid a rotation error that only showed up
+off-centre (docs/test-images.md §6.7).
 
 `benchmark.py` scores every solve against the true WCS at the centre and all four
 corners, and counts any solve more than 5″ out at a corner as a false positive. The
