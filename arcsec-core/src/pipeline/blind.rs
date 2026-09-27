@@ -606,6 +606,11 @@ pub fn blind_solve(
         img.height,
     );
     let mut stars = stars;
+    // Patterns are built from the first stars in the list, which must therefore be
+    // the brightest. Detection only sorts by SNR when it has more than `max_stars`
+    // to trim; below that the list is in scan order (cascade level, then rows), and
+    // a sparse field would build every pattern from the top strip of the frame.
+    stars.0.sort_by(|a, b| b.snr.total_cmp(&a.snr));
     if stars_raw > params.max_stars {
         stars.0.truncate((params.max_stars / 2).max(50));
     }
@@ -1190,7 +1195,6 @@ mod tests {
     /// index's 210 in-field quads has all four stars among the 30 used, and the
     /// best score is 5.
     #[test]
-    #[ignore = "bug: blind_solve takes the first 30 detected stars, which are unsorted when fewer than max_stars are found"]
     fn blind_solve_uses_the_brightest_stars_when_few_are_found() {
         let t = truth(0.0, false);
         let (img, raw) = blind_scene(&t, 4, 33);

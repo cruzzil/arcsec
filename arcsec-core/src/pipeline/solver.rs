@@ -3,12 +3,13 @@
 use core::f64::consts::PI;
 use std::path::PathBuf;
 
+use crate::catalog::CatalogStar;
 use crate::catalog::read_catalog_stars;
 use crate::detection::get_background;
 use crate::detection::stars::find_stars_with_background;
 use crate::error::{ArcsecError, Result};
-use crate::math::coords::{ang_sep, equatorial_standard};
-use crate::math::lsq::solve_plate_constants;
+use crate::math::coords::{ang_sep, equatorial_standard, standard_equatorial};
+use crate::math::lsq::{fit_affine, solve_plate_constants};
 use crate::quads::{
     TETRA_TOL_FACTOR, bijective_filter, build_quads, build_quads_presorted, build_triangles,
     extract_star_pairs, extract_triangle_pairs, filter_by_scale, filter_triangles_by_scale,
@@ -81,7 +82,10 @@ fn sigma_clip_pairs(
         if img_pos.len() < min_count.max(3) {
             break;
         }
-        let Ok(plate) = solve_plate_constants(&img_pos, &cat_pos) else {
+        // Unchecked: the first fit is made on the contaminated set, and gross
+        // outliers can skew it past solve_plate_constants' scale check even though
+        // clipping them is exactly what would fix it.
+        let Ok(plate) = fit_affine(&img_pos, &cat_pos) else {
             break;
         };
         let residuals: Vec<f64> = img_pos
@@ -98,7 +102,14 @@ fn sigma_clip_pairs(
             first_pass = false;
             // 10 px in catalog-arcsec: generous cut for large FP residuals on first pass.
             let cdelt = (plate.a.powi(2) + plate.d.powi(2)).sqrt();
-            (10.0 * cdelt).max(10.0)
+            // Gross outliers drag a least-squares fit towards themselves and inflate
+            // every residual, so a fixed cut can keep them. The median residual is
+            // not moved by a minority of outliers: allow 3 sigma of it (1.4826 x the
+            // median absolute residual estimates sigma) when that is larger.
+            let mut sorted = residuals.clone();
+            sorted.sort_unstable_by(f64::total_cmp);
+            let median = sorted[sorted.len() / 2];
+            (10.0 * cdelt).max(10.0).max(3.0 * 1.4826 * median)
         } else {
             sigma * rms
         };
@@ -473,6 +484,9 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
     };
     log::info!("Verified {n_verified} stars against the catalogue, residual {rms:.2}\"");
 
+    let (plate, ra_db, dec_db, n_verified, rms) =
+        recentre(ctx, &cat_raw, plate, ra_db, dec_db, n_verified, rms);
+
     PositionTry {
         sep_deg: Some(sep_deg),
         outcome: Some(PositionOutcome {
@@ -488,6 +502,101 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             mag_limit,
         }),
     }
+}
+
+/// Refit a verified plate in the tangent plane at the image centre.
+///
+/// The plate constants are a linear map from pixels to the tangent plane at the
+/// spiral position the catalogue was projected about. Pixels map linearly onto a
+/// tangent plane only at the optical axis, so away from it the fit absorbs the
+/// projection's curvature as a rotation and shear, which grow with the distance
+/// from the field and with declination. Star-level RMS stays small, because the fit
+/// is good *in that plane*, but the CD matrix derived from it is wrong at the image
+/// centre: with the hint 0.3 fields off, most corpus solves were out by 5-1600" at
+/// the corners.
+///
+/// So once a position verifies, move the tangent point to the image centre, pair
+/// stars as the verified plate predicts them, fit those pairs in the new plane,
+/// and verify again. Twice, since the centre moves slightly with
+/// the new fit. If a pass fails to verify, the previous solution is kept: this can
+/// only improve a solve, never lose one.
+fn recentre(
+    ctx: &SpiralCtx<'_>,
+    cat_raw: &[CatalogStar],
+    mut plate: PlateConstants,
+    mut ra_db: f64,
+    mut dec_db: f64,
+    mut n_verified: usize,
+    mut rms: f64,
+) -> (PlateConstants, f64, f64, usize, f64) {
+    let (w, h) = (ctx.img.width as f64, ctx.img.height as f64);
+    let (cx, cy) = ((w - 1.0) * 0.5, (h - 1.0) * 0.5);
+    let apply =
+        |p: &PlateConstants, x: f64, y: f64| (p.a * x + p.b * y + p.c, p.d * x + p.e * y + p.f);
+
+    for _ in 0..2 {
+        let (xs, ys) = apply(&plate, cx, cy);
+        // Already centred to well under a milliarcsecond: nothing to gain.
+        if xs.hypot(ys) < 1e-3 {
+            break;
+        }
+        let (ra0, dec0) = standard_equatorial(ra_db, dec_db, xs, ys, 1.0);
+
+        // Starting plate for the new tangent plane. Mapping one tangent plane onto
+        // another is far from linear over a wide field (a 10-degree field 3 degrees
+        // off moves by ~65" under a straight-line fit), so rather than carry the
+        // plate across, pair stars exactly as the verified plate predicts them and
+        // fit those pairs against their positions in the new plane.
+        let det = plate.a * plate.e - plate.b * plate.d;
+        if det.abs() < 1e-12 {
+            break;
+        }
+        let r2 = VERIFY_RADII[0] * VERIFY_RADII[0];
+        let mut used = vec![false; ctx.stars.len()];
+        let mut img_pos = Vec::new();
+        let mut new_pos = Vec::new();
+        let mut cat = Vec::with_capacity(cat_raw.len());
+        for s in cat_raw {
+            let (nx, ny) = equatorial_standard(ra0, dec0, s.ra, s.dec, 1.0);
+            cat.push(Star {
+                x: nx,
+                y: ny,
+                snr: 1.0,
+                hfd: 2.0,
+            });
+            let (ox, oy) = equatorial_standard(ra_db, dec_db, s.ra, s.dec, 1.0);
+            let (dx, dy) = (ox - plate.c, oy - plate.f);
+            let px = (plate.e * dx - plate.b * dy) / det;
+            let py = (-plate.d * dx + plate.a * dy) / det;
+            let nearest = ctx
+                .stars
+                .0
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| !used[i])
+                .map(|(i, st)| (i, (st.x - px).powi(2) + (st.y - py).powi(2)))
+                .filter(|&(_, d2)| d2 < r2)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((i, _)) = nearest {
+                used[i] = true;
+                img_pos.push((ctx.stars.0[i].x, ctx.stars.0[i].y));
+                new_pos.push((nx, ny));
+            }
+        }
+        let Ok(guess) = solve_plate_constants(&img_pos, &new_pos) else {
+            break;
+        };
+        let cat = StarList(cat);
+        let Some((p, n, r)) =
+            verify_and_refit(ctx.stars, &cat, &guess, ctx.img.width, ctx.img.height)
+        else {
+            log::info!("Re-centring on the image centre did not verify; keeping the fit.");
+            break;
+        };
+        log::info!("Re-centred on the image centre: verified {n} stars, residual {r:.2}\"");
+        (plate, ra_db, dec_db, n_verified, rms) = (p, ra0, dec0, n, r);
+    }
+    (plate, ra_db, dec_db, n_verified, rms)
 }
 
 /// Solve the WCS for an image against an ASTAP star database.
@@ -993,7 +1102,6 @@ mod tests {
     /// fails the same check, and abandons a position whose 40 good pairs would
     /// have solved it. The clipper does not work in exactly the case it exists for.
     #[test]
-    #[ignore = "bug: sigma_clip_pairs returns everything unclipped when the contaminated first fit fails the scale-ratio check"]
     fn sigma_clip_pairs_rejects_gross_outliers() {
         let (img, cat) =
             pairs_with_outliers(|k, _| (1000.0 + 150.0 * k as f64, -900.0 + 70.0 * k as f64));
@@ -1253,7 +1361,6 @@ mod tests {
     /// estimate can be a whole field off, so this is well inside normal use. 5" is
     /// the corner error `scripts/benchmark.py` counts as a false positive.
     #[test]
-    #[ignore = "bug: derive_wcs re-centres CRVAL without re-projecting, so accuracy degrades with hint offset"]
     fn accuracy_does_not_depend_on_the_hint_offset() {
         let truth = TruthWcs::new(deg(150.0), deg(30.0), 15.0, 20.0, false, 360, 300);
         let s = scene(truth, Db::Areas1476, 120, 21);
