@@ -198,4 +198,62 @@ mod tests {
         assert!(x < 0.0, "+RA (east) should give -x, got {x}");
         assert!(y.abs() < 0.001, "y should be ~0, got {y}");
     }
+
+    /// Against the textbook gnomonic projection in `test_support` (xi east, eta
+    /// north): `equatorial_standard` is the same projection with x = -xi, for
+    /// tangent points everywhere including both poles and across RA 0, and the
+    /// round trip closes to micro-arcseconds.
+    #[test]
+    fn matches_an_independent_projection_everywhere() {
+        use crate::test_support::{Rng, gnomonic, separation};
+        let mut rng = Rng::new(17);
+        let rad_per_arcsec = PI / (180.0 * 3600.0);
+        let mut n = 0;
+        for k in 0..3000 {
+            // Tangent points: uniform, plus both poles exactly and RA ≈ 0/2π.
+            let (ra0, dec0) = match k {
+                0 => (1.0, PI / 2.0),
+                1 => (4.0, -PI / 2.0),
+                2 => (2.0 * PI - 1e-12, 0.3),
+                _ => (rng.range(0.0, 2.0 * PI), rng.range(-1.0, 1.0).asin()),
+            };
+            // A star up to 10° away in a random direction.
+            let (xi, eta) = (rng.range(-0.17, 0.17), rng.range(-0.17, 0.17));
+            let (ra, dec) = crate::test_support::inverse_gnomonic(ra0, dec0, xi, eta);
+
+            let (x, y) = equatorial_standard(ra0, dec0, ra, dec, 1.0);
+            let (xi2, eta2) = gnomonic(ra0, dec0, ra, dec).unwrap();
+            assert!(
+                (x * rad_per_arcsec + xi2).abs() < 1e-12
+                    && (y * rad_per_arcsec - eta2).abs() < 1e-12,
+                "tangent ({ra0}, {dec0}): ({x}, {y}) vs ({xi2}, {eta2})"
+            );
+            let (ra3, dec3) = standard_equatorial(ra0, dec0, x, y, 1.0);
+            assert!((0.0..2.0 * PI).contains(&ra3));
+            assert!(
+                separation(ra, dec, ra3, dec3) < 1e-11,
+                "round trip at ({ra0}, {dec0})"
+            );
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn ang_sep_is_a_metric_on_the_sphere() {
+        use crate::test_support::{Rng, separation};
+        let mut rng = Rng::new(18);
+        for _ in 0..1000 {
+            let p: Vec<(f64, f64)> = (0..3)
+                .map(|_| (rng.range(0.0, 2.0 * PI), rng.range(-1.0, 1.0).asin()))
+                .collect();
+            let d = |i: usize, j: usize| ang_sep(p[i].0, p[i].1, p[j].0, p[j].1);
+            assert!((d(0, 1) - d(1, 0)).abs() < 1e-12);
+            assert!(d(0, 2) <= d(0, 1) + d(1, 2) + 1e-12);
+            assert!((0.0..=PI).contains(&d(0, 1)));
+            // Agrees with the haversine form away from the tiny-angle regime.
+            assert!((d(0, 1) - separation(p[0].0, p[0].1, p[1].0, p[1].1)).abs() < 1e-7);
+        }
+        assert!((ang_sep(0.0, PI / 2.0, 3.0, -PI / 2.0) - PI).abs() < 1e-12);
+    }
 }

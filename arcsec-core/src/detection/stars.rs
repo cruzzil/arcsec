@@ -1075,4 +1075,85 @@ mod tests {
             assert!(stars.is_empty(), "{w}x{h}");
         }
     }
+
+    /// A frame tall enough to be split into detection bands (the split needs 4 ×
+    /// `BAND_OVERLAP` rows per band), with a star every 25 rows so several sit on
+    /// or near every band boundary. Each must be found exactly once, where it is,
+    /// and the banded pass must agree with the serial one.
+    #[test]
+    fn banded_detection_finds_each_star_once() {
+        let (w, h) = (120usize, 2000usize);
+        let mut img = make_background_image(w, h, 1000.0, 10.0);
+        let mut truth = Vec::new();
+        for k in 0..78 {
+            // Whole-pixel centres: the `add_star` helper samples on integer offsets.
+            let (x, y) = (30.0 + (k % 3) as f64 * 30.0, 20.0 + k as f64 * 25.0);
+            add_star(&mut img, x, y, 1.5, 8000.0);
+            truth.push((x, y));
+        }
+        let bg = get_background(&img, 500);
+        let thr = Thresholds {
+            background: bg.mean,
+            noise: bg.noise,
+            detection_level: 30.0 * bg.noise,
+            hfd_min: 0.8,
+        };
+
+        let mut banded = Vec::new();
+        detect_pass(
+            &img,
+            &mut vec![0u8; w * h],
+            thr,
+            Region::inset(&img),
+            &mut banded,
+        );
+        let mut serial = Vec::new();
+        detect_pass_serial(
+            &img,
+            &mut vec![0u8; w * h],
+            thr,
+            Region::inset(&img),
+            &mut serial,
+        );
+
+        for (name, found) in [("banded", &banded), ("serial", &serial)] {
+            assert_eq!(found.len(), truth.len(), "{name}");
+            for &(x, y) in &truth {
+                let n = found
+                    .iter()
+                    .filter(|s| (s.x - x).abs() < 0.2 && (s.y - y).abs() < 0.2)
+                    .count();
+                assert_eq!(n, 1, "{name}: star at ({x}, {y}) found {n} times");
+            }
+        }
+
+        // The public entry point marks what it found, so a second cascade level
+        // does not find the same stars again.
+        let (stars, raw) = find_stars_with_background(&img, &bg, 0.8, 500, w, h);
+        assert_eq!(raw, truth.len());
+        assert_eq!(stars.len(), truth.len());
+    }
+
+    /// With more candidates than `max_stars`, the list is trimmed to the highest
+    /// SNR and sorted by it; with fewer, it is returned in detection order.
+    #[test]
+    fn trimming_keeps_the_highest_snr() {
+        let mut img = make_background_image(300, 300, 1000.0, 10.0);
+        for k in 0..30 {
+            let (x, y) = (30.0 + (k % 6) as f64 * 45.0, 30.0 + (k / 6) as f64 * 55.0);
+            add_star(&mut img, x, y, 1.5, 500.0 + 300.0 * k as f32);
+        }
+        let bg = get_background(&img, 10);
+        let (top, raw) = find_stars_with_background(&img, &bg, 0.8, 10, 300, 300);
+        // The cascade stops at the first level that finds enough, so `raw` counts
+        // that level's stars, not every star in the frame.
+        assert!(raw > 10 && raw <= 30, "raw {raw}");
+        assert_eq!(top.len(), 10);
+        assert!(top.0.windows(2).all(|w| w[0].snr >= w[1].snr));
+        // The ten kept are the ten brightest planted, k = 20..30.
+        for s in &top.0 {
+            let k = ((s.y - 30.0) / 55.0).round() * 6.0 + ((s.x - 30.0) / 45.0).round();
+            assert!(k >= 20.0, "kept k = {k}: {s:?}");
+        }
+    }
 }

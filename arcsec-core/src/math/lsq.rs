@@ -262,4 +262,70 @@ mod tests {
         ));
         assert!(matches!(lsq_fit(&[], &[]), Err(ArcsecError::Singular)));
     }
+
+    /// A known similarity (with a flip) plus Gaussian noise: the fit recovers the
+    /// transform to within what the noise allows, and its residuals match the
+    /// noise level.
+    #[test]
+    fn recovers_a_noisy_similarity_transform() {
+        let mut rng = crate::test_support::Rng::new(4);
+        let (s, r) = (2.37_f64, -0.83_f64);
+        let truth = [
+            -s * r.cos(),
+            s * r.sin(),
+            1234.5,
+            s * r.sin(),
+            s * r.cos(),
+            -987.6,
+        ];
+        let sigma = 0.5;
+        let img: Vec<(f64, f64)> = (0..400)
+            .map(|_| (rng.range(0.0, 4000.0), rng.range(0.0, 3000.0)))
+            .collect();
+        let cat: Vec<(f64, f64)> = img
+            .iter()
+            .map(|&(x, y)| {
+                (
+                    truth[0] * x + truth[1] * y + truth[2] + sigma * rng.gauss(),
+                    truth[3] * x + truth[4] * y + truth[5] + sigma * rng.gauss(),
+                )
+            })
+            .collect();
+        let p = solve_plate_constants(&img, &cat).unwrap();
+        let got = [p.a, p.b, p.c, p.d, p.e, p.f];
+        // Slope errors ~ σ / (√n · spread) ≈ 1e-5; offsets ~ σ·few/√n ≈ 0.1.
+        for k in [0, 1, 3, 4] {
+            assert_close(got[k], truth[k], 1e-4);
+        }
+        assert_close(p.c, truth[2], 0.3);
+        assert_close(p.f, truth[5], 0.3);
+        let rms = (img
+            .iter()
+            .zip(&cat)
+            .map(|(&(x, y), &(u, v))| {
+                (p.a * x + p.b * y + p.c - u).powi(2) + (p.d * x + p.e * y + p.f - v).powi(2)
+            })
+            .sum::<f64>()
+            / img.len() as f64
+            / 2.0)
+            .sqrt();
+        assert!((rms - sigma).abs() < 0.05, "per-axis rms {rms}");
+    }
+
+    /// Exactly three non-collinear points determine the transform exactly.
+    #[test]
+    fn three_points_are_enough() {
+        let img = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)];
+        let cat = [(5.0, 5.0), (5.0, 25.0), (-15.0, 5.0)]; // 90° rotation, scale 2
+        let p = solve_plate_constants(&img, &cat).unwrap();
+        assert_close(p.a, 0.0, 1e-12);
+        assert_close(p.b, -2.0, 1e-12);
+        assert_close(p.d, 2.0, 1e-12);
+        assert_close(p.e, 0.0, 1e-12);
+        assert_close(p.c, 5.0, 1e-12);
+        assert_close(p.f, 5.0, 1e-12);
+        // Collinear points cannot.
+        let line = [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)];
+        assert!(solve_plate_constants(&line, &line).is_err());
+    }
 }

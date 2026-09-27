@@ -83,3 +83,58 @@ impl From<std::io::Error> for ArcsecError {
 
 /// `Result` specialised to [`ArcsecError`].
 pub type Result<T> = core::result::Result<T, ArcsecError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::error::Error as _;
+
+    /// The messages are what the CLI prints, so pin them.
+    #[test]
+    fn display_messages() {
+        let cases = [
+            (ArcsecError::Singular, "singular matrix in LSQ solver"),
+            (
+                ArcsecError::InsufficientStars {
+                    found: 3,
+                    required: 5,
+                },
+                "insufficient stars: found 3, required 5",
+            ),
+            (
+                ArcsecError::InsufficientQuads {
+                    found: 0,
+                    required: 4,
+                },
+                "insufficient quads: found 0, required 4",
+            ),
+            (
+                ArcsecError::BadSolution { ratio: 1.23456 },
+                "bad solution: xy scale ratio 1.2346 not in [0.9, 1.1]",
+            ),
+            (
+                ArcsecError::CatalogNotFound(std::path::PathBuf::from("/db")),
+                "catalog not found: /db",
+            ),
+            (
+                ArcsecError::InvalidParameter("fov".into()),
+                "invalid parameter: fov",
+            ),
+        ];
+        for (err, want) in cases {
+            assert_eq!(err.to_string(), want);
+            assert!(err.source().is_none());
+        }
+    }
+
+    #[test]
+    fn io_errors_convert_and_keep_their_source() {
+        let err: ArcsecError = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
+        assert_eq!(err.to_string(), "catalog I/O error: gone");
+        let source = err.source().expect("source");
+        assert_eq!(source.to_string(), "gone");
+        assert!(
+            matches!(err, ArcsecError::CatalogIo(ref e) if e.kind() == std::io::ErrorKind::NotFound)
+        );
+    }
+}

@@ -417,4 +417,77 @@ mod tests {
         img.normalize_for_detection();
         assert!(img.data.iter().all(|v| v.is_finite()));
     }
+
+    /// A frame big enough for the threaded min/max scan (over 2¹⁸ pixels per
+    /// chunk) must give exactly what the serial scan gives: the global minimum
+    /// found in one chunk replaces non-finite pixels found in another.
+    #[test]
+    fn normalize_large_frames_match_the_serial_rules() {
+        let (w, h) = (1024usize, 1024usize);
+        let mut data: Vec<f32> = (0..w * h).map(|i| 0.5 + (i % 997) as f32 * 1e-3).collect();
+        data[5] = -0.25; // the minimum, in the first chunk
+        data[w * h - 3] = f32::NAN; // non-finite, in the last chunk
+        data[w * h / 2 + 7] = f32::NEG_INFINITY;
+        let mut img = buf(data, w, h);
+        let (scale, offset) = img.normalize_for_detection().expect("rescaled");
+        assert!(img.data.iter().all(|v| v.is_finite()));
+        // Non-finite pixels became the minimum, which maps to the floor of 100.
+        let floor = -0.25 * scale + offset;
+        assert!((floor - 100.0).abs() < 1e-2, "floor {floor}");
+        assert_eq!(img.data[w * h - 3], img.data[5]);
+        assert_eq!(img.data[w * h / 2 + 7], img.data[5]);
+        // And a large ADU-like frame is left alone.
+        let mut adu = buf((0..w * h).map(|i| (i % 60_000) as f32).collect(), w, h);
+        assert!(adu.normalize_for_detection().is_none());
+        assert_eq!(adu.data[59_999], 59_999.0);
+    }
+
+    #[test]
+    fn get_checked_rejects_everything_outside_the_frame() {
+        let img = buf((0..12).map(|v| v as f32).collect(), 4, 3);
+        assert_eq!(img.get_checked(0, 0), Some(0.0));
+        assert_eq!(img.get_checked(3, 2), Some(11.0));
+        assert_eq!(img.get(1, 2), 9.0);
+        for (x, y) in [(-1, 0), (0, -1), (4, 0), (0, 3), (i32::MIN, i32::MAX)] {
+            assert_eq!(img.get_checked(x, y), None, "({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn bin_image_averages_blocks_and_drops_partial_edges() {
+        // 5×3, values x + 10y.
+        let img = buf(
+            (0..15)
+                .map(|i| (i % 5) as f32 + 10.0 * (i / 5) as f32)
+                .collect(),
+            5,
+            3,
+        );
+        let b = img.bin_image(2);
+        assert_eq!((b.width, b.height), (2, 1));
+        // Block (0,0): 0, 1, 10, 11 → 5.5; block (1,0): 2, 3, 12, 13 → 7.5.
+        assert_eq!(b.data, vec![5.5, 7.5]);
+        // Factor 1 (and 0) is a copy.
+        assert_eq!(img.bin_image(1).data, img.data);
+        assert_eq!(img.bin_image(0).data, img.data);
+        // Binning conserves the mean over whole blocks.
+        let big = buf((0..64 * 48).map(|i| (i * 7 % 101) as f32).collect(), 64, 48);
+        let b4 = big.bin_image(4);
+        let mean = |v: &[f32]| v.iter().map(|&x| f64::from(x)).sum::<f64>() / v.len() as f64;
+        assert!((mean(&b4.data) - mean(&big.data)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn list_helpers() {
+        assert!(StarList::default().is_empty());
+        assert!(QuadList::default().is_empty());
+        let s = StarList(vec![Star {
+            x: 0.0,
+            y: 0.0,
+            snr: 1.0,
+            hfd: 1.0,
+        }]);
+        assert_eq!(s.len(), 1);
+        assert!(!s.is_empty());
+    }
 }
