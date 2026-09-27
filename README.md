@@ -3,7 +3,7 @@
 [![CI](https://github.com/cruzzil/arcsec/actions/workflows/ci.yml/badge.svg)](https://github.com/cruzzil/arcsec/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/arcsec.svg)](https://crates.io/crates/arcsec)
 [![docs.rs](https://docs.rs/arcsec-core/badge.svg)](https://docs.rs/arcsec-core)
-[![codecov](https://codecov.io/gh/cruzzil/arcsec/graph/badge.svg?token=MjXKzC5keQ)](https://codecov.io/gh/cruzzil/arcsec)
+[![codecov](https://codecov.io/gh/cruzzil/arcsec/graph/badge.svg?token=dBUWxzz6KM)](https://codecov.io/gh/cruzzil/arcsec)
 [![Dependency status](https://deps.rs/repo/github/cruzzil/arcsec/status.svg)](https://deps.rs/repo/github/cruzzil/arcsec)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
