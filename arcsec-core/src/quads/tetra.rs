@@ -455,4 +455,140 @@ mod tests {
             assert_eq!((out[0].img_idx, out[0].cat_idx), (0, 0));
         }
     }
+
+    use crate::test_support::Rng;
+    use core::f64::consts::PI;
+
+    /// A similarity transform with a flip: scale `s`, rotation `r`, offset.
+    fn transform(p: &[(f64, f64)], s: f64, r: f64) -> Vec<(f64, f64)> {
+        p.iter()
+            .map(|&(x, y)| {
+                (
+                    s * (x * r.cos() + y * r.sin()) + 17.0,
+                    s * (x * r.sin() - y * r.cos()) - 40.0,
+                )
+            })
+            .collect()
+    }
+
+    fn random_points(rng: &mut Rng, n: usize) -> Vec<(f64, f64)> {
+        (0..n)
+            .map(|_| (rng.range(0.0, 1000.0), rng.range(0.0, 1000.0)))
+            .collect()
+    }
+
+    #[test]
+    fn triangle_ratios_are_similarity_invariant() {
+        let mut rng = Rng::new(3);
+        for _ in 0..200 {
+            let p = random_points(&mut rng, 3);
+            let q = transform(&p, rng.range(0.1, 10.0), rng.range(-PI, PI));
+            let (Some(a), Some(b)) = (
+                make_triangle(p[0], p[1], p[2]),
+                make_triangle(q[2], q[0], q[1]),
+            ) else {
+                continue;
+            };
+            assert!((a.ratios[0] - b.ratios[0]).abs() < 1e-9);
+            assert!((a.ratios[1] - b.ratios[1]).abs() < 1e-9);
+            assert!(a.ratios[0] <= 1.0 && a.ratios[1] <= a.ratios[0]);
+        }
+        assert!(make_triangle((1.0, 1.0), (1.0, 1.0), (1.0, 1.0)).is_none());
+    }
+
+    #[test]
+    fn neighbour_triangles_for_large_lists() {
+        let mut rng = Rng::new(4);
+        let p = random_points(&mut rng, 60);
+        let tris = build_triangles(&make_stars(&p));
+        // 21 per star (C(7,2) pairs from its 7 nearest neighbours).
+        assert_eq!(tris.len(), 60 * 21);
+        assert!(
+            tris.0
+                .iter()
+                .all(|t| t.ratios[0] <= 1.0 && t.ratios[1] <= t.ratios[0] && t.d_max > 0.0)
+        );
+        // The same field under a similarity transform yields the same set of shapes.
+        let (s, r) = (2.5, 0.7);
+        let q = transform(&p, s, r);
+        let tris_q = build_triangles(&make_stars(&q));
+        let key = |t: &Triangle| {
+            (
+                (t.ratios[0] * 1e6).round() as i64,
+                (t.ratios[1] * 1e6).round() as i64,
+            )
+        };
+        let mut a: Vec<_> = tris.0.iter().map(key).collect();
+        let mut b: Vec<_> = tris_q.0.iter().map(key).collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        let common = a.iter().filter(|k| b.binary_search(k).is_ok()).count();
+        assert!(
+            common * 100 >= a.len() * 99,
+            "{common} of {} shapes shared",
+            a.len()
+        );
+        // Coincident stars (d² ≤ 1) are not neighbours, and a star with fewer than
+        // two neighbours contributes nothing.
+        let mut dup = p[..46].to_vec();
+        dup.push(dup[0]);
+        let tris_dup = build_triangles(&make_stars(&dup));
+        assert!(tris_dup.0.iter().all(|t| t.d_max > 1.0));
+        assert!(build_triangles(&make_stars(&p[..2])).is_empty());
+    }
+
+    /// The whole triangle chain — build, match, bijective filter, scale filter,
+    /// centre pairs — recovers a known transform from a star field with extra
+    /// stars on each side.
+    #[test]
+    fn triangle_pipeline_recovers_a_similarity_transform() {
+        let mut rng = Rng::new(5);
+        let shared = random_points(&mut rng, 30);
+        let (s, r) = (0.4, 1.1);
+        let mut img = shared.clone();
+        img.extend(random_points(&mut rng, 4));
+        let mut cat = transform(&shared, s, r);
+        cat.extend(transform(&random_points(&mut rng, 4), s, r));
+
+        let it = build_triangles(&make_stars(&img));
+        let ct = build_triangles(&make_stars(&cat));
+        let raw = find_triangle_matches(&it, &ct, 0.002);
+        let bij = bijective_filter(&raw, &it, &ct);
+        let (filtered, med) = filter_triangles_by_scale(&bij, 0.01);
+        assert!((med - 1.0 / s).abs() < 1e-3, "median scale {med}");
+        assert!(filtered.len() >= 100, "{} survivors", filtered.len());
+        let (ip, cp) = extract_triangle_pairs(&it, &ct, &filtered);
+        assert_eq!(ip.len(), filtered.len());
+        let plate = crate::math::lsq::solve_plate_constants(&ip, &cp).unwrap();
+        // Recover x' = s(x cos r + y sin r) + 17, y' = s(x sin r - y cos r) - 40.
+        // A few coincidental matches survive both filters (removing them is
+        // `sigma_clip_pairs`'s job in the solver), so the offset is looser than the
+        // linear terms: 2 units on a 400-unit field.
+        let tol = 2.0;
+        assert!((plate.a - s * r.cos()).abs() < 1e-2 && (plate.b - s * r.sin()).abs() < 1e-2);
+        assert!((plate.d - s * r.sin()).abs() < 1e-2 && (plate.e + s * r.cos()).abs() < 1e-2);
+        assert!(
+            (plate.c - 17.0).abs() < tol && (plate.f + 40.0).abs() < tol,
+            "{plate:?}"
+        );
+    }
+
+    #[test]
+    fn scale_filter_edge_cases() {
+        assert!(filter_triangles_by_scale(&[], 0.01).0.is_empty());
+        let zero = [TriMatch {
+            img_idx: 0,
+            cat_idx: 0,
+            scale_ratio: 0.0,
+        }];
+        let (f, med) = filter_triangles_by_scale(&zero, 0.01);
+        assert!(f.is_empty() && med == 0.0);
+        let empty = TriangleList::default();
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert_eq!(
+            extract_triangle_pairs(&empty, &empty, &[]),
+            (vec![], vec![])
+        );
+    }
 }

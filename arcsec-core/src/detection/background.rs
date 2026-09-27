@@ -430,4 +430,49 @@ mod tests {
         // star_level should be above noise
         assert!(bg.star_level > 0.0, "star_level = {}", bg.star_level);
     }
+
+    /// Gaussian noise from a fixed-seed generator.
+    fn gaussian_image(width: usize, height: usize, bg: f64, sigma: f64) -> ImageBuffer {
+        let mut rng = crate::test_support::Rng::new(9);
+        ImageBuffer {
+            data: (0..width * height)
+                .map(|_| (bg + sigma * rng.gauss()) as f32)
+                .collect(),
+            width,
+            height,
+        }
+    }
+
+    /// A megapixel frame takes the banded (threaded) histogram path. Its result
+    /// must be the same statistics a small frame of the same noise gives, and NaN
+    /// pixels in any band must be ignored rather than counted as zero.
+    #[test]
+    fn large_frames_estimate_background_and_noise() {
+        let mut img = gaussian_image(1024, 1100, 1500.0, 20.0);
+        for i in (0..img.data.len()).step_by(4099) {
+            img.data[i] = f32::NAN;
+        }
+        let bg = get_background(&img, 500);
+        assert!((bg.mean - 1500.0).abs() <= 2.0, "background {}", bg.mean);
+        assert!((bg.noise - 20.0).abs() < 2.0, "noise {}", bg.noise);
+        assert!(bg.star_level >= 0.0 && bg.star_level2 >= 0.0);
+
+        let whole = sigma_clipped_mean_from_histogram(&img, Region::whole(&img), 65500, 10, 0.01);
+        let small = gaussian_image(200, 200, 1500.0, 20.0);
+        let part =
+            sigma_clipped_mean_from_histogram(&small, Region::whole(&small), 65500, 10, 0.01);
+        assert!((whole.0 - part.0).abs() < 1.0, "{whole:?} vs {part:?}");
+        assert!((whole.1 - part.1).abs() < 1.0, "{whole:?} vs {part:?}");
+    }
+
+    #[test]
+    fn upper_limit_and_empty_regions() {
+        let img = gaussian_image(100, 100, 1000.0, 10.0);
+        // Everything above the limit is ignored: nothing left, all zero.
+        let (mean, sd) = sigma_clipped_mean_from_histogram(&img, Region::whole(&img), 500, 5, 0.1);
+        assert_eq!((mean, sd), (0.0, 0.0));
+        assert_eq!(get_background(&ImageBuffer::new(0, 0), 10).noise, 0.0);
+        let r = Region::inset(&img).with_rows(10, 19);
+        assert_eq!((r.x0, r.x1, r.rows()), (1, 98, 10));
+    }
 }

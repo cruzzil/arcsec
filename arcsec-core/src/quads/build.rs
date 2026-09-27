@@ -567,4 +567,150 @@ mod tests {
         assert!((q.center_x - 2.0).abs() < 1e-10);
         assert!((q.center_y - 2.0).abs() < 1e-10);
     }
+
+    use crate::quads::r#match::{
+        extract_star_pairs, filter_by_scale, find_matches_sorted, sort_catalog_quads,
+    };
+    use crate::quads::vote::vote_filter;
+    use crate::test_support::Rng;
+    use core::f64::consts::PI;
+
+    /// `(x, y) → s·R(r)·(±x, y) + t`: a similarity, mirrored when `flip`.
+    fn similarity(p: &[(f64, f64)], s: f64, r: f64, flip: bool) -> Vec<(f64, f64)> {
+        let m = if flip { -1.0 } else { 1.0 };
+        p.iter()
+            .map(|&(x, y)| {
+                let x = m * x;
+                (
+                    s * (x * r.cos() - y * r.sin()) + 250.0,
+                    s * (x * r.sin() + y * r.cos()) - 90.0,
+                )
+            })
+            .collect()
+    }
+
+    fn random_points(rng: &mut Rng, n: usize, side: f64) -> Vec<(f64, f64)> {
+        (0..n)
+            .map(|_| (rng.range(0.0, side), rng.range(0.0, side)))
+            .collect()
+    }
+
+    /// The doc comment claims a maximum error of ~0.0026 rad; the approximation
+    /// `z / (1 + 0.28125 z²)` actually peaks near 0.0049 rad (0.28°) around
+    /// |z| ≈ 0.6. Either is negligible against the 10° vote bins, so this pins the
+    /// real bound rather than the documented one.
+    #[test]
+    fn fast_atan2_is_accurate_in_every_quadrant() {
+        let mut worst = 0.0f64;
+        for k in 0..20_000 {
+            let t = -PI + 2.0 * PI * k as f64 / 20_000.0;
+            for rad in [0.01, 1.0, 1e4] {
+                let (y, x) = (rad * t.sin(), rad * t.cos());
+                worst = worst.max((fast_atan2(y, x) - y.atan2(x)).abs());
+            }
+        }
+        assert!(worst < 5e-3, "max error {worst}");
+        assert!(worst > 4e-3, "better than expected: {worst}");
+        assert_eq!(fast_atan2(0.0, 0.0), 0.0);
+        assert_eq!(fast_atan2(1.0, 0.0), core::f64::consts::FRAC_PI_2);
+        assert_eq!(fast_atan2(-1.0, 0.0), -core::f64::consts::FRAC_PI_2);
+    }
+
+    /// Ratios are invariant under rotation, scale, translation and reflection, and
+    /// under any ordering of the four stars; `d1` scales and `d1_angle` rotates.
+    #[test]
+    fn quad_fingerprint_is_similarity_invariant() {
+        let mut rng = Rng::new(2);
+        for trial in 0..300 {
+            let p = random_points(&mut rng, 4, 100.0);
+            let (s, r, flip) = (rng.range(0.05, 20.0), rng.range(-PI, PI), trial % 2 == 1);
+            let q = similarity(&p, s, r, flip);
+            let a = make_quad(p[0], p[1], p[2], p[3]).unwrap();
+            let b = make_quad(q[3], q[1], q[0], q[2]).unwrap();
+            for k in 0..5 {
+                assert!((a.ratios[k] - b.ratios[k]).abs() < 1e-9, "ratio {k}");
+            }
+            assert!((b.d1 - s * a.d1).abs() < 1e-6 * b.d1);
+            let (cx, cy) = similarity(&[(a.center_x, a.center_y)], s, r, flip)[0];
+            assert!((b.center_x - cx).abs() < 1e-6 && (b.center_y - cy).abs() < 1e-6);
+            // Angle of the longest side, mod π, turns with the image, to within two
+            // fast_atan2 errors. Under a flip it is reflected instead.
+            let want = if flip {
+                (r + PI - a.d1_angle).rem_euclid(PI)
+            } else {
+                (a.d1_angle + r).rem_euclid(PI)
+            };
+            let d = (b.d1_angle - want).rem_euclid(PI);
+            assert!(d.min(PI - d) < 1e-2, "angle {} vs {want}", b.d1_angle);
+        }
+    }
+
+    /// The pattern chain the solver runs — build quads on both sides, match on
+    /// ratios, vote on scale and rotation, pair the centres — recovers a known
+    /// transform from two star lists that share most, but not all, of their stars.
+    #[test]
+    fn quad_pipeline_recovers_a_similarity_for_either_parity() {
+        let mut rng = Rng::new(3);
+        for flip in [false, true] {
+            let shared = random_points(&mut rng, 80, 1000.0);
+            let (s, r) = (2.7, 0.9);
+            let mut img = shared.clone();
+            img.extend(random_points(&mut rng, 8, 1000.0)); // image-only stars
+            let mut cat = similarity(&shared, s, r, flip);
+            cat.extend(similarity(&random_points(&mut rng, 8, 1000.0), s, r, flip));
+            cat.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+            let img_q = build_quads(&make_stars(&img), img.len());
+            let mut cat_q = build_quads_presorted(&make_stars(&cat), img.len());
+            sort_catalog_quads(&mut cat_q);
+            let raw = find_matches_sorted(&img_q, &cat_q, 0.005);
+            let voted = vote_filter(&img_q, &cat_q, &raw, 0.005);
+            assert!(
+                voted.len() > 50,
+                "{} votes of {} raw",
+                voted.len(),
+                raw.len()
+            );
+            assert!(voted.iter().all(|m| (m.scale_ratio * s - 1.0).abs() < 0.01));
+            let (by_scale, med) = filter_by_scale(&raw, 0.005);
+            assert!((med * s - 1.0).abs() < 1e-3 && !by_scale.is_empty());
+
+            let (ip, cp) = extract_star_pairs(&img_q, &cat_q, &voted);
+            let plate = crate::math::lsq::solve_plate_constants(&ip, &cp).unwrap();
+            let m = if flip { -1.0 } else { 1.0 };
+            let want = [m * s * r.cos(), -s * r.sin(), m * s * r.sin(), s * r.cos()];
+            let got = [plate.a, plate.b, plate.d, plate.e];
+            for k in 0..4 {
+                assert!(
+                    (got[k] - want[k]).abs() < 1e-3,
+                    "flip {flip}: {got:?} vs {want:?}"
+                );
+            }
+            assert!((plate.c - 250.0).abs() < 0.5 && (plate.f + 90.0).abs() < 0.5);
+        }
+    }
+
+    #[test]
+    fn builder_mode_follows_the_star_count() {
+        let mut rng = Rng::new(4);
+        let p = random_points(&mut rng, 40, 500.0);
+        let stars = make_stars(&p);
+        // Under 15 image stars: all C(7,4) quads per star (deduplicated).
+        let q7 = build_quads(&make_stars(&p[..12]), 12);
+        assert!(!q7.is_empty() && q7.len() <= 12 * 35);
+        // 15..30: C(6,4) per star.
+        let q6 = build_quads(&make_stars(&p[..20]), 20);
+        assert!(!q6.is_empty() && q6.len() <= 20 * 15);
+        // Otherwise the 9-neighbour builder.
+        let q9 = build_quads(&stars, 40);
+        assert!(q9.len() > q6.len());
+        // Four stars or fewer fall back to 3-NN, which needs at least four.
+        assert_eq!(build_quads(&make_stars(&p[..4]), 4).len(), 1);
+        assert!(build_quads(&make_stars(&p[..3]), 3).is_empty());
+        // A 5..8 star list at the 9-neighbour stage has too few stars for it.
+        assert!(build_quads(&make_stars(&p[..6]), 40).is_empty());
+        for q in q7.0.iter().chain(&q6.0).chain(&q9.0) {
+            assert_ratios_valid(q);
+        }
+    }
 }

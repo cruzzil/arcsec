@@ -478,4 +478,334 @@ mod tests {
             );
         }
     }
+
+    // ── Record decoding, using the ASTAP-layout writer ─────────────────────────
+
+    use crate::test_support::{
+        Rng, SkySpec, SkyStar, TempDir, area_file_bytes, random_sky, separation, write_001_db,
+        write_290_db, write_1476_db,
+    };
+
+    fn write_area(dir: &TempDir, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// Stars across the whole declination range, both RA edges and a spread of
+    /// magnitudes, so every high-DEC-byte value and header-record transition is hit.
+    fn all_sky_sample() -> Vec<SkyStar> {
+        let mut out = Vec::new();
+        for (k, dec_deg) in [-89.99, -60.0, -30.5, -0.001, 0.0, 0.001, 29.0, 61.3, 89.99]
+            .iter()
+            .enumerate()
+        {
+            for (j, ra_deg) in [0.0, 0.0001, 123.456, 359.9999].iter().enumerate() {
+                // A distinct magnitude per star, so each can be found again by it.
+                out.push(SkyStar {
+                    ra: deg(*ra_deg),
+                    dec: deg(*dec_deg),
+                    mag: -1.5 + 0.3 * (4 * k + j) as f64,
+                });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_declination_and_magnitude_round_trips() {
+        let dir = TempDir::new("f1476-rt");
+        for record_size in [5usize, 6] {
+            let stars = all_sky_sample();
+            let path = write_area(&dir, "all.1476", &area_file_bytes(&stars, record_size));
+            // A field as wide as the sky, so the filter passes everything.
+            let got = read_area_file(&path, PI, 0.0, 4.0 * PI, 1.0, usize::MAX).unwrap();
+            assert_eq!(got.len(), stars.len(), "record size {record_size}");
+            for want in &stars {
+                let found = got
+                    .iter()
+                    .find(|g| (g.mag - want.mag).abs() < 0.051)
+                    .unwrap_or_else(|| panic!("lost {want:?}"));
+                // Packing resolution: 2π/2²⁴ in RA, (π/2)/2²³ in Dec, 0.1 in magnitude.
+                assert!((found.dec - want.dec).abs() < 2e-7, "{found:?} vs {want:?}");
+                let dra = (found.ra - want.ra).rem_euclid(2.0 * PI);
+                assert!(dra.min(2.0 * PI - dra) < 4e-7, "{found:?} vs {want:?}");
+                assert!((0.0..2.0 * PI).contains(&found.ra));
+            }
+        }
+    }
+
+    #[test]
+    fn stars_come_back_brightest_first_and_max_stars_truncates() {
+        let dir = TempDir::new("f1476-max");
+        let mut rng = Rng::new(5);
+        let stars: Vec<SkyStar> = (0..50)
+            .map(|_| SkyStar {
+                ra: rng.range(1.0, 1.01),
+                dec: rng.range(0.2, 0.21),
+                mag: rng.range(5.0, 15.0),
+            })
+            .collect();
+        let path = write_area(&dir, "a.1476", &area_file_bytes(&stars, 5));
+        let got = read_area_file(&path, 1.005, 0.205, deg(5.0), 0.205f64.cos(), 10).unwrap();
+        assert_eq!(got.len(), 10);
+        assert!(got.windows(2).all(|w| w[0].mag <= w[1].mag));
+        let mut mags: Vec<f64> = stars.iter().map(|s| s.mag).collect();
+        mags.sort_by(f64::total_cmp);
+        assert!((got[9].mag - mags[9]).abs() < 0.051);
+    }
+
+    #[test]
+    fn the_square_window_wraps_at_ra_zero_and_scales_with_declination() {
+        let dir = TempDir::new("f1476-win");
+        let stars = [
+            SkyStar {
+                ra: deg(359.8),
+                dec: deg(60.0),
+                mag: 5.0,
+            },
+            SkyStar {
+                ra: deg(0.3),
+                dec: deg(60.0),
+                mag: 5.0,
+            },
+            SkyStar {
+                ra: deg(2.5),
+                dec: deg(60.0),
+                mag: 5.0,
+            }, // 1.25° on the sky
+            SkyStar {
+                ra: deg(0.0),
+                dec: deg(61.1),
+                mag: 5.0,
+            }, // outside in Dec
+        ];
+        let path = write_area(&dir, "w.1476", &area_file_bytes(&stars, 5));
+        // A 2°-wide field at Dec 60: ±1° in Dec, ±2° in RA.
+        let got = read_area_file(&path, 0.0, deg(60.0), deg(2.0), deg(60.0).cos(), 100).unwrap();
+        assert_eq!(got.len(), 2, "{got:?}");
+    }
+
+    #[test]
+    fn short_and_malformed_area_files() {
+        let dir = TempDir::new("f1476-bad");
+        // Missing: NotFound, which the database readers treat as "no tile here".
+        match read_area_file(&dir.path().join("x.1476"), 0.0, 0.0, 1.0, 1.0, 10) {
+            Err(ArcsecError::CatalogIo(e)) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
+        }
+        // Shorter than the header: no stars, not an error.
+        let short = write_area(&dir, "short.1476", &[b' '; 60]);
+        assert!(
+            read_area_file(&short, 0.0, 0.0, 1.0, 1.0, 10)
+                .unwrap()
+                .is_empty()
+        );
+        // Unsupported record sizes, including the legacy ' ' (11-byte) marker.
+        for marker in [b' ', 7, 0] {
+            let mut bytes = vec![b' '; 110];
+            bytes[109] = marker;
+            bytes.extend_from_slice(&[0; 22]);
+            let path = write_area(&dir, "odd.1476", &bytes);
+            match read_area_file(&path, 0.0, 0.0, 1.0, 1.0, 10) {
+                Err(ArcsecError::CatalogIo(e)) => {
+                    assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                }
+                other => panic!("marker {marker}: {other:?}"),
+            }
+        }
+        // A truncated final record is ignored, not read past the end.
+        let mut bytes = area_file_bytes(
+            &[SkyStar {
+                ra: 0.1,
+                dec: 0.1,
+                mag: 3.0,
+            }],
+            5,
+        );
+        bytes.extend_from_slice(&[1, 2, 3]);
+        let path = write_area(&dir, "trunc.1476", &bytes);
+        assert_eq!(
+            read_area_file(&path, 0.1, 0.1, 0.1, 1.0, 10).unwrap().len(),
+            1
+        );
+    }
+
+    // ── Database-level reads ────────────────────────────────────────────────────
+
+    fn field(seed: u64, ra: f64, dec: f64, side_deg: f64, n: usize) -> Vec<SkyStar> {
+        random_sky(
+            &mut Rng::new(seed),
+            &SkySpec {
+                ra0: deg(ra),
+                dec0: deg(dec),
+                side_deg,
+                n,
+                min_sep_deg: 0.0,
+                mag_lo: 6.0,
+                mag_hi: 16.0,
+            },
+        )
+    }
+
+    /// Whether a star lies in the readers' square window of side `side`.
+    fn in_window(ra0: f64, dec0: f64, side: f64, ra: f64, dec: f64) -> bool {
+        let half = side * 0.5;
+        let mut dra = (ra - ra0).abs();
+        if dra > PI {
+            dra = 2.0 * PI - dra;
+        }
+        dra * dec0.cos() < half && (dec - dec0).abs() < half
+    }
+
+    /// Every star of the field proper comes back, once, and nothing from outside
+    /// the reader's 5% margin. (Stars *inside* the margin are returned only when
+    /// their tile overlaps the unmargined field, because both tile finders are
+    /// given `fov` rather than `fov * 1.05`; so the margin is best-effort.)
+    fn assert_field_read(all: &[SkyStar], got: &[CatalogStar], ra: f64, dec: f64, fov: f64) {
+        for s in all.iter().filter(|s| in_window(ra, dec, fov, s.ra, s.dec)) {
+            let n = got
+                .iter()
+                .filter(|g| separation(g.ra, g.dec, s.ra, s.dec) < 1e-6)
+                .count();
+            assert_eq!(n, 1, "{s:?} returned {n} times");
+        }
+        for g in got {
+            assert!(in_window(ra, dec, fov * 1.05, g.ra, g.dec), "{g:?} outside");
+        }
+    }
+
+    #[test]
+    fn layout_detection_and_presence() {
+        let dir = TempDir::new("layout");
+        assert!(!catalog_present(dir.path(), "d50"));
+        assert_eq!(detect_layout(dir.path(), "d50"), CatalogLayout::Areas1476);
+        write_290_db(dir.path(), "g05", &[]);
+        write_001_db(dir.path(), "w08", &[]);
+        write_1476_db(dir.path(), "d50", &[]);
+        assert_eq!(detect_layout(dir.path(), "g05"), CatalogLayout::Areas290);
+        assert_eq!(detect_layout(dir.path(), "w08"), CatalogLayout::AllSky001);
+        assert_eq!(detect_layout(dir.path(), "d50"), CatalogLayout::Areas1476);
+        for name in ["g05", "w08", "d50"] {
+            assert!(catalog_present(dir.path(), name), "{name}");
+        }
+        assert!(!catalog_present(dir.path(), "d80"));
+    }
+
+    #[test]
+    fn a_1476_database_returns_the_whole_field_across_tile_boundaries() {
+        // RA 0 and a declination ring boundary (5.14°) both run through this field.
+        let (ra, dec, fov) = (0.0, deg(5.2), deg(2.0));
+        let all = field(1, 0.0, 5.2, 4.0, 3000);
+        let dir = TempDir::new("db1476");
+        write_1476_db(dir.path(), "d50", &all);
+        let got = read_catalog_stars(dir.path(), "d50", ra, dec, fov, usize::MAX).unwrap();
+        assert_field_read(&all, &got, ra, dec, fov);
+        // With a budget, it stops there.
+        let capped = read_catalog_stars(dir.path(), "d50", ra, dec, fov, 25).unwrap();
+        assert_eq!(capped.len(), 25);
+    }
+
+    /// A 12° G05-style field at Dec -30 with a 290 database under it. It touches
+    /// six tiles, but tile 75 holds 76 of the field's 100 brightest stars.
+    fn g05_field() -> (TempDir, Vec<CatalogStar>, (f64, f64, f64)) {
+        let (ra, dec, fov) = (deg(200.0), deg(-30.0), deg(12.0));
+        let all = field(2, 200.0, -30.0, 20.0, 4000);
+        let dir = TempDir::new("db290");
+        write_290_db(dir.path(), "g05", &all);
+        let full = read_catalog_stars(dir.path(), "g05", ra, dec, fov, usize::MAX).unwrap();
+        assert_field_read(&all, &full, ra, dec, fov);
+        (dir, full, (ra, dec, fov))
+    }
+
+    #[test]
+    fn a_290_database_reads_every_tile_and_keeps_to_its_budget() {
+        let (dir, _, (ra, dec, fov)) = g05_field();
+        let got = read_catalog_stars(dir.path(), "g05", ra, dec, fov, 100).unwrap();
+        assert_eq!(got.len(), 100);
+        assert!(got.windows(2).all(|w| w[0].mag <= w[1].mag), "sorted");
+        // Not filled tile by tile from the south: both ends of the field appear.
+        assert!(got.iter().any(|s| s.dec < dec - deg(3.0)));
+        assert!(got.iter().any(|s| s.dec > dec + deg(3.0)));
+    }
+
+    /// `read_catalog_stars_290` gives each tile a fixed share of the budget,
+    /// `(max_stars / n_tiles).max(16) * 2`, reads that many from each, and cuts
+    /// the union by magnitude. When one tile covers most of the field that share
+    /// is far too small for it: here tile 75 holds 76 of the field's 100 brightest
+    /// stars but contributes only 32, and the five tiles that clip the field's
+    /// edges fill the rest with fainter stars — the 100th star returned is mag 10.8
+    /// where the field's 100th brightest is mag 9.0. The catalogue handed to the
+    /// matcher is then dense at the field's edges and sparse in its middle, the
+    /// opposite of the image. The per-tile reads need to be sized by each tile's
+    /// share of the field (or take `max_stars` from every tile before the cut).
+    #[test]
+    #[ignore = "bug: the .290 reader's per-tile budget under-samples a tile that covers most of the field"]
+    fn a_290_database_returns_the_brightest_stars_of_the_field() {
+        let (dir, full, (ra, dec, fov)) = g05_field();
+        let got = read_catalog_stars(dir.path(), "g05", ra, dec, fov, 100).unwrap();
+        let mut mags: Vec<f64> = full.iter().map(|s| s.mag).collect();
+        mags.sort_by(f64::total_cmp);
+        let faintest = got.iter().map(|s| s.mag).fold(f64::MIN, f64::max);
+        assert!(
+            faintest <= mags[99] + 0.05,
+            "cut at mag {faintest}, but the field's 100th brightest is {}",
+            mags[99]
+        );
+    }
+
+    #[test]
+    fn an_all_sky_001_database_is_read_through_the_same_entry_point() {
+        let (ra, dec, fov) = (deg(90.0), deg(-50.0), deg(30.0));
+        let all = field(3, 90.0, -50.0, 60.0, 2000);
+        let dir = TempDir::new("db001");
+        write_001_db(dir.path(), "w08", &all);
+        let got = read_catalog_stars(dir.path(), "w08", ra, dec, fov, usize::MAX).unwrap();
+        assert_field_read(&all, &got, ra, dec, fov);
+    }
+
+    #[test]
+    fn a_corrupt_tile_is_an_error_but_a_missing_one_is_not() {
+        let (ra, dec, fov) = (deg(40.0), deg(20.0), deg(1.0));
+        let all = field(4, 40.0, 20.0, 2.0, 500);
+        for layout in ["1476", "290"] {
+            let dir = TempDir::new("corrupt");
+            if layout == "1476" {
+                write_1476_db(dir.path(), "db", &all);
+            } else {
+                write_290_db(dir.path(), "db", &all);
+            }
+            // A clean read first; then corrupt every tile, then delete them.
+            assert!(
+                !read_catalog_stars(dir.path(), "db", ra, dec, fov, 1000)
+                    .unwrap()
+                    .is_empty()
+            );
+            let tiles: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| !p.to_string_lossy().contains("_0101."))
+                .collect();
+            for t in &tiles {
+                let mut b = std::fs::read(t).unwrap();
+                b[109] = 9;
+                std::fs::write(t, b).unwrap();
+            }
+            assert!(
+                matches!(
+                    read_catalog_stars(dir.path(), "db", ra, dec, fov, 1000),
+                    Err(ArcsecError::CatalogIo(_))
+                ),
+                "{layout}"
+            );
+            for t in &tiles {
+                std::fs::remove_file(t).unwrap();
+            }
+            assert!(
+                read_catalog_stars(dir.path(), "db", ra, dec, fov, 1000)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
 }

@@ -104,6 +104,9 @@ pub mod quads;
 pub mod types;
 pub mod wcs;
 
+#[cfg(test)]
+mod test_support;
+
 pub use catalog::{AnetIndex, AnetIndexEntry, AnetStar, load_anet_index, peek_anet_scale};
 pub use error::{ArcsecError, Result};
 pub use pipeline::{BlindSolveParams, blind_solve};

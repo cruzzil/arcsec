@@ -766,6 +766,10 @@ pub fn format_radec(ra_rad: f64, dec_rad: f64) -> String {
 mod tests {
     use super::*;
     use crate::math::coords::{ang_sep, standard_equatorial};
+    use crate::test_support::{
+        Rng, SkySpec, TempDir, TruthWcs, random_sky, render, write_001_db, write_290_db,
+        write_1476_db,
+    };
     use crate::types::{ImageBuffer, PlateConstants};
     use crate::wcs::output::derive_wcs;
     use core::f64::consts::PI;
@@ -905,6 +909,534 @@ mod tests {
             solve_image(&img, &params),
             Err(ArcsecError::InvalidParameter(_))
         ));
+    }
+
+    // ── Plate-fit helpers ─────────────────────────────────────────────────────
+
+    /// A known similarity transform (pixels → catalogue arcsec), with a flip.
+    fn known_plate() -> PlateConstants {
+        let (s, r) = (3.2_f64, 0.61_f64);
+        PlateConstants {
+            a: -s * r.cos(),
+            b: s * r.sin(),
+            c: 640.0,
+            d: s * r.sin(),
+            e: s * r.cos(),
+            f: -512.0,
+        }
+    }
+
+    fn apply(p: &PlateConstants, (x, y): (f64, f64)) -> (f64, f64) {
+        (p.a * x + p.b * y + p.c, p.d * x + p.e * y + p.f)
+    }
+
+    fn plate_close(p: &PlateConstants, q: &PlateConstants, tol: f64) -> bool {
+        [
+            (p.a, q.a),
+            (p.b, q.b),
+            (p.c, q.c),
+            (p.d, q.d),
+            (p.e, q.e),
+            (p.f, q.f),
+        ]
+        .iter()
+        .all(|(u, v)| (u - v).abs() <= tol)
+    }
+
+    fn star_at(x: f64, y: f64) -> Star {
+        Star {
+            x,
+            y,
+            snr: 50.0,
+            hfd: 2.5,
+        }
+    }
+
+    /// 40 exact pairs under `known_plate`, then five pairs whose catalogue side is
+    /// displaced by `outlier(k)`.
+    fn pairs_with_outliers(outlier: impl Fn(usize, (f64, f64)) -> (f64, f64)) -> PairedPositions {
+        let plate = known_plate();
+        let mut rng = Rng::new(7);
+        let mut img = Vec::new();
+        let mut cat = Vec::new();
+        for _ in 0..40 {
+            let p = (rng.range(0.0, 500.0), rng.range(0.0, 500.0));
+            img.push(p);
+            cat.push(apply(&plate, p));
+        }
+        for k in 0..5 {
+            let p = (rng.range(0.0, 500.0), rng.range(0.0, 500.0));
+            img.push(p);
+            cat.push(outlier(k, apply(&plate, p)));
+        }
+        (img, cat)
+    }
+
+    #[test]
+    fn sigma_clip_pairs_rejects_outliers_and_keeps_the_rest() {
+        // Five wrong pairings, each ~100" (30 px) from where the plate puts them.
+        let (img, cat) = pairs_with_outliers(|k, (x, y)| {
+            let a = k as f64 * 1.3;
+            (x + 100.0 * a.cos(), y + 100.0 * a.sin())
+        });
+        let (ci, cc) = sigma_clip_pairs(img, cat, 3.0, 3);
+        assert_eq!(ci.len(), 40, "all and only the true pairs survive");
+        let fit = solve_plate_constants(&ci, &cc).unwrap();
+        assert!(plate_close(&fit, &known_plate(), 1e-6), "{fit:?}");
+    }
+
+    /// `sigma_clip_pairs` gives up as soon as a fit fails, and the first fit is made
+    /// on the contaminated set. Five gross outliers in 45 pairs are enough to skew
+    /// that fit past the 10% x/y scale check in `solve_plate_constants`
+    /// (`BadSolution`, ratio 1.135 here), so nothing is clipped and all 45 come
+    /// back. In `try_position` the Tetra path then refits the same contaminated set,
+    /// fails the same check, and abandons a position whose 40 good pairs would
+    /// have solved it. The clipper does not work in exactly the case it exists for.
+    #[test]
+    #[ignore = "bug: sigma_clip_pairs returns everything unclipped when the contaminated first fit fails the scale-ratio check"]
+    fn sigma_clip_pairs_rejects_gross_outliers() {
+        let (img, cat) =
+            pairs_with_outliers(|k, _| (1000.0 + 150.0 * k as f64, -900.0 + 70.0 * k as f64));
+        assert!(matches!(
+            solve_plate_constants(&img, &cat),
+            Err(ArcsecError::BadSolution { .. })
+        ));
+        let (ci, _) = sigma_clip_pairs(img, cat, 3.0, 3);
+        assert_eq!(ci.len(), 40, "the five gross outliers should be clipped");
+    }
+
+    #[test]
+    fn sigma_clip_pairs_leaves_too_few_pairs_alone() {
+        let img = vec![(0.0, 0.0), (1.0, 0.0)];
+        let cat = vec![(5.0, 5.0), (9.0, 9.0)];
+        let (ci, cc) = sigma_clip_pairs(img.clone(), cat.clone(), 3.0, 3);
+        assert_eq!((ci, cc), (img, cat));
+    }
+
+    #[test]
+    fn verify_and_refit_recovers_the_plate_from_a_rough_guess() {
+        let truth = known_plate();
+        let mut rng = Rng::new(11);
+        let mut img_stars = Vec::new();
+        let mut cat_stars = Vec::new();
+        for _ in 0..60 {
+            let (x, y) = (rng.range(5.0, 395.0), rng.range(5.0, 295.0));
+            img_stars.push(star_at(x, y));
+            let (cx, cy) = apply(&truth, (x, y));
+            cat_stars.push(star_at(cx, cy));
+        }
+        // Catalogue stars that fall outside the frame must be ignored, not paired.
+        for k in 0..20 {
+            let (cx, cy) = apply(&truth, (-300.0 - 10.0 * k as f64, 900.0));
+            cat_stars.push(star_at(cx, cy));
+        }
+        // Start 2 px and a little rotation away from the truth.
+        let mut rough = truth.clone();
+        rough.c += 2.0 * truth.a;
+        rough.f += 2.0 * truth.e;
+        rough.b += 0.01;
+        let (refined, n, rms) =
+            verify_and_refit(&StarList(img_stars), &StarList(cat_stars), &rough, 400, 300)
+                .expect("a correct plate must verify");
+        assert_eq!(n, 60);
+        assert!(rms < 1e-6, "rms {rms}");
+        assert!(plate_close(&refined, &truth, 1e-6), "{refined:?}");
+    }
+
+    #[test]
+    fn verify_and_refit_rejects_too_few_or_clustered_matches() {
+        let truth = known_plate();
+        let mut rng = Rng::new(12);
+        let build = |pts: &[(f64, f64)]| {
+            let img = StarList(pts.iter().map(|&(x, y)| star_at(x, y)).collect());
+            let cat = StarList(
+                pts.iter()
+                    .map(|&p| apply(&truth, p))
+                    .map(|(x, y)| star_at(x, y))
+                    .collect(),
+            );
+            (img, cat)
+        };
+
+        // 20 well-spread stars: fewer than MIN_VERIFIED_STARS.
+        let few: Vec<_> = (0..20)
+            .map(|_| (rng.range(0.0, 400.0), rng.range(0.0, 300.0)))
+            .collect();
+        let (img, cat) = build(&few);
+        assert!(verify_and_refit(&img, &cat, &truth, 400, 300).is_none());
+
+        // 80 stars, all in one 40-pixel corner: rotation is unconstrained.
+        let clustered: Vec<_> = (0..80)
+            .map(|_| (rng.range(0.0, 40.0), rng.range(0.0, 40.0)))
+            .collect();
+        let (img, cat) = build(&clustered);
+        assert!(verify_and_refit(&img, &cat, &truth, 400, 300).is_none());
+
+        // The same 80 spread over the frame pass.
+        let spread: Vec<_> = (0..80)
+            .map(|_| (rng.range(0.0, 400.0), rng.range(0.0, 300.0)))
+            .collect();
+        let (img, cat) = build(&spread);
+        assert!(verify_and_refit(&img, &cat, &truth, 400, 300).is_some());
+
+        // Degenerate inputs.
+        let empty = StarList::default();
+        assert!(verify_and_refit(&empty, &cat, &truth, 400, 300).is_none());
+        let mut singular = truth.clone();
+        singular.a = 0.0;
+        singular.b = 0.0;
+        assert!(verify_and_refit(&img, &cat, &singular, 400, 300).is_none());
+    }
+
+    // ── End-to-end solves against synthetic catalogues ────────────────────────
+
+    #[derive(Clone, Copy)]
+    enum Db {
+        Areas1476,
+        Areas290,
+        AllSky001,
+    }
+
+    /// A rendered field and the database it was drawn from.
+    struct Scene {
+        dir: TempDir,
+        img: ImageBuffer,
+        truth: TruthWcs,
+    }
+
+    /// Render ~`n_in_frame` stars through `truth` and write the surrounding sky
+    /// (six fields wide, so offset hints still find their stars) as a database.
+    fn scene(truth: TruthWcs, db: Db, n_in_frame: usize, seed: u64) -> Scene {
+        let mut rng = Rng::new(seed);
+        let scale_deg = truth.cd[1].hypot(truth.cd[3]);
+        let (w_deg, h_deg) = (
+            truth.width as f64 * scale_deg,
+            truth.height as f64 * scale_deg,
+        );
+        let side = 6.0 * w_deg.max(h_deg);
+        let sky = random_sky(
+            &mut rng,
+            &SkySpec {
+                ra0: truth.ra0,
+                dec0: truth.dec0,
+                side_deg: side,
+                n: (n_in_frame as f64 * side * side / (w_deg * h_deg)) as usize,
+                min_sep_deg: 12.0 * scale_deg,
+                mag_lo: 10.0,
+                mag_hi: 14.5,
+            },
+        );
+        // A PSF of ~1.3 px on a 5"/px frame, scaled so binned frames stay sampled.
+        let sigma = 1.3 * 5.0 / (scale_deg * 3600.0);
+        let img = render(
+            &truth,
+            &sky,
+            sigma.max(1.3),
+            1000.0,
+            8.0,
+            30_000.0,
+            &mut rng,
+        );
+        let dir = TempDir::new("solve");
+        match db {
+            Db::Areas1476 => write_1476_db(dir.path(), "t50", &sky),
+            Db::Areas290 => write_290_db(dir.path(), "t50", &sky),
+            Db::AllSky001 => write_001_db(dir.path(), "t50", &sky),
+        }
+        Scene { dir, img, truth }
+    }
+
+    fn params_for(s: &Scene, ra_hint: f64, dec_hint: f64) -> SolveParams {
+        SolveParams {
+            ra_hint,
+            dec_hint,
+            fov: (s.truth.height as f64 * s.truth.cd[1].hypot(s.truth.cd[3])).to_radians(),
+            search_radius: deg(2.0),
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: s.dir.path().to_path_buf(),
+            db_name: "t50".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            threads: 1,
+        }
+    }
+
+    fn assert_solved(s: &Scene, wcs: &WcsSolution, tol_arcsec: f64) {
+        let err = s.truth.max_error_arcsec(wcs);
+        assert!(
+            err < tol_arcsec,
+            "worst centre/corner error {err:.3}\" (matched {}, rms {:.3})",
+            wcs.stars_matched,
+            wcs.residual_rms
+        );
+        assert!(wcs.stars_matched >= MIN_VERIFIED_STARS);
+        // Star-level residual under a third of a pixel.
+        let scale_arcsec = s.truth.cd[1].hypot(s.truth.cd[3]) * 3600.0;
+        assert!(
+            wcs.residual_rms < 0.3 * scale_arcsec,
+            "rms {}",
+            wcs.residual_rms
+        );
+        assert!(wcs.raw_matches > 0);
+        assert!(wcs.mag_limit > 10.0 && wcs.mag_limit <= 14.5);
+        assert!(
+            wcs.cdelt1 < 0.0 && wcs.cdelt2 > 0.0,
+            "CDELT sign convention"
+        );
+    }
+
+    #[test]
+    fn solves_a_1476_database_from_an_offset_hint() {
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        // Hint roughly one field away in each axis: the spiral has to move.
+        let mut p = params_for(&s, deg(84.3 + 0.6), deg(-5.2 - 0.45));
+        p.threads = 4;
+        let wcs = solve_image(&s.img, &p).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+        assert!(wcs.search_dist_deg > 0.1, "solved at the hint itself?");
+        assert!(wcs.step_distances.len() > 1);
+        // The pixel scale and rotation come back too.
+        assert!((wcs.cdelt2 * 3600.0 - 5.0).abs() < 0.01, "{}", wcs.cdelt2);
+        assert!((wcs.crota2 - 23.0).abs() < 0.05, "crota2 {}", wcs.crota2);
+    }
+
+    #[test]
+    fn solves_a_mirrored_image_on_a_290_database() {
+        let truth = TruthWcs::new(deg(201.0), deg(47.5), 6.0, 160.0, true, 360, 360);
+        let s = scene(truth, Db::Areas290, 120, 2);
+        let wcs = solve_image(&s.img, &params_for(&s, truth.ra0, truth.dec0)).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+        assert!(wcs.search_dist_deg < 1e-9, "should solve at the hint");
+        // A mirrored image has det(CD) > 0.
+        assert!(wcs.cd1_1 * wcs.cd2_2 - wcs.cd1_2 * wcs.cd2_1 > 0.0);
+    }
+
+    #[test]
+    fn solves_across_ra_zero_with_an_all_sky_001_database() {
+        // The field straddles RA 0h, so its catalogue stars sit either side of 2π.
+        let truth = TruthWcs::new(deg(0.05), deg(21.0), 5.0, -70.0, false, 360, 300);
+        let s = scene(truth, Db::AllSky001, 120, 3);
+        let wcs = solve_image(&s.img, &params_for(&s, truth.ra0, truth.dec0)).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    #[test]
+    fn solves_across_ra_zero_with_a_1476_database() {
+        let truth = TruthWcs::new(deg(359.97), deg(-33.0), 5.0, 95.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 120, 4);
+        let wcs = solve_image(&s.img, &params_for(&s, truth.ra0, truth.dec0)).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    #[test]
+    fn solves_a_field_near_the_celestial_pole() {
+        let truth = TruthWcs::new(deg(40.0), deg(88.9), 5.0, 10.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 120, 5);
+        let wcs = solve_image(&s.img, &params_for(&s, truth.ra0, truth.dec0)).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    /// The plate constants are fitted in the tangent plane of the spiral position
+    /// that matched (`ra_db`, `dec_db`), but `derive_wcs` then moves CRVAL to the
+    /// image centre and keeps the CD matrix unchanged, as though the two tangent
+    /// planes were the same. They are not, and the error grows linearly with the
+    /// distance between the matched spiral position and the true field centre.
+    ///
+    /// Measured on this 1.5° × 1.25° field at 15"/px: worst-corner error 0.35" with
+    /// the hint on the centre, 7.5" at 0.2° off, 14.5" at 0.4°, 21" at 0.6° (1.4 px),
+    /// while the star-level RMS stays at 0.7-0.85" throughout — the verification
+    /// cannot see it, because it runs in the same (offset) tangent plane. Spiral
+    /// positions land up to half a step (half a field) from the truth, and a blind
+    /// estimate can be a whole field off, so this is well inside normal use. 5" is
+    /// the corner error `scripts/benchmark.py` counts as a false positive.
+    #[test]
+    #[ignore = "bug: derive_wcs re-centres CRVAL without re-projecting, so accuracy degrades with hint offset"]
+    fn accuracy_does_not_depend_on_the_hint_offset() {
+        let truth = TruthWcs::new(deg(150.0), deg(30.0), 15.0, 20.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 120, 21);
+        let off = 0.4;
+        let p = params_for(&s, deg(150.0 + off / deg(30.0).cos()), deg(30.0 + off));
+        let wcs = solve_image(&s.img, &p).expect("solve");
+        assert!(wcs.search_dist_deg < 1e-9, "solved at the hint");
+        let err = s.truth.max_error_arcsec(&wcs);
+        assert!(
+            err < 5.0,
+            "worst corner error {err:.2}\" with a {off}° hint offset"
+        );
+    }
+
+    #[test]
+    fn solves_with_the_tetra_method() {
+        let truth = TruthWcs::new(deg(150.0), deg(2.0), 5.0, 45.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 110, 6);
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.method = SolveMethod::Tetra;
+        let wcs = solve_image(&s.img, &p).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    #[test]
+    fn binned_solve_is_reported_on_the_unbinned_pixel_grid() {
+        // Render at full resolution, then solve the 2×2-binned frame.
+        let truth = TruthWcs::new(deg(10.0), deg(40.0), 2.5, 30.0, false, 720, 600);
+        let s = scene(truth, Db::Areas1476, 120, 7);
+        let binned = s.img.bin_image(2);
+        assert_eq!((binned.width, binned.height), (360, 300));
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.binning = 2;
+        let wcs = solve_image(&binned, &p).expect("solve");
+        // crpix is the centre of the unbinned frame, and the scale is unbinned.
+        assert!((wcs.crpix1 - 360.5).abs() < 1e-9, "crpix1 {}", wcs.crpix1);
+        assert!((wcs.crpix2 - 300.5).abs() < 1e-9, "crpix2 {}", wcs.crpix2);
+        assert!((wcs.cdelt2 * 3600.0 - 2.5).abs() < 0.01, "{}", wcs.cdelt2);
+        let err = s.truth.max_error_arcsec(&wcs);
+        assert!(err < 2.0, "worst corner error {err:.3}\"");
+    }
+
+    #[test]
+    fn a_field_absent_from_the_catalogue_does_not_solve() {
+        // The image shows one random sky, the database holds a different one at the
+        // same place: nothing may verify, however many quads happen to match.
+        let truth = TruthWcs::new(deg(120.0), deg(-40.0), 5.0, 0.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 120, 8);
+        let decoy = TempDir::new("decoy");
+        let mut rng = Rng::new(99);
+        let other = random_sky(
+            &mut rng,
+            &SkySpec {
+                ra0: truth.ra0,
+                dec0: truth.dec0,
+                side_deg: 3.0,
+                n: 4000,
+                min_sep_deg: 0.015,
+                mag_lo: 10.0,
+                mag_hi: 14.5,
+            },
+        );
+        write_1476_db(decoy.path(), "t50", &other);
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.db_path = decoy.path().to_path_buf();
+        p.search_radius = deg(0.5);
+        match solve_image(&s.img, &p) {
+            Err(ArcsecError::InsufficientQuads { found: 0, required }) => {
+                assert!(required >= 3);
+            }
+            other => panic!("expected InsufficientQuads, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_corrupt_catalogue_tile_is_skipped_not_fatal() {
+        let truth = TruthWcs::new(deg(120.0), deg(-40.0), 5.0, 0.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 120, 9);
+        // Declare an unsupported record size in every tile.
+        for entry in std::fs::read_dir(s.dir.path()).unwrap() {
+            let path = entry.unwrap().path();
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[109] = 7;
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.search_radius = 0.0;
+        assert!(matches!(
+            solve_image(&s.img, &p),
+            Err(ArcsecError::InsufficientQuads { .. })
+        ));
+    }
+
+    #[test]
+    fn a_blank_frame_reports_insufficient_stars() {
+        let dir = TempDir::new("blank");
+        write_1476_db(dir.path(), "t50", &[]);
+        let mut rng = Rng::new(3);
+        let img = ImageBuffer {
+            data: (0..200 * 200)
+                .map(|_| (1000.0 + 5.0 * rng.gauss()) as f32)
+                .collect(),
+            width: 200,
+            height: 200,
+        };
+        let p = SolveParams {
+            ra_hint: 0.0,
+            dec_hint: 0.0,
+            fov: deg(0.3),
+            search_radius: deg(1.0),
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: dir.path().to_path_buf(),
+            db_name: "t50".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            threads: 1,
+        };
+        match solve_image(&img, &p) {
+            Err(ArcsecError::InsufficientStars { found, required: 5 }) => assert!(found < 5),
+            other => panic!("expected InsufficientStars, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_database_is_reported_before_any_detection() {
+        let dir = TempDir::new("nodb");
+        let p = SolveParams {
+            ra_hint: 0.0,
+            dec_hint: 0.0,
+            fov: deg(1.0),
+            search_radius: deg(1.0),
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: dir.path().to_path_buf(),
+            db_name: "d50".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            threads: 1,
+        };
+        match solve_image(&ImageBuffer::new(64, 64), &p) {
+            Err(ArcsecError::CatalogNotFound(path)) => assert_eq!(path, dir.path()),
+            other => panic!("expected CatalogNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_image_rejects_a_bad_search_radius_or_fov() {
+        let base = SolveParams {
+            ra_hint: 0.0,
+            dec_hint: 0.0,
+            fov: deg(1.0),
+            search_radius: 0.1,
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: std::path::PathBuf::from("/nonexistent"),
+            db_name: "d50".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            threads: 1,
+        };
+        let img = ImageBuffer::new(64, 64);
+        for (fov, radius) in [
+            (f64::NAN, 0.1),
+            (-1.0, 0.1),
+            (f64::INFINITY, 0.1),
+            (0.01, -0.1),
+            (0.01, f64::NAN),
+            (0.01, f64::INFINITY),
+        ] {
+            let p = SolveParams {
+                fov,
+                search_radius: radius,
+                ..base.clone()
+            };
+            assert!(
+                matches!(solve_image(&img, &p), Err(ArcsecError::InvalidParameter(_))),
+                "fov {fov}, radius {radius}"
+            );
+        }
     }
 
     #[test]

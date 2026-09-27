@@ -189,6 +189,48 @@ mod tests {
         }
     }
 
+    /// 30 true matches (one scale, one rotation) hidden among 300 random ones, for
+    /// a direct and for a reflected transform: the vote returns the true ones and
+    /// at most a stray coincidence.
+    #[test]
+    fn vote_finds_the_true_transform_among_many_false_matches() {
+        let mut rng = crate::test_support::Rng::new(8);
+        let r = [0.9, 0.8, 0.7, 0.6, 0.5];
+        for reflected in [false, true] {
+            let (scale, rot) = (3.3, 1.2);
+            let mut img = Vec::new();
+            let mut cat = Vec::new();
+            let mut raw = Vec::new();
+            for k in 0..330 {
+                let cat_angle = rng.range(0.0, PI);
+                let is_true = k % 11 == 0;
+                let (s, img_angle) = if is_true {
+                    let a = if reflected {
+                        (rot - cat_angle).rem_euclid(PI)
+                    } else {
+                        (cat_angle + rot).rem_euclid(PI)
+                    };
+                    (scale * rng.range(0.999, 1.001), a)
+                } else {
+                    (rng.range(0.5, 10.0), rng.range(0.0, PI))
+                };
+                cat.push(quad(10.0, r, 0.0, 0.0, cat_angle));
+                img.push(quad(10.0 * s, r, 0.0, 0.0, img_angle));
+                raw.push(QuadMatch {
+                    img_idx: k,
+                    cat_idx: k,
+                    scale_ratio: s,
+                });
+            }
+            let out = vote_filter(&QuadList(img), &QuadList(cat), &raw, 0.007);
+            let n_true = out.iter().filter(|m| m.img_idx % 11 == 0).count();
+            assert_eq!(n_true, 30, "reflected {reflected}");
+            assert!(out.len() <= 31, "reflected {reflected}: {} kept", out.len());
+            // Output is in input order, so the downstream fit is deterministic.
+            assert!(out.windows(2).all(|w| w[0].img_idx < w[1].img_idx));
+        }
+    }
+
     #[test]
     fn empty_input_returns_empty() {
         let img = QuadList(vec![]);

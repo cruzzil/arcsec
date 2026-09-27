@@ -738,3 +738,514 @@ mod canonical_form {
         assert!(total > 1000, "probe built too few triangles: {total}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::anet::AnetIndexEntry;
+    use crate::test_support::{
+        RawIndex, Rng, SkySpec, SkyStar, TruthWcs, anet_code, random_sky, render, separation,
+    };
+    use crate::types::{ImageBuffer, Star};
+
+    fn deg(d: f64) -> f64 {
+        d.to_radians()
+    }
+
+    fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol)
+    }
+
+    /// `n` random detector positions and where a WCS puts them on the sky.
+    fn group_on_detector(wcs: &TruthWcs, rng: &mut Rng, n: usize) -> crate::types::PairedPositions {
+        let px: Vec<(f64, f64)> = (0..n)
+            .map(|_| (rng.range(20.0, 380.0), rng.range(20.0, 280.0)))
+            .collect();
+        let sky = px.iter().map(|&(x, y)| wcs.pixel_to_sky(x, y)).collect();
+        (sky, px)
+    }
+
+    /// The image-side code must equal the code astrometry.net computes on the sky,
+    /// for either parity, whatever the rotation. This pins the sign conventions in
+    /// `code_for_point` against an independent implementation (`anet_code`).
+    #[test]
+    fn image_codes_agree_with_sky_codes_for_both_parities() {
+        let mut rng = Rng::new(21);
+        let (mut built, mut differs) = (0, 0);
+        for trial in 0..300 {
+            let mirrored = trial % 2 == 1;
+            let wcs = TruthWcs::new(
+                rng.range(0.0, 2.0 * PI),
+                rng.range(-1.4, 1.4),
+                rng.range(1.0, 30.0),
+                rng.range(-180.0, 180.0),
+                mirrored,
+                400,
+                300,
+            );
+            let (sky, px) = group_on_detector(&wcs, &mut rng, 4);
+            let Some((order, sky_code)) = anet_code(&sky, &[0, 1, 2, 3]) else {
+                continue;
+            };
+            built += 1;
+            // Build the image quad the way build_quads4 does: A-B = longest pair.
+            let pairs = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+            let &(ai, bi) = pairs
+                .iter()
+                .max_by(|p, q| dist_sq(px[p.0], px[p.1]).total_cmp(&dist_sq(px[q.0], px[q.1])))
+                .unwrap();
+            let rest: Vec<usize> = (0..4).filter(|&k| k != ai && k != bi).collect();
+            let e = make_quad4(px[ai], px[bi], px[rest[0]], px[rest[1]], mirrored).unwrap();
+            assert!(
+                close(&e.code, &sky_code, 2e-3),
+                "trial {trial}: image {:?} vs sky {:?}",
+                e.code,
+                sky_code
+            );
+            // The same stars, in the same canonical order.
+            for (k, &id) in order.iter().enumerate() {
+                assert!(dist_sq(e.stars[k], px[id as usize]) < 1e-18, "star {k}");
+            }
+            // The wrong parity gives a different code (it is the mirror image).
+            let wrong = make_quad4(px[ai], px[bi], px[rest[0]], px[rest[1]], !mirrored).unwrap();
+            if !close(&wrong.code, &sky_code, 1e-2) {
+                differs += 1;
+            }
+        }
+        assert!(built > 100, "too few buildable quads: {built}");
+        assert!(
+            differs * 10 > built * 9,
+            "parity barely matters? {differs}/{built}"
+        );
+    }
+
+    #[test]
+    fn triangle_codes_agree_with_sky_codes() {
+        let mut rng = Rng::new(22);
+        let mut built = 0;
+        for trial in 0..200 {
+            let mirrored = trial % 3 == 0;
+            let wcs = TruthWcs::new(1.0, 0.4, 10.0, rng.range(-180.0, 180.0), mirrored, 400, 300);
+            let (sky, px) = group_on_detector(&wcs, &mut rng, 3);
+            let Some((order, sky_code)) = anet_code(&sky, &[0, 1, 2]) else {
+                continue; // an acute triangle: the index would not hold it
+            };
+            built += 1;
+            // Image side: the axis is the longest side, as the index has it.
+            let (a, b, c) = (order[0] as usize, order[1] as usize, order[2] as usize);
+            let e = make_triangle(px[a], px[b], px[c], mirrored).unwrap();
+            assert!(
+                close(&e.code[..2], &sky_code[..2], 2e-3),
+                "trial {trial}: image {:?} vs sky {:?}",
+                e.code,
+                sky_code
+            );
+        }
+        assert!(built > 50, "too few buildable triangles: {built}");
+    }
+
+    #[test]
+    fn codes_are_invariant_under_similarity_transforms() {
+        let mut rng = Rng::new(23);
+        for _ in 0..500 {
+            let p: Vec<(f64, f64)> = (0..4)
+                .map(|_| (rng.range(0.0, 500.0), rng.range(0.0, 500.0)))
+                .collect();
+            let (s, r) = (rng.range(0.2, 5.0), rng.range(-PI, PI));
+            let (tx, ty) = (rng.range(-1e3, 1e3), rng.range(-1e3, 1e3));
+            let q: Vec<(f64, f64)> = p
+                .iter()
+                .map(|&(x, y)| {
+                    (
+                        s * (x * r.cos() - y * r.sin()) + tx,
+                        s * (x * r.sin() + y * r.cos()) + ty,
+                    )
+                })
+                .collect();
+            let (Some(e1), Some(e2)) = (
+                make_quad4(p[0], p[1], p[2], p[3], false),
+                make_quad4(q[0], q[1], q[2], q[3], false),
+            ) else {
+                continue;
+            };
+            assert!(
+                close(&e1.code, &e2.code, 1e-9),
+                "{:?} vs {:?}",
+                e1.code,
+                e2.code
+            );
+            assert!((e2.d_ab_px - s * e1.d_ab_px).abs() < 1e-6);
+            // Mirroring x is exactly a parity flip.
+            let m: Vec<(f64, f64)> = p.iter().map(|&(x, y)| (-x, y)).collect();
+            let e3 = make_quad4(m[0], m[1], m[2], m[3], true).unwrap();
+            assert!(
+                close(&e1.code, &e3.code, 1e-9),
+                "{:?} vs {:?}",
+                e1.code,
+                e3.code
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_axes_are_rejected() {
+        assert!(make_triangle((5.0, 5.0), (5.5, 5.0), (9.0, 9.0), false).is_none());
+        assert!(make_quad4((5.0, 5.0), (5.0, 5.5), (1.0, 1.0), (2.0, 2.0), false).is_none());
+        assert!(build_image_entries(&StarList::default(), 30, false, 4).is_empty());
+        let one = StarList(vec![Star {
+            x: 1.0,
+            y: 1.0,
+            snr: 1.0,
+            hfd: 1.0,
+        }]);
+        assert!(build_image_entries(&one, 30, false, 5).is_empty());
+    }
+
+    #[test]
+    fn image_entry_counts() {
+        let mut rng = Rng::new(24);
+        let stars = StarList(
+            (0..9)
+                .map(|_| Star {
+                    x: rng.range(0.0, 400.0),
+                    y: rng.range(0.0, 400.0),
+                    snr: 10.0,
+                    hfd: 2.0,
+                })
+                .collect(),
+        );
+        // C(9,3) triangles, each on all three axes; C(9,4) quads. Only the first
+        // `n` stars take part.
+        assert_eq!(build_triangles(&stars, 9, false).len(), 84 * 3);
+        assert_eq!(build_quads4(&stars, 9, false).len(), 126);
+        assert_eq!(build_quads4(&stars, 6, true).len(), 15);
+        assert!(build_quads4(&stars, 3, false).is_empty());
+        assert!(build_triangles(&stars, 2, false).is_empty());
+    }
+
+    // ── Hypotheses and verification ─────────────────────────────────────────────
+
+    /// The index entry for a group of sky stars, as the index builder writes it,
+    /// and the image entry that detecting those stars at `px` would produce.
+    fn matched_pair(sky: &[(f64, f64)], px: &[(f64, f64)]) -> (ImageEntry, AnetIndexEntry) {
+        let raw = RawIndex::build(4, sky, &[vec![0, 1, 2, 3]]);
+        let idx = raw.to_index().entries.remove(0);
+        let at = |k: usize| px[raw.quads[0][k] as usize];
+        let img = ImageEntry {
+            code: idx.code,
+            stars: [at(0), at(1), at(2), at(3)],
+            n_stars: 4,
+            d_ab_px: 0.0,
+        };
+        (img, idx)
+    }
+
+    #[test]
+    fn a_matched_quad_gives_the_true_field_centre() {
+        let wcs = TruthWcs::new(deg(250.0), deg(-60.0), 4.0, 33.0, false, 400, 300);
+        let mut rng = Rng::new(25);
+        let (sky, px) = group_on_detector(&wcs, &mut rng, 4);
+        let (img, idx) = matched_pair(&sky, &px);
+        let h = hyp_from_entry(&img, &idx, 400, 300).unwrap();
+        let (ra_c, dec_c) = wcs.pixel_to_sky(199.5, 149.5);
+        let err = separation(h.est_ra, h.est_dec, ra_c, dec_c).to_degrees() * 3600.0;
+        assert!(err < 0.5, "centre error {err}\"");
+    }
+
+    #[test]
+    fn verify_score_counts_projected_stars_but_not_the_quad_itself() {
+        let wcs = TruthWcs::new(deg(10.0), deg(10.0), 5.0, 0.0, false, 400, 300);
+        let mut rng = Rng::new(26);
+        // 40 stars on a jittered 8 × 5 grid, so no two are within the match radius.
+        let px: Vec<(f64, f64)> = (0..40)
+            .map(|k| {
+                (
+                    30.0 + 45.0 * (k % 8) as f64 + rng.range(-5.0, 5.0),
+                    30.0 + 55.0 * (k / 8) as f64 + rng.range(-5.0, 5.0),
+                )
+            })
+            .collect();
+        let sky: Vec<(f64, f64)> = px.iter().map(|&(x, y)| wcs.pixel_to_sky(x, y)).collect();
+        // The quad: two opposite corners and two central stars, inside their circle.
+        let (img, idx) = matched_pair(
+            &[sky[0], sky[18], sky[21], sky[39]],
+            &[px[0], px[18], px[21], px[39]],
+        );
+        let h = hyp_from_entry(&img, &idx, 400, 300).unwrap();
+        let mut by_dec: Vec<crate::catalog::AnetStar> = sky
+            .iter()
+            .map(|&(ra, dec)| crate::catalog::AnetStar { ra, dec })
+            .collect();
+        // A star far outside the field and one just off the frame edge.
+        by_dec.push(crate::catalog::AnetStar {
+            ra: deg(100.0),
+            dec: deg(10.0),
+        });
+        let (ra, dec) = wcs.pixel_to_sky(-30.0, 150.0);
+        by_dec.push(crate::catalog::AnetStar { ra, dec });
+        by_dec.sort_by(|a, b| a.dec.total_cmp(&b.dec));
+
+        let fov = deg(300.0 * 5.0 / 3600.0);
+        assert_eq!(verify_score(&h, &by_dec, &px, fov, 25.0, 400, 300), 36);
+        // Only half the stars were detected: half the score.
+        let detected: Vec<(f64, f64)> = px.iter().copied().step_by(2).collect();
+        let s = verify_score(&h, &by_dec, &detected, fov, 25.0, 400, 300);
+        assert_eq!(s, 18, "score {s}");
+        // A singular plate scores nothing.
+        let mut flat = h;
+        flat.plate.a = 0.0;
+        flat.plate.b = 0.0;
+        assert_eq!(verify_score(&flat, &by_dec, &px, fov, 25.0, 400, 300), 0);
+    }
+
+    // ── End to end ───────────────────────────────────────────────────────────────
+
+    const FIELD_RA: f64 = 310.0;
+    const FIELD_DEC: f64 = 44.0;
+
+    fn field_spec(seedless_n: usize) -> SkySpec {
+        SkySpec {
+            ra0: deg(FIELD_RA),
+            dec0: deg(FIELD_DEC),
+            side_deg: 2.0,
+            n: seedless_n,
+            min_sep_deg: 12.0 * 6.0 / 3600.0,
+            mag_lo: 10.0,
+            mag_hi: 14.5,
+        }
+    }
+
+    /// A rendered field and an index holding quads of its brightest stars, plus a
+    /// decoy region elsewhere on the sky with its own quads.
+    fn blind_scene(truth: &TruthWcs, dim_quads: usize, seed: u64) -> (ImageBuffer, RawIndex) {
+        let mut rng = Rng::new(seed);
+        let field = random_sky(&mut rng, &field_spec(1200));
+        let img = render(truth, &field, 1.3, 1000.0, 8.0, 30_000.0, &mut rng);
+        let decoy = random_sky(
+            &mut rng,
+            &SkySpec {
+                ra0: deg(80.0),
+                dec0: deg(-20.0),
+                ..field_spec(1200)
+            },
+        );
+        (img, index_over(truth, &field, &decoy, dim_quads))
+    }
+
+    /// Quads from the brightest ten in-frame stars of `field` and of the decoy's
+    /// central region; every star of both goes in the star table.
+    fn index_over(
+        truth: &TruthWcs,
+        field: &[SkyStar],
+        decoy: &[SkyStar],
+        dim_quads: usize,
+    ) -> RawIndex {
+        let mut all: Vec<SkyStar> = field.to_vec();
+        all.extend_from_slice(decoy);
+        let sky: Vec<(f64, f64)> = all.iter().map(|s| (s.ra, s.dec)).collect();
+        let brightest = |range: core::ops::Range<usize>, inside: &dyn Fn(&SkyStar) -> bool| {
+            let mut ids: Vec<u32> = range
+                .filter(|&i| inside(&all[i]))
+                .map(|i| i as u32)
+                .collect();
+            ids.sort_by(|&a, &b| all[a as usize].mag.total_cmp(&all[b as usize].mag));
+            ids.truncate(10);
+            ids
+        };
+        let in_frame = |s: &SkyStar| {
+            truth
+                .sky_to_pixel(s.ra, s.dec)
+                .is_some_and(|(x, y)| x > 20.0 && y > 20.0 && x < 380.0 && y < 300.0)
+        };
+        let decoy_centre = |s: &SkyStar| separation(s.ra, s.dec, deg(80.0), deg(-20.0)) < deg(0.25);
+        let mut groups = Vec::new();
+        for ids in [
+            brightest(0..field.len(), &in_frame),
+            brightest(field.len()..all.len(), &decoy_centre),
+        ] {
+            combos(&ids, dim_quads, &mut Vec::new(), 0, &mut groups);
+        }
+        RawIndex::build(dim_quads, &sky, &groups)
+    }
+
+    fn combos(ids: &[u32], k: usize, cur: &mut Vec<u32>, from: usize, out: &mut Vec<Vec<u32>>) {
+        if cur.len() == k {
+            out.push(cur.clone());
+            return;
+        }
+        for i in from..ids.len() {
+            cur.push(ids[i]);
+            combos(ids, k, cur, i + 1, out);
+            cur.pop();
+        }
+    }
+
+    /// `max_stars` is kept below the ~95 stars each scene holds, so detection sorts
+    /// its list by SNR; see `blind_solve_uses_the_brightest_stars_when_few_are_found`
+    /// for what happens otherwise.
+    fn params(fov_deg: f64) -> BlindSolveParams {
+        BlindSolveParams {
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 60,
+            binning: 1,
+            fov_deg,
+        }
+    }
+
+    fn truth(rot: f64, mirrored: bool) -> TruthWcs {
+        TruthWcs::new(deg(FIELD_RA), deg(FIELD_DEC), 6.0, rot, mirrored, 400, 320)
+    }
+
+    fn centre_error_arcsec(t: &TruthWcs, ra: f64, dec: f64) -> f64 {
+        let (ra_c, dec_c) = t.pixel_to_sky(199.5, 159.5);
+        separation(ra, dec, ra_c, dec_c).to_degrees() * 3600.0
+    }
+
+    #[test]
+    fn blind_solve_finds_the_field_with_quads() {
+        let t = truth(57.0, false);
+        let (img, raw) = blind_scene(&t, 4, 31);
+        let (ra, dec, score) =
+            blind_solve(&img, &raw.to_index(), &params(320.0 * 6.0 / 3600.0)).expect("blind solve");
+        let err = centre_error_arcsec(&t, ra, dec);
+        assert!(err < 5.0, "estimate {err:.2}\" from the centre");
+        assert!(score >= MIN_VERIFY_SCORE, "score {score}");
+    }
+
+    /// The CLI's `--index` flow, end to end: an index written as a FITS file and
+    /// loaded back, a blind estimate from it, then the catalogue solver seeded with
+    /// that estimate and a narrowed radius.
+    #[test]
+    fn index_file_to_blind_estimate_to_catalogue_solve() {
+        use crate::pipeline::solver::{SolveMethod, SolveParams, solve_image};
+        use crate::test_support::{TempDir, write_1476_db};
+
+        let t = truth(-35.0, false);
+        let mut rng = Rng::new(41);
+        let field = random_sky(&mut rng, &field_spec(1200));
+        let img = render(&t, &field, 1.3, 1000.0, 8.0, 30_000.0, &mut rng);
+        let decoy = random_sky(
+            &mut rng,
+            &SkySpec {
+                ra0: deg(80.0),
+                dec0: deg(-20.0),
+                ..field_spec(1200)
+            },
+        );
+        let raw = index_over(&t, &field, &decoy, 4);
+
+        let dir = TempDir::new("index-flow");
+        let index_path = dir.path().join("index-9999.fits");
+        std::fs::write(&index_path, raw.fits_bytes()).unwrap();
+        let index = crate::catalog::load_anet_index(&index_path).expect("load index");
+        let fov_deg = 320.0 * 6.0 / 3600.0;
+        let (ra, dec, _) = blind_solve(&img, &index, &params(fov_deg)).expect("blind solve");
+
+        write_1476_db(dir.path(), "t50", &field);
+        let wcs = solve_image(
+            &img,
+            &SolveParams {
+                ra_hint: ra,
+                dec_hint: dec,
+                fov: deg(fov_deg),
+                search_radius: deg(fov_deg * 2.0),
+                quad_tolerance: 0.007,
+                hfd_min: 1.5,
+                max_stars: 500,
+                db_path: dir.path().to_path_buf(),
+                db_name: "t50".into(),
+                binning: 1,
+                method: SolveMethod::Quads,
+                threads: 1,
+            },
+        )
+        .expect("catalogue solve");
+        let err = t.max_error_arcsec(&wcs);
+        assert!(err < 1.0, "worst centre/corner error {err:.3}\"");
+    }
+
+    #[test]
+    fn blind_solve_finds_the_field_with_triangles_and_no_scale_hint() {
+        let t = truth(-15.0, false);
+        let (img, raw) = blind_scene(&t, 3, 32);
+        let (ra, dec, _) = blind_solve(&img, &raw.to_index(), &params(0.0)).expect("blind solve");
+        // A three-star fit extrapolated to the centre is looser than a quad's; the
+        // estimate only has to land the catalogue solver within a field.
+        let err = centre_error_arcsec(&t, ra, dec);
+        assert!(err < 20.0, "estimate {err:.2}\" from the centre");
+    }
+
+    /// The image entries are built from the first `N_ENTRY_STARS` (30) detected
+    /// stars, documented as "the N brightest". But `find_stars_with_background` only
+    /// sorts by SNR when it has more than `max_stars` to trim; otherwise the list is
+    /// in detection order — cascade level, then raster order down the frame. With
+    /// the default `-s 500` and a field holding fewer stars than that, the blind
+    /// solver therefore builds its patterns from the stars nearest the top of the
+    /// frame, not the brightest, and the index (built from bright stars) rarely
+    /// shares a pattern with them.
+    ///
+    /// Here ~95 stars are detected. With `max_stars = 60` (sorted) this field solves
+    /// with a score in the 90s; with `max_stars = 300` (unsorted) not one of the
+    /// index's 210 in-field quads has all four stars among the 30 used, and the
+    /// best score is 5.
+    #[test]
+    #[ignore = "bug: blind_solve takes the first 30 detected stars, which are unsorted when fewer than max_stars are found"]
+    fn blind_solve_uses_the_brightest_stars_when_few_are_found() {
+        let t = truth(0.0, false);
+        let (img, raw) = blind_scene(&t, 4, 33);
+        let index = raw.to_index();
+        let sorted = blind_solve(&img, &index, &params(0.533));
+        assert!(sorted.is_ok(), "control: solves when detection sorts");
+        let unsorted = blind_solve(
+            &img,
+            &index,
+            &BlindSolveParams {
+                max_stars: 300,
+                ..params(0.533)
+            },
+        );
+        assert!(unsorted.is_ok(), "{unsorted:?}");
+    }
+
+    #[test]
+    fn blind_solve_finds_a_mirrored_field() {
+        let t = truth(-120.0, true);
+        let (img, raw) = blind_scene(&t, 4, 33);
+        let (ra, dec, _) = blind_solve(&img, &raw.to_index(), &params(0.533)).expect("blind solve");
+        let err = centre_error_arcsec(&t, ra, dec);
+        assert!(err < 5.0, "estimate {err:.2}\" from the centre");
+    }
+
+    #[test]
+    fn blind_solve_rejects_a_field_the_index_does_not_hold() {
+        // The index holds a different sky at the same place, plus the decoy.
+        let t = truth(0.0, false);
+        let (img, _) = blind_scene(&t, 4, 35);
+        let mut rng = Rng::new(36);
+        let elsewhere = random_sky(&mut rng, &field_spec(1200));
+        let raw = index_over(&t, &elsewhere, &[], 4);
+        match blind_solve(&img, &raw.to_index(), &params(0.533)) {
+            Err(ArcsecError::InsufficientQuads { found, required }) => {
+                assert_eq!(required, MIN_VERIFY_SCORE);
+                assert!(found < MIN_VERIFY_SCORE);
+            }
+            other => panic!("expected InsufficientQuads, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blind_solve_needs_stars() {
+        let t = truth(0.0, false);
+        let (_, raw) = blind_scene(&t, 4, 37);
+        let img = ImageBuffer {
+            data: vec![1000.0; 200 * 200],
+            width: 200,
+            height: 200,
+        };
+        assert!(matches!(
+            blind_solve(&img, &raw.to_index(), &params(0.5)),
+            Err(ArcsecError::InsufficientStars { required: 5, .. })
+        ));
+    }
+}
