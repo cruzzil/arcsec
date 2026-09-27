@@ -431,3 +431,314 @@ pub(crate) fn write_001_db(dir: &Path, name: &str, stars: &[SkyStar]) {
     std::fs::write(dir.join(format!("{name}_0101.001")), file_001_bytes(stars))
         .expect("write .001 file");
 }
+
+// ── Astrometry.net index fixtures ──────────────────────────────────────────────
+
+/// Lower end of the astrometry.net code range, `0.5 - √2/2`.
+pub(crate) const ANET_CODE_LO: f64 = 0.5 - core::f64::consts::FRAC_1_SQRT_2;
+/// Upper end of the astrometry.net code range, `0.5 + √2/2`.
+pub(crate) const ANET_CODE_HI: f64 = 0.5 + core::f64::consts::FRAC_1_SQRT_2;
+
+/// An index as astrometry.net's builder would lay it out, before FITS encoding.
+#[derive(Debug, Clone)]
+pub(crate) struct RawIndex {
+    /// Stars per quad: 3 or 4.
+    pub(crate) dim_quads: usize,
+    /// Every index star, `(ra, dec)` radians.
+    pub(crate) stars: Vec<(f64, f64)>,
+    /// Per quad, `dim_quads` star indices in canonical order (A, B, C[, D]).
+    pub(crate) quads: Vec<Vec<u32>>,
+    /// Per quad, its code (`2 * (dim_quads - 2)` used slots).
+    pub(crate) codes: Vec<[f64; 4]>,
+    /// Smallest A-B separation (radians).
+    pub(crate) scale_lo: f64,
+    /// Largest A-B separation (radians).
+    pub(crate) scale_hi: f64,
+}
+
+fn unit(ra: f64, dec: f64) -> [f64; 3] {
+    [dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin()]
+}
+
+/// The canonical astrometry.net code of a star group, computed on the sky.
+///
+/// Written from astrometry.net's own recipe, independently of the image-side code
+/// in `pipeline::blind`: A and B are the most separated pair; every star is
+/// projected onto the tangent plane at the A-B midpoint (x east, y north); the
+/// frame is rotated so A lands on (0, 0) and B on (1, 1); then the invariants are
+/// enforced — mean C/D x-code ≤ 0.5 (else swap A and B), and C/D sorted by x-code.
+///
+/// Returns the star indices in canonical order and the code, or `None` for a
+/// degenerate group or one whose other stars fall outside the circle on A-B as
+/// diameter, which astrometry.net does not build.
+pub(crate) fn anet_code(sky: &[(f64, f64)], group: &[u32]) -> Option<(Vec<u32>, [f64; 4])> {
+    let n = group.len();
+    let pos = |i: u32| sky[i as usize];
+    // Most separated pair becomes A-B.
+    let mut best = (0usize, 1usize, -1.0f64);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (a, b) = (pos(group[i]), pos(group[j]));
+            let d = separation(a.0, a.1, b.0, b.1);
+            if d > best.2 {
+                best = (i, j, d);
+            }
+        }
+    }
+    let (ia, ib, _) = best;
+    let mut order = vec![group[ia], group[ib]];
+    order.extend((0..n).filter(|&k| k != ia && k != ib).map(|k| group[k]));
+
+    let (ua, ub) = (
+        unit(pos(order[0]).0, pos(order[0]).1),
+        unit(pos(order[1]).0, pos(order[1]).1),
+    );
+    let m = [ua[0] + ub[0], ua[1] + ub[1], ua[2] + ub[2]];
+    let norm = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+    if norm < 1e-12 {
+        return None;
+    }
+    let ra_m = m[1].atan2(m[0]);
+    let dec_m = (m[2] / norm).asin();
+    let xy: Vec<(f64, f64)> = order
+        .iter()
+        .map(|&i| gnomonic(ra_m, dec_m, pos(i).0, pos(i).1))
+        .collect::<Option<_>>()?;
+
+    let (abx, aby) = (xy[1].0 - xy[0].0, xy[1].1 - xy[0].1);
+    let scale = abx * abx + aby * aby;
+    if scale < 1e-24 {
+        return None;
+    }
+    let (cos_t, sin_t) = ((aby + abx) / scale, (aby - abx) / scale);
+    let mut codes: Vec<(f64, f64, u32)> = xy[2..]
+        .iter()
+        .zip(&order[2..])
+        .map(|(&(x, y), &id)| {
+            let (dx, dy) = (x - xy[0].0, y - xy[0].1);
+            (dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t, id)
+        })
+        .collect();
+
+    // The builder only accepts groups whose other stars lie inside the circle on
+    // A-B as diameter, which is what bounds codes to [0.5 - √2/2, 0.5 + √2/2].
+    if codes
+        .iter()
+        .any(|c| (c.0 - 0.5).powi(2) + (c.1 - 0.5).powi(2) > 0.5)
+    {
+        return None;
+    }
+    let mean_x = codes.iter().map(|c| c.0).sum::<f64>() / codes.len() as f64;
+    if mean_x > 0.5 {
+        order.swap(0, 1);
+        for c in &mut codes {
+            c.0 = 1.0 - c.0;
+            c.1 = 1.0 - c.1;
+        }
+    }
+    codes.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.total_cmp(&q.1)));
+
+    let mut code = [0.0; 4];
+    for (k, c) in codes.iter().enumerate() {
+        code[2 * k] = c.0;
+        code[2 * k + 1] = c.1;
+        order[2 + k] = c.2;
+    }
+    Some((order, code))
+}
+
+impl RawIndex {
+    /// An index over `sky`, with one entry per star group in `groups`.
+    pub(crate) fn build(dim_quads: usize, sky: &[(f64, f64)], groups: &[Vec<u32>]) -> Self {
+        let mut quads = Vec::new();
+        let mut codes = Vec::new();
+        let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
+        for g in groups {
+            assert_eq!(g.len(), dim_quads);
+            let Some((order, code)) = anet_code(sky, g) else {
+                continue;
+            };
+            let (a, b) = (sky[order[0] as usize], sky[order[1] as usize]);
+            let d = separation(a.0, a.1, b.0, b.1);
+            lo = lo.min(d);
+            hi = hi.max(d);
+            quads.push(order);
+            codes.push(code);
+        }
+        Self {
+            dim_quads,
+            stars: sky.to_vec(),
+            quads,
+            codes,
+            scale_lo: lo,
+            scale_hi: hi,
+        }
+    }
+
+    /// The in-memory [`crate::catalog::AnetIndex`] that loading this file would give,
+    /// built without going through FITS.
+    pub(crate) fn to_index(&self) -> crate::catalog::AnetIndex {
+        use crate::catalog::anet::{AnetIndex, AnetIndexEntry, AnetStar};
+        let stars: Vec<AnetStar> = self
+            .stars
+            .iter()
+            .map(|&(ra, dec)| AnetStar { ra, dec })
+            .collect();
+        let mut entries: Vec<AnetIndexEntry> = self
+            .quads
+            .iter()
+            .zip(&self.codes)
+            .map(|(q, &code)| {
+                let mut star_ra = [0.0; 4];
+                let mut star_dec = [0.0; 4];
+                let mut c = [0.0f64; 3];
+                for (k, &i) in q.iter().enumerate() {
+                    let (ra, dec) = self.stars[i as usize];
+                    star_ra[k] = ra;
+                    star_dec[k] = dec;
+                    let u = unit(ra, dec);
+                    c = [c[0] + u[0], c[1] + u[1], c[2] + u[2]];
+                }
+                AnetIndexEntry {
+                    code,
+                    n_stars: q.len(),
+                    star_ra,
+                    star_dec,
+                    center_ra: c[1].atan2(c[0]).rem_euclid(2.0 * PI),
+                    center_dec: c[2].atan2(c[0].hypot(c[1])),
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| a.code[0].total_cmp(&b.code[0]));
+        let codes = entries.iter().map(|e| e.code.map(|v| v as f32)).collect();
+        AnetIndex {
+            entries,
+            codes,
+            stars,
+            scale_lo: self.scale_lo,
+            scale_hi: self.scale_hi,
+            dim_quads: self.dim_quads,
+        }
+    }
+
+    /// Encode as an astrometry.net index FITS file.
+    pub(crate) fn fits_bytes(&self) -> Vec<u8> {
+        let n_dims = 2 * (self.dim_quads - 2);
+        let code_scale = 65535.0 / (ANET_CODE_HI - ANET_CODE_LO);
+        let mut fits = FitsWriter::default();
+        fits.primary(&[
+            ("DIMQUADS", self.dim_quads.to_string()),
+            ("NQUADS", self.quads.len().to_string()),
+            ("NSTARS", self.stars.len().to_string()),
+            ("SCALE_U", format!("{:.15E}", self.scale_hi)),
+            ("SCALE_L", format!("{:.15E}", self.scale_lo)),
+        ]);
+
+        let quad_bytes: Vec<u8> = self
+            .quads
+            .iter()
+            .flatten()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        fits.table("quads", 4 * self.dim_quads, &quad_bytes);
+
+        // Range table: n lo values, n hi values, then the scale.
+        let mut range = Vec::new();
+        for _ in 0..n_dims {
+            range.extend_from_slice(&ANET_CODE_LO.to_le_bytes());
+        }
+        for _ in 0..n_dims {
+            range.extend_from_slice(&ANET_CODE_HI.to_le_bytes());
+        }
+        range.extend_from_slice(&code_scale.to_le_bytes());
+        fits.table("kdtree_range_codes", 8, &range);
+
+        let code_bytes: Vec<u8> = self
+            .codes
+            .iter()
+            .flat_map(|c| {
+                c[..n_dims].iter().flat_map(|&v| {
+                    (((v - ANET_CODE_LO) * code_scale)
+                        .round()
+                        .clamp(0.0, 65535.0) as u16)
+                        .to_le_bytes()
+                })
+            })
+            .collect();
+        fits.table("kdtree_data_codes", 2 * n_dims, &code_bytes);
+
+        let star_bytes: Vec<u8> = self
+            .stars
+            .iter()
+            .flat_map(|&(ra, dec)| {
+                unit(ra, dec).map(|v| {
+                    (((v + 1.0) * (f64::from(u32::MAX) / 2.0)).round() as u32).to_le_bytes()
+                })
+            })
+            .flatten()
+            .collect();
+        fits.table("kdtree_data_stars", 12, &star_bytes);
+        // Real indexes carry more tables after the stars (sweep, magnitudes); the
+        // loader cannot reach an index's final HDU (see anet.rs tests), so end with
+        // one it does not need, as they do.
+        fits.table("sweep", 1, &vec![0u8; self.stars.len()]);
+        fits.bytes
+    }
+}
+
+/// Minimal FITS writer: a primary header and single-column `nA` binary tables,
+/// which is all an astrometry.net index uses.
+#[derive(Default)]
+pub(crate) struct FitsWriter {
+    /// The file so far.
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl FitsWriter {
+    fn card(&mut self, text: &str) {
+        let mut c = text.as_bytes().to_vec();
+        c.resize(80, b' ');
+        self.bytes.extend_from_slice(&c);
+    }
+
+    fn value(&mut self, key: &str, value: &str) {
+        self.card(&format!("{key:<8}= {value:>20}"));
+    }
+
+    fn end_header(&mut self) {
+        self.card("END");
+        let pad = self.bytes.len().next_multiple_of(2880);
+        self.bytes.resize(pad, b' ');
+    }
+
+    /// Primary HDU with no data and the given integer/float keywords.
+    pub(crate) fn primary(&mut self, keys: &[(&str, String)]) {
+        self.value("SIMPLE", "T");
+        self.value("BITPIX", "8");
+        self.value("NAXIS", "0");
+        self.value("EXTEND", "T");
+        for (k, v) in keys {
+            self.value(k, v);
+        }
+        self.end_header();
+    }
+
+    /// A binary table with one `row_bytes`-wide raw-byte column named `name`.
+    pub(crate) fn table(&mut self, name: &str, row_bytes: usize, data: &[u8]) {
+        assert_eq!(data.len() % row_bytes, 0);
+        self.card("XTENSION= 'BINTABLE'");
+        self.value("BITPIX", "8");
+        self.value("NAXIS", "2");
+        self.value("NAXIS1", &row_bytes.to_string());
+        self.value("NAXIS2", &(data.len() / row_bytes).to_string());
+        self.value("PCOUNT", "0");
+        self.value("GCOUNT", "1");
+        self.value("TFIELDS", "1");
+        self.card(&format!("TTYPE1  = '{name}'"));
+        self.card(&format!("TFORM1  = '{row_bytes}A'"));
+        self.end_header();
+        self.bytes.extend_from_slice(data);
+        let pad = self.bytes.len().next_multiple_of(2880);
+        self.bytes.resize(pad, 0);
+    }
+}

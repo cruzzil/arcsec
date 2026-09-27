@@ -715,4 +715,389 @@ mod tests {
         let no_hits = index.find_code_matches(&[0.5, 0.6, 0.0, 0.0], 0.02);
         assert_eq!(no_hits.len(), 0);
     }
+
+    // ── Loading real FITS files ────────────────────────────────────────────────
+
+    use crate::test_support::{
+        ANET_CODE_HI, ANET_CODE_LO, FitsWriter, RawIndex, Rng, SkySpec, TempDir, random_sky,
+        separation,
+    };
+
+    /// A small index: 300 stars around (40°, -25°), `n_quads` random groups.
+    fn raw_index(dim_quads: usize, n_quads: usize, seed: u64) -> RawIndex {
+        let mut rng = Rng::new(seed);
+        let sky: Vec<(f64, f64)> = random_sky(
+            &mut rng,
+            &SkySpec {
+                ra0: 40f64.to_radians(),
+                dec0: (-25f64).to_radians(),
+                side_deg: 4.0,
+                n: 300,
+                min_sep_deg: 0.01,
+                mag_lo: 8.0,
+                mag_hi: 12.0,
+            },
+        )
+        .iter()
+        .map(|s| (s.ra, s.dec))
+        .collect();
+        let groups: Vec<Vec<u32>> = (0..n_quads)
+            .map(|_| {
+                let mut g: Vec<u32> = Vec::new();
+                while g.len() < dim_quads {
+                    let i = (rng.next_u64() % sky.len() as u64) as u32;
+                    if !g.contains(&i) {
+                        g.push(i);
+                    }
+                }
+                g
+            })
+            .collect();
+        RawIndex::build(dim_quads, &sky, &groups)
+    }
+
+    fn write(dir: &TempDir, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn assert_loads_faithfully(raw: &RawIndex) {
+        let dir = TempDir::new("anet");
+        let path = write(&dir, "index.fits", &raw.fits_bytes());
+        let idx = load_anet_index(&path).expect("load");
+
+        assert_eq!(idx.dim_quads, raw.dim_quads);
+        assert_eq!(idx.n_code_dims(), 2 * (raw.dim_quads - 2));
+        assert!((idx.scale_lo - raw.scale_lo).abs() < 1e-12);
+        assert!((idx.scale_hi - raw.scale_hi).abs() < 1e-12);
+
+        // Stars: 32-bit fixed-point unit vectors, good to a few milliarcseconds.
+        assert_eq!(idx.stars.len(), raw.stars.len());
+        for (s, &(ra, dec)) in idx.stars.iter().zip(&raw.stars) {
+            assert!(separation(s.ra, s.dec, ra, dec) < 1e-8, "star moved");
+            assert!((0.0..2.0 * PI).contains(&s.ra));
+        }
+
+        // Entries come back sorted on code[0], with the parallel f32 array.
+        assert_eq!(idx.entries.len(), raw.quads.len());
+        assert_eq!(idx.codes.len(), idx.entries.len());
+        assert!(idx.entries.windows(2).all(|w| w[0].code[0] <= w[1].code[0]));
+        for (e, c) in idx.entries.iter().zip(&idx.codes) {
+            assert!((0..4).all(|k| (e.code[k] as f32 - c[k]).abs() < 1e-6));
+        }
+
+        // Every quad is present with its stars in canonical order and its code
+        // decoded to within the u16 quantum.
+        let quantum = (ANET_CODE_HI - ANET_CODE_LO) / 65535.0;
+        let expected = raw.to_index();
+        for want in &expected.entries {
+            let got = idx
+                .entries
+                .iter()
+                .find(|e| {
+                    (0..want.n_stars).all(|k| {
+                        separation(
+                            e.star_ra[k],
+                            e.star_dec[k],
+                            want.star_ra[k],
+                            want.star_dec[k],
+                        ) < 1e-8
+                    })
+                })
+                .expect("quad lost in loading");
+            assert_eq!(got.n_stars, raw.dim_quads);
+            for k in 0..idx.n_code_dims() {
+                assert!(
+                    (got.code[k] - want.code[k]).abs() <= quantum,
+                    "code[{k}] {} vs {}",
+                    got.code[k],
+                    want.code[k]
+                );
+            }
+            assert!(
+                separation(
+                    got.center_ra,
+                    got.center_dec,
+                    want.center_ra,
+                    want.center_dec
+                ) < 1e-8
+            );
+        }
+
+        // A lookup by one of its own codes finds the entry.
+        let probe = &idx.entries[idx.entries.len() / 2];
+        let hits = idx.find_code_matches(&probe.code, 1e-6);
+        assert!(hits.iter().any(|&i| idx.entries[i].code == probe.code));
+
+        // The header peek agrees with the full load.
+        let (dq, lo, hi) = peek_anet_scale(&path).expect("peek");
+        assert_eq!(dq, raw.dim_quads);
+        assert!((lo - raw.scale_lo).abs() < 1e-12 && (hi - raw.scale_hi).abs() < 1e-12);
+    }
+
+    #[test]
+    fn loads_a_quad_index() {
+        assert_loads_faithfully(&raw_index(4, 400, 1));
+    }
+
+    #[test]
+    fn loads_a_triangle_index() {
+        assert_loads_faithfully(&raw_index(3, 400, 2));
+    }
+
+    #[test]
+    fn find_code_matches_uses_every_code_dimension() {
+        let idx = raw_index(4, 400, 3).to_index();
+        let target = idx.entries[123].code;
+        // Brute force over the entries must agree with the binary-searched scan.
+        for tol in [0.001, 0.01, 0.05] {
+            for probe in [target, [0.3, 0.4, 0.5, 0.6], [0.0, 0.0, 1.0, 1.0]] {
+                let mut want: Vec<usize> = idx
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
+                        let d2: f64 = (0..4).map(|k| (e.code[k] - probe[k]).powi(2)).sum();
+                        d2.sqrt() <= tol * 0.999
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut got = idx.find_code_matches(&probe, tol);
+                want.sort_unstable();
+                got.sort_unstable();
+                // f32 rounding may admit an entry sitting exactly on the boundary.
+                assert!(want.iter().all(|i| got.contains(i)), "tol {tol}");
+                assert!(got.len() <= want.len() + 1, "tol {tol}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_range_table_falls_back_to_the_standard_code_range() {
+        // Rebuild the file without kdtree_range_codes: the loader must use the
+        // standard astrometry.net range, which is what the writer used anyway.
+        let raw = raw_index(4, 50, 4);
+        let bytes = raw.fits_bytes();
+        let dir = TempDir::new("anet-norange");
+        let mut w = FitsWriter::default();
+        copy_hdus_except(&bytes, "kdtree_range_codes", &mut w);
+        let path = write(&dir, "index.fits", &w.bytes);
+        let idx = load_anet_index(&path).expect("load");
+        let want = raw.to_index();
+        for (a, b) in idx.entries.iter().zip(&want.entries) {
+            assert!((a.code[0] - b.code[0]).abs() < 1e-4);
+        }
+    }
+
+    /// Copy every HDU of a FITS byte stream except the table called `skip`.
+    fn copy_hdus_except(bytes: &[u8], skip: &str, out: &mut FitsWriter) {
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let start = pos;
+            let mut naxis1 = 0usize;
+            let mut naxis2 = 0usize;
+            let mut name = String::new();
+            let mut is_ext = false;
+            loop {
+                let card = core::str::from_utf8(&bytes[pos..pos + 80]).unwrap();
+                pos += 80;
+                let val = card
+                    .get(10..)
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('\'')
+                    .trim();
+                match card.get(..8).unwrap_or("").trim() {
+                    "XTENSION" => is_ext = true,
+                    "NAXIS1" => naxis1 = val.parse().unwrap(),
+                    "NAXIS2" => naxis2 = val.parse().unwrap(),
+                    "TTYPE1" => name = val.to_string(),
+                    "END" => break,
+                    _ => {}
+                }
+            }
+            pos = pos.next_multiple_of(2880);
+            if is_ext {
+                pos += (naxis1 * naxis2).next_multiple_of(2880);
+            }
+            if name != skip {
+                out.bytes.extend_from_slice(&bytes[start..pos]);
+            }
+        }
+    }
+
+    fn err_kind(r: Result<AnetIndex, ArcsecError>) -> io::ErrorKind {
+        match r {
+            Err(ArcsecError::CatalogIo(e)) => e.kind(),
+            Err(e) => panic!("expected CatalogIo, got {e:?}"),
+            Ok(_) => panic!("expected an error"),
+        }
+    }
+
+    /// `peek_anet_scale` is documented to return `CatalogIo` when CFITSIO cannot
+    /// open the file, but rsfitsio's `fits_open_image` (`ffiopn_safer`,
+    /// cfileio.rs:887) unwraps the file handle after a failed open and panics with
+    /// "Null Pointer" instead of returning the status. The CLI's
+    /// `collect_index_files` peeks every `index-*.fits` in the directory and means
+    /// to skip bad ones with `.ok()?`, so one empty or corrupt index file (an
+    /// interrupted download, say) crashes the whole run.
+    #[test]
+    #[ignore = "bug: peek_anet_scale panics inside rsfitsio on a missing, empty or non-FITS file"]
+    fn peek_anet_scale_reports_unreadable_files() {
+        let dir = TempDir::new("anet-peek");
+        let missing = dir.path().join("absent.fits");
+        let junk = write(&dir, "junk.fits", &[0x5Au8; 4000]);
+        let empty = write(&dir, "empty.fits", &[]);
+        for path in [missing, junk, empty] {
+            let r = std::panic::catch_unwind(|| peek_anet_scale(&path));
+            assert!(
+                matches!(r, Ok(Err(ArcsecError::CatalogIo(_)))),
+                "{} did not give CatalogIo",
+                path.display()
+            );
+        }
+    }
+
+    /// An index whose final HDU is one the loader needs cannot be loaded: moving to
+    /// the last HDU of the in-memory file fails with CFITSIO status 113
+    /// (`READ_ERROR`), where the same move on the same bytes opened from disk
+    /// succeeds. Distributed astrometry.net indexes end with tables the loader never
+    /// reads (sweep, magnitudes), so this does not bite today, but an index trimmed
+    /// to the tables arcsec uses fails with a misleading "HDU … not found".
+    #[test]
+    #[ignore = "bug: load_anet_index cannot reach the last HDU of an in-memory FITS file"]
+    fn load_anet_index_reads_a_required_table_in_the_last_hdu() {
+        let raw = raw_index(4, 50, 8);
+        let mut w = FitsWriter::default();
+        copy_hdus_except(&raw.fits_bytes(), "sweep", &mut w);
+        let dir = TempDir::new("anet-last");
+        let path = write(&dir, "index.fits", &w.bytes);
+        let idx = load_anet_index(&path).expect("kdtree_data_stars is the last HDU");
+        assert_eq!(idx.stars.len(), raw.stars.len());
+    }
+
+    #[test]
+    fn unreadable_indexes_are_errors_not_panics() {
+        let dir = TempDir::new("anet-bad");
+
+        // No such file.
+        let missing = dir.path().join("absent.fits");
+        assert_eq!(err_kind(load_anet_index(&missing)), io::ErrorKind::NotFound);
+
+        // Not FITS at all.
+        let junk = write(&dir, "junk.fits", &[0x5Au8; 4000]);
+        assert!(matches!(
+            load_anet_index(&junk),
+            Err(ArcsecError::CatalogIo(_))
+        ));
+
+        // An empty file.
+        let empty = write(&dir, "empty.fits", &[]);
+        assert!(matches!(
+            load_anet_index(&empty),
+            Err(ArcsecError::CatalogIo(_))
+        ));
+
+        // DIMQUADS outside 3..=4. (Each file ends with an unused table: the loader
+        // cannot read a file's last HDU, see the ignored test above.)
+        let mut w = FitsWriter::default();
+        w.primary(&[("DIMQUADS", "5".into())]);
+        w.table("sweep", 1, &[0]);
+        let five = write(&dir, "dim5.fits", &w.bytes);
+        assert_eq!(err_kind(load_anet_index(&five)), io::ErrorKind::Unsupported);
+
+        // A valid primary header but none of the tables.
+        let mut w = FitsWriter::default();
+        w.primary(&[("DIMQUADS", "4".into())]);
+        w.table("sweep", 1, &[0]);
+        let bare = write(&dir, "bare.fits", &w.bytes);
+        assert_eq!(err_kind(load_anet_index(&bare)), io::ErrorKind::InvalidData);
+
+        // Each required table missing in turn.
+        let full = raw_index(4, 20, 5).fits_bytes();
+        for table in ["kdtree_data_stars", "quads", "kdtree_data_codes"] {
+            let mut w = FitsWriter::default();
+            copy_hdus_except(&full, table, &mut w);
+            let path = write(&dir, &format!("no-{table}.fits"), &w.bytes);
+            assert_eq!(
+                err_kind(load_anet_index(&path)),
+                io::ErrorKind::InvalidData,
+                "without {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn quads_pointing_at_missing_or_coincident_stars_are_dropped() {
+        let stars = vec![
+            AnetStar { ra: 1.0, dec: 0.5 },
+            AnetStar { ra: 1.01, dec: 0.5 },
+            AnetStar { ra: 1.0, dec: 0.51 },
+            AnetStar { ra: 1.0, dec: 0.5 }, // same place as star 0
+        ];
+        let code = [0.1, 0.2, 0.3, 0.4];
+        assert!(entry_from_sky(&stars, &[0, 1, 2], code, 3).is_some());
+        assert!(entry_from_sky(&stars, &[0, 1, 9], code, 3).is_none());
+        assert!(entry_from_sky(&stars, &[0, 3, 1], code, 3).is_none());
+        assert!(entry_from_sky(&stars, &[0, 1], code, 2).is_none());
+        assert!(entry_from_sky(&stars, &[0, 1, 2, 3, 0], code, 5).is_none());
+
+        // Loading a file with such a quad keeps the good ones.
+        let mut raw = raw_index(4, 30, 6);
+        raw.quads[3] = vec![0, 1, 2, 99_999];
+        let dir = TempDir::new("anet-dangling");
+        let path = write(&dir, "index.fits", &raw.fits_bytes());
+        let idx = load_anet_index(&path).unwrap();
+        assert_eq!(idx.entries.len(), raw.quads.len() - 1);
+    }
+
+    #[test]
+    fn star_decoding_covers_the_whole_sphere() {
+        // The poles, the equator either side of RA 0, and a southern star.
+        let pts = [
+            (0.0, PI / 2.0),
+            (3.0, -PI / 2.0),
+            (0.0, 0.0),
+            (2.0 * PI - 1e-6, 0.0),
+            (4.0, -1.2),
+        ];
+        let mut bytes = Vec::new();
+        for &(ra, dec) in &pts {
+            for v in [dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin()] {
+                let u = ((v + 1.0) * (f64::from(u32::MAX) / 2.0)).round() as u32;
+                bytes.extend_from_slice(&u.to_le_bytes());
+            }
+        }
+        let stars = parse_stars(&bytes);
+        assert_eq!(stars.len(), pts.len());
+        for (s, &(ra, dec)) in stars.iter().zip(&pts) {
+            assert!((s.dec - dec).abs() < 1e-8, "dec {} vs {dec}", s.dec);
+            if dec.abs() < 1.5 {
+                assert!(separation(s.ra, s.dec, ra, dec) < 1e-8);
+            }
+        }
+        // A trailing partial record is ignored rather than misread.
+        bytes.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(parse_stars(&bytes).len(), pts.len());
+    }
+
+    #[test]
+    fn code_parsing_decodes_every_dimension() {
+        let lo = -0.25;
+        let scale = 1000.0;
+        let mut bytes = Vec::new();
+        for u in [0u16, 250, 500, 65_535] {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        let four = parse_codes(&bytes, 4, lo, scale);
+        assert_eq!(four.len(), 1);
+        assert_eq!(four[0], [-0.25, 0.0, 0.25, 65.285]);
+        let two = parse_codes(&bytes, 2, lo, scale);
+        assert_eq!(two, vec![[-0.25, 0.0, 0.0, 0.0], [0.25, 65.285, 0.0, 0.0]]);
+        assert_eq!(
+            parse_quad_indices(&[1, 0, 0, 0, 2, 1, 0, 0, 9]),
+            vec![1, 258]
+        );
+    }
 }

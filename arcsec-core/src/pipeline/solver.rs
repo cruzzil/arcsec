@@ -954,9 +954,7 @@ mod tests {
 
     /// 40 exact pairs under `known_plate`, then five pairs whose catalogue side is
     /// displaced by `outlier(k)`.
-    fn pairs_with_outliers(
-        outlier: impl Fn(usize, (f64, f64)) -> (f64, f64),
-    ) -> PairedPositions {
+    fn pairs_with_outliers(outlier: impl Fn(usize, (f64, f64)) -> (f64, f64)) -> PairedPositions {
         let plate = known_plate();
         let mut rng = Rng::new(7);
         let mut img = Vec::new();
