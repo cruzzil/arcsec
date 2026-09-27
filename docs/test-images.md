@@ -10,7 +10,7 @@ Companion to [plate-solving.md](plate-solving.md). Fetch everything with:
 scripts/fetch-test-images.sh                  # all tiers → resources/testset/
 scripts/fetch-test-images.sh --tier A         # just the synthetic-truth tier
 scripts/fetch-test-images.sh --list           # show the manifest without downloading
-scripts/benchmark.py --auto-db                # solve and score everything (§6.7)
+scripts/benchmark.py --auto-db                # solve and score everything (§6.8)
 ```
 
 The manifest lives at [`scripts/test-images.tsv`](../scripts/test-images.tsv). Images are
@@ -630,7 +630,29 @@ With `PCiiijjj` support added, `ps1_m67` solves correctly. The lesson for the co
 `stress_narrow` was likewise misclassified: at 0.10° it was assumed to be below the d80
 floor, but it solves correctly to 0.607″, so it moved from tier D to tier A.
 
-### 6.7 Reproducing
+### 6.7 An off-centre hint exposed a rotation error (fixed in 0.1.1)
+
+Every run above gives arcsec the true centre as its hint, and that hid a real bug: the
+plate was fitted in the tangent plane of the spiral position that matched, not of the
+image centre, and a linear fit there absorbs the projection's curvature as a rotation
+that grows with the offset and with declination. The centre stayed right (under 1″) and
+the star-level RMS stayed small, so nothing flagged it, but the corners did not:
+
+| `--offset-hint` | tier A correct (0.1.0 → 0.1.1) | tier A false positives | tier B correct |
+|---|---|---|---|
+| 0 | 56 → 56 | 0 → 0 | 34 → 34 |
+| 0.3 fields | 8 → 55 | 47 → 0 | 29 → 31 |
+| 0.6 fields | 4 → 51 | 48 → 1 | 23 → 29 |
+
+In 0.1.0 the errors reached 1.7° of rotation at Dec −80 and 1600″ at the corners of the
+10° field. The fix (`recentre` in `pipeline/solver.rs`) refits the verified matches in
+the image centre's tangent plane. The one remaining 0.6-field false positive is
+`fov_5p00` at 5.9″, solved from a spiral position 3° away with 49 verified stars.
+
+Real hints are rarely exact (a mount's position, a blind estimate), so **also run the
+benchmark with `--offset-hint 0.3`** when changing matching or the fit.
+
+### 6.8 Reproducing
 
 ```bash
 scripts/fetch-test-images.sh                       # 103 images, ~2.2 GB

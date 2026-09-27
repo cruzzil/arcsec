@@ -101,6 +101,25 @@ pub fn solve_plate_constants(
     img_xy: &[(f64, f64)],
     ref_xy: &[(f64, f64)],
 ) -> Result<PlateConstants> {
+    let plate = fit_affine(img_xy, ref_xy)?;
+
+    // Check that X and Y pixel scales agree within 10% (a larger disagreement means the fit is not a similarity transform)
+    let xy_sqr_ratio =
+        (plate.a.powi(2) + plate.b.powi(2)) / (1e-8 + plate.d.powi(2) + plate.e.powi(2));
+    if !(0.9..=1.1).contains(&xy_sqr_ratio) {
+        return Err(ArcsecError::BadSolution {
+            ratio: xy_sqr_ratio,
+        });
+    }
+    Ok(plate)
+}
+
+/// The least-squares affine fit behind [`solve_plate_constants`], without its
+/// scale-agreement check.
+///
+/// For outlier rejection, where the first fit is made on contaminated pairs and
+/// can be skewed past that check even though clipping would recover it.
+pub(crate) fn fit_affine(img_xy: &[(f64, f64)], ref_xy: &[(f64, f64)]) -> Result<PlateConstants> {
     let n = img_xy.len();
     if ref_xy.len() != n {
         return Err(ArcsecError::Singular);
@@ -117,15 +136,6 @@ pub fn solve_plate_constants(
 
     let sol_x = lsq_fit(&a_matrix, &b_x)?;
     let sol_y = lsq_fit(&a_matrix, &b_y)?;
-
-    // Check that X and Y pixel scales agree within 10% (a larger disagreement means the fit is not a similarity transform)
-    let xy_sqr_ratio =
-        (sol_x[0].powi(2) + sol_x[1].powi(2)) / (1e-8 + sol_y[0].powi(2) + sol_y[1].powi(2));
-    if !(0.9..=1.1).contains(&xy_sqr_ratio) {
-        return Err(ArcsecError::BadSolution {
-            ratio: xy_sqr_ratio,
-        });
-    }
 
     Ok(PlateConstants {
         a: sol_x[0],
