@@ -6,6 +6,11 @@ user would build one without a large download.
 Companion to [plate-solving.md](plate-solving.md) §5.2 (spiral vs pre-indexed) and
 §12.5 (quad-selection robustness). Written 2026-09-03.
 
+**Status (0.1.0, 2026-09-25): not started.** None of the phases below, including the
+Phase 0 experiment, has been done; there is no `arcsec index` subcommand and no
+`PLOVIDX` reader. The numbers in §1 still hold on the current code (90/103, 0 false
+positives, the same 8 tier-A failures).
+
 ---
 
 ## 1. Read this first: the case is weaker than it was
@@ -32,9 +37,10 @@ failures.** Do not build it for that reason. There are three arguments left that
 stand up:
 
 1. **Drop the astrometry.net dependency for blind solving.** Blind mode currently
-   needs their index files — a separate multi-gigabyte download, on top of the ASTAP
-   database the user already has. Building from the ASTAP database means **no new data
-   download at all**.
+   needs their index files — a separate download on top of the ASTAP database the user
+   already has (`arcsec catalog install anet-4100` is ~160 MB; the Gaia-based
+   `anet-5200` LITE series is ~8.8 GB). Building from the ASTAP database means **no new
+   data download at all**.
 2. **Wide-radius and blind speed.** The spiral costs `O((r/FOV)²)` positions and
    rebuilds catalogue quads at every one. Profiling put 36% of a failing dense solve
    in `find_matches_indexed`, called once per position. An index turns that into one
@@ -76,7 +82,7 @@ field of view `F` only needs quads roughly 0.45 F to 1.0 F across:
 
 | Rig | Bands | Size |
 |---|---|---|
-| NGC 3372 set (3.13″/px, 4.6° field) | 3 | **87 MB** |
+| NGC 3372 set (3.13″/px, 2.6° field) | 3 | **87 MB** |
 | 1.5° field | 3 | **347 MB** |
 | 0.5° field | 3 | 2.8 GB |
 
@@ -131,12 +137,13 @@ mirroring how the existing readers work. Little-endian throughout.
 Three choices worth justifying:
 
 **Astrometry.net code space, not our 5-ratio descriptor.** `blind.rs` already
-implements the canonical A–B frame construction (`CX ≤ 0.5`, `CX ≤ DX`) and its
-matcher, so the online side largely exists. More importantly a code match yields the
-**star correspondence** (A↔A′, B↔B′, …), so a single matched quad gives a full WCS —
-that is what makes blind solving cheap. Our 5-ratio descriptor is reflection-invariant
-and gives no correspondence, which is why the current hinted path can only fit quad
-*centroids*. The 5 ratios can always be recomputed from the four star positions if
+implements the canonical A–B frame construction (for quads `CX + DX ≤ 1` and
+`CX ≤ DX`; for triangles `CX ≤ 0.5`) and its matcher, so the online side largely
+exists. More importantly a code match yields the **star correspondence** (A↔A′, B↔B′,
+…), so a single matched quad gives a full WCS — that is what makes blind solving cheap.
+Our 5-ratio descriptor is reflection-invariant and gives no correspondence, which is why
+the hinted path's first fit at each position is built from quad *centroids*, and star
+pairs only appear afterwards in `verify_and_refit`. The 5 ratios can always be recomputed from the four star positions if
 something needs them.
 
 **Sorted by the last code dimension, not the first.** Exactly the finding from the
@@ -219,17 +226,19 @@ Behaviour that makes it "easy" rather than merely possible:
 
 * **No new data download.** It builds from the ASTAP database the user already has for
   normal solving. This is the whole point.
-* **Defaults that need no thought.** `--out` defaults to
-  `~/.local/share/arcsec/index` (`%LOCALAPPDATA%` on Windows), threads to
-  `max_threads()`, bands to 0.45–1.0 × the field.
+* **Defaults that need no thought.** `--out` defaults to the directory
+  `arcsec catalog` already manages (`catalog_cmd::default_dir`, e.g.
+  `~/.local/share/arcsec/catalogs` on Linux, overridable with `ARCSEC_CATALOG_DIR`),
+  threads to `max_threads()`, bands to 0.45–1.0 × the field.
 * **Says what it will cost before doing it.** `Will build 3 bands (0.71°, 1.00°,
   1.41°), 347 MB, ~12 min on 24 threads. Continue? [y/N]` — and `--yes` for scripts.
 * **Resumable.** Interrupt it and re-run; completed cell shards are reused.
 * **Progress that means something** — cells done, quads emitted, ETA.
 * **The solver finds it without being told.** `-i` already takes a directory and ranks
   astrometry.net files by scale; extend that to recognise `PLOVIDX` by magic and rank
-  both kinds together. Then check the default index directory when `-i` is absent, so
-  a built index is simply used.
+  both kinds together. Then check the catalogue directory when `-i` is absent, so a
+  built index is simply used. (Today `-i` is always required for blind mode, even though
+  `arcsec catalog install anet-4100` puts the astrometry.net files in that directory.)
 
 For users who would rather not build at all, §8 phase 4 covers publishing pre-built
 bands.
@@ -240,8 +249,8 @@ bands.
 
 Three levels, each independently shippable:
 
-1. **Blind, instead of astrometry.net.** `blind.rs`'s `find_code_matches`,
-   `hyp_from_entry` and `verify_score` work on `AnetIndex`. Introduce a small trait —
+1. **Blind, instead of astrometry.net.** `blind.rs`'s `hyp_from_entry` and
+   `verify_score`, and `AnetIndex::find_code_matches_into`, work on `AnetIndex`. Introduce a small trait —
    codes, quad stars, star list, scale range — implement it for both `AnetIndex` and
    the new format, and blind mode reads either. Lowest risk: it touches no path that
    the current 90/103 depends on.

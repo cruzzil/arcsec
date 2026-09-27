@@ -1,27 +1,39 @@
 [package]
 name = "arcsec"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
 description = "Astrometric plate solver: find where a telescope was pointing from an image"
-repository = "https://github.com/cruzzil/arcsec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://github.com/cruzzil/arcsec/tree/main/docs"
 readme = "../README.md"
+keywords = ["astronomy", "astrometry", "plate-solving", "fits", "wcs"]
+categories = ["science", "command-line-utilities", "multimedia::images"]
+# Only what a build needs. The README is added automatically via `readme`.
+include = ["src/**/*.rs", "build.rs", "LICENSE"]
 
 [lints]
 workspace = true
 
 [dependencies]
-clap = "4.6.1"
+clap = "4.6.7"
 env_logger = { workspace = true }
 log = { workspace = true }
-arcsec-core = { path = "../arcsec-core" }
+arcsec-core = { workspace = true }
 rsfitsio = "0.470.2"
-bytemuck = "1"
+bytemuck = "1.25"
 libc = "0.2"
-ureq = "3.4.0"
-zip = "8.6.0"
+ureq = "3.4.2"
+# ASTAP's catalogue zips are all deflate (checked 2026-09-26), so only that
+# method is enabled. The defaults add zstd, bzip2, lzma, ppmd and AES, and zstd
+# compiles bundled C.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4.46"
 lzma-rs = "0.3.0"
 xisf = "0.5.1"
-asdf-rs = "0.2.0"
+asdf-rs = "0.2.1"
 
+# Gives arcsec.exe a Windows version resource; see build.rs.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"

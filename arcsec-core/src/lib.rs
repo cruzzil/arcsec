@@ -1,3 +1,75 @@
+//! Core astrometry for the [arcsec] plate solver.
+//!
+//! Given the pixels of an astronomical image and an approximate pointing, this crate
+//! works out exactly where the image lies on the sky and returns a FITS-style WCS
+//! solution. It implements the star-pattern matching approach introduced by ASTAP and
+//! reads ASTAP's star databases (`.1476`, `.290` and `.001`), plus Astrometry.net
+//! index files for hint-free ("blind") position estimates.
+//!
+//! The pipeline, driven by [`pipeline::solve_image`]:
+//!
+//! 1. **Detection** ([`detection`]) — background and noise estimation, then a
+//!    multi-pass star finder measuring centroid, HFD and SNR.
+//! 2. **Patterns** ([`quads`]) — 4-star quads described by five distance ratios.
+//! 3. **Search** ([`pipeline`]) — a square spiral around the hint; at each position
+//!    catalogue stars ([`catalog`]) are projected onto the tangent plane
+//!    ([`math::coords`]), turned into quads and matched against the image.
+//! 4. **Fit and verify** ([`math::lsq`], [`wcs`]) — a least-squares plate fit,
+//!    checked star by star before it is accepted.
+//!
+//! Angles are radians throughout the API unless a name says otherwise.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::path::PathBuf;
+//! use arcsec_core::ImageBuffer;
+//! use arcsec_core::pipeline::{SolveMethod, SolveParams, solve_image};
+//!
+//! # fn load_pixels() -> ImageBuffer { ImageBuffer::new(4096, 4096) }
+//! let img: ImageBuffer = load_pixels(); // row-major f32 pixels from your FITS reader
+//! let params = SolveParams {
+//!     ra_hint: 83.82_f64.to_radians(),
+//!     dec_hint: (-5.39_f64).to_radians(),
+//!     fov: 1.2_f64.to_radians(),
+//!     search_radius: 10.0_f64.to_radians(),
+//!     quad_tolerance: 0.007,
+//!     hfd_min: 1.5,
+//!     max_stars: 500,
+//!     db_path: PathBuf::from("/usr/share/astap/data"),
+//!     db_name: "d50".into(),
+//!     binning: 1,
+//!     method: SolveMethod::Quads,
+//!     threads: 0,
+//! };
+//! let wcs = solve_image(&img, &params)?;
+//! println!(
+//!     "centre RA {:.4}°, Dec {:.4}°, scale {:.2}\"/px",
+//!     wcs.ra0.to_degrees(),
+//!     wcs.dec0.to_degrees(),
+//!     wcs.cdelt2 * 3600.0
+//! );
+//! # Ok::<(), arcsec_core::ArcsecError>(())
+//! ```
+//!
+//! Progress is reported through the [`log`] crate at `info` level; install any
+//! logger to see it.
+//!
+//! [arcsec]: https://github.com/cruzzil/arcsec
+//! [`log`]: https://docs.rs/log
+
+#![warn(missing_docs)]
+// Library-only API hygiene, on top of the workspace lints (which the CLI shares).
+#![warn(
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::doc_markdown
+)]
+
+extern crate alloc;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Process-wide worker-thread limit. 0 = one per available core.
@@ -15,11 +87,10 @@ pub fn set_max_threads(n: usize) {
 }
 
 /// Resolve the thread limit: the configured value, or one per core if unset.
+#[must_use]
 pub fn max_threads() -> usize {
     match MAX_THREADS.load(Ordering::Relaxed) {
-        0 => std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1),
+        0 => std::thread::available_parallelism().map_or(1, core::num::NonZero::get),
         n => n,
     }
 }

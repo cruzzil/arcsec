@@ -1,4 +1,4 @@
-// Background estimation for star detection.
+//! Background estimation for star detection.
 
 use crate::types::ImageBuffer;
 
@@ -7,14 +7,19 @@ use crate::types::ImageBuffer;
 /// travel together anyway.
 #[derive(Debug, Clone, Copy)]
 pub struct Region {
+    /// First column.
     pub x0: usize,
+    /// Last column (inclusive).
     pub x1: usize,
+    /// First row.
     pub y0: usize,
+    /// Last row (inclusive).
     pub y1: usize,
 }
 
 impl Region {
-    /// The whole frame.
+    /// The whole frame. The image must be at least 1×1.
+    #[must_use]
     pub fn whole(img: &ImageBuffer) -> Self {
         Self {
             x0: 0,
@@ -25,7 +30,8 @@ impl Region {
     }
 
     /// The frame minus a one-pixel border, which is what the star scan wants: the
-    /// hot-pixel test reads a neighbour on each side.
+    /// hot-pixel test reads a neighbour on each side. The image must be at least 3×3.
+    #[must_use]
     pub fn inset(img: &ImageBuffer) -> Self {
         Self {
             x0: 1,
@@ -36,10 +42,13 @@ impl Region {
     }
 
     /// The same rectangle with a different row range.
+    #[must_use]
     pub fn with_rows(self, y0: usize, y1: usize) -> Self {
         Self { y0, y1, ..self }
     }
 
+    /// Number of rows covered.
+    #[must_use]
     pub fn rows(&self) -> usize {
         self.y1.saturating_sub(self.y0) + 1
     }
@@ -128,7 +137,14 @@ fn histogram_rows(
 }
 
 /// Sigma-clipped mean and standard deviation from a histogram sub-region.
-/// `sigma_low=3`, `sigma_high=2`, iterates until `|Δmean| < convergence_threshold`.
+///
+/// Values above `mean + 2σ` are clipped on each iteration; the lower bound is held
+/// at 0, so nothing is clipped from below. Pixel values above `upper_limit` (and
+/// above 65535) are ignored. Iterates until both the mean and σ change by less
+/// than `convergence_threshold`, or `max_iterations` is reached.
+///
+/// Returns `(mean, stdev)`.
+#[must_use]
 pub fn sigma_clipped_mean_from_histogram(
     img: &ImageBuffer,
     region: Region,
@@ -136,7 +152,6 @@ pub fn sigma_clipped_mean_from_histogram(
     max_iterations: usize,
     convergence_threshold: f64,
 ) -> (f64, f64) {
-    const SIGMA_LOW: f64 = 3.0;
     const SIGMA_HIGH: f64 = 2.0;
 
     let hist = build_histogram(img, region, upper_limit);
@@ -179,7 +194,7 @@ pub fn sigma_clipped_mean_from_histogram(
         stdev = variance.sqrt();
 
         if stdev > 0.0 {
-            // The lower clip bound is deliberately held at 0, so SIGMA_LOW is not applied.
+            // The lower clip bound is deliberately held at 0: no low-side clipping.
             lo = 0;
             hi = (upper_limit)
                 .min((mean + SIGMA_HIGH * stdev).round() as usize)
@@ -192,8 +207,6 @@ pub fn sigma_clipped_mean_from_histogram(
         {
             break;
         }
-
-        let _ = SIGMA_LOW; // referenced so the constant does not warn as unused
     }
 
     (mean, stdev)
@@ -214,10 +227,21 @@ pub struct Background {
 
 /// Analyse image background, noise, and star detection levels.
 ///
-/// `max_stars`: number of stars expected (empirical factor for star_level).
+/// `max_stars`: number of stars expected (empirical factor for `star_level`).
+///
+/// An empty image yields an all-zero `Background`.
+#[must_use]
 pub fn get_background(img: &ImageBuffer, max_stars: usize) -> Background {
     let width = img.width;
     let height = img.height;
+    if width == 0 || height == 0 || img.data.is_empty() {
+        return Background {
+            mean: 0.0,
+            noise: 0.0,
+            star_level: 0.0,
+            star_level2: 0.0,
+        };
+    }
 
     // Build full histogram (0..65535)
     let hist = build_histogram(img, Region::whole(img), 65001);
@@ -233,10 +257,10 @@ pub fn get_background(img: &ImageBuffer, max_stars: usize) -> Background {
         (sum / total_pixels.max(1)) as usize
     };
 
-    let mut background = img.data[0] as f64;
-    if mean_value == 0 {
-        background = 0.0;
+    let background = if mean_value == 0 {
+        0.0
     } else {
+        let mut background = img.data[0] as f64;
         let mut peak_count = 0u32;
         for (i, &bin) in hist.iter().enumerate().take(mean_value + 1).skip(1) {
             if bin > peak_count {
@@ -248,7 +272,8 @@ pub fn get_background(img: &ImageBuffer, max_stars: usize) -> Background {
         if mean_value as f64 > 1.5 * background {
             background = mean_value as f64;
         }
-    }
+        background
+    };
 
     // --- Noise estimation: sigma-clipped standard deviation (sample of pixels) ---
     let step_size = ((height as f64 / 71.0).round() as usize).max(1);

@@ -1,21 +1,27 @@
-// Star detection: HFD measurement and multi-pass star finder.
+//! Star detection: HFD measurement and multi-pass star finder.
+
+use std::collections::HashMap;
 
 use crate::detection::background::{
     Background, Region, get_background, sigma_clipped_mean_from_histogram,
 };
+use crate::types::{ImageBuffer, Star, StarList};
 
 /// The four numbers that decide what counts as a star in one scan pass.
 ///
 /// They are set together and passed together through every layer of the detection
 /// cascade, so carrying them as one value keeps those signatures short.
 #[derive(Debug, Clone, Copy)]
-pub struct Thresholds {
-    pub background: f64,
-    pub noise: f64,
-    pub detection_level: f64,
-    pub hfd_min: f64,
+struct Thresholds {
+    /// Sky level subtracted before the threshold test.
+    background: f64,
+    /// Background noise σ, used by the hot-pixel test.
+    noise: f64,
+    /// Height above background a pixel must exceed to seed a candidate.
+    detection_level: f64,
+    /// Candidates with an HFD at or below this are rejected (pixels).
+    hfd_min: f64,
 }
-use crate::types::{ImageBuffer, Star, StarList};
 
 const ANNULUS_RS: i32 = 14; // search radius passed to HFD (annulus outer = rs+1)
 const RASTER_STEPS: usize = 12; // sub-grid divisions for the fallback retry
@@ -69,7 +75,13 @@ const fn build_round_sqrt_table() -> [u8; ROUND_SQRT_N] {
 ///
 /// Returns `None` if the pixel region is too close to the border, or the candidate
 /// fails star quality checks (not boxed, single hot pixel, too large).
+#[must_use]
 pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
+    /// Annulus buffer size. The annulus is a fixed size (rs = `ANNULUS_RS`), about
+    /// 91 pixels, so it lives on the stack: this runs once per candidate and a
+    /// crowded field has tens of thousands of them.
+    const BG_CAP: usize = 160;
+
     let width = img.width as i32;
     let height = img.height as i32;
     let mut rs = ANNULUS_RS;
@@ -82,10 +94,6 @@ pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
     // --- Annulus background ---
     let r1_sq = rs * rs;
     let r2_sq = r2 * r2;
-    // The annulus is a fixed size (rs = ANNULUS_RS here), about 91 pixels, so keep
-    // it on the stack: this runs once per candidate and a crowded field has tens of
-    // thousands of them.
-    const BG_CAP: usize = 160;
     let mut bg_buf = [0.0f64; BG_CAP];
     let mut bg_len = 0usize;
     // Walk the annulus by row-runs instead of testing every pixel of the enclosing
@@ -346,6 +354,7 @@ pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
 ///
 /// Stars are marked in a mask after detection to avoid double-counting.
 /// After collection, trims to the `max_stars` brightest by SNR.
+#[must_use]
 pub fn find_stars(img: &ImageBuffer, hfd_min: f64, max_stars: usize) -> StarList {
     let w = img.width;
     let h = img.height;
@@ -354,10 +363,14 @@ pub fn find_stars(img: &ImageBuffer, hfd_min: f64, max_stars: usize) -> StarList
     find_stars_with_background(img, &bg, hfd_min, max_stars, w, h).0
 }
 
-/// Internal version allowing pre-computed background.
+/// As [`find_stars`], with a pre-computed background.
+///
+/// `w` and `h` must equal `img.width` and `img.height`. Images smaller than 3×3
+/// yield no stars.
 ///
 /// Returns `(stars, raw_count)` where `raw_count` is the total found before
 /// trimming to `max_stars` — used to emit ASTAP-style progress messages.
+#[must_use]
 pub fn find_stars_with_background(
     img: &ImageBuffer,
     bg: &Background,
@@ -366,6 +379,12 @@ pub fn find_stars_with_background(
     w: usize,
     h: usize,
 ) -> (StarList, usize) {
+    debug_assert_eq!((w, h), (img.width, img.height));
+    // The scan works on the frame minus a one-pixel border; anything smaller has
+    // nothing to scan, and the inset region's bounds would underflow.
+    if w < 3 || h < 3 || img.data.len() < w * h {
+        return (StarList::default(), 0);
+    }
     let mut stars: Vec<Star> = Vec::with_capacity(max_stars + 1000);
     // img_sa: persistent star-area map. 1 = already detected, 0 = free.
     // Using a single marker prevents double-detection across retry passes.
@@ -571,6 +590,9 @@ fn detect_pass(
     region: Region,
     out: &mut Vec<Star>,
 ) {
+    /// Dedup hash cell size (pixels) for merging band results.
+    const CELL: f64 = 2.0;
+
     let threads = crate::max_threads().clamp(1, 32);
     let (y0, y1) = (region.y0, region.y1);
     let rows = region.rows();
@@ -631,8 +653,6 @@ fn detect_pass(
     // yields tens of thousands of stars, while a dense grid over a 4300px frame
     // would allocate millions of buckets - so key a hash map by a 2-pixel cell. A
     // duplicate is within 1 px, so it can only be in the same or an adjacent cell.
-    use std::collections::HashMap;
-    const CELL: f64 = 2.0;
     let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     let mut merged: Vec<Star> = Vec::new();
 
@@ -715,7 +735,7 @@ impl Markers for BandMarkers<'_> {
     }
     #[inline]
     fn set(&mut self, x: usize, y: usize) {
-        BandMarkers::set(self, x, y)
+        BandMarkers::set(self, x, y);
     }
 }
 
@@ -833,7 +853,7 @@ fn detect_pass_scan<M: Markers>(
 
 /// In-place median (quickselect).
 ///
-/// measure_star calls this twice per candidate star - once for the annulus
+/// `measure_star` calls this twice per candidate star - once for the annulus
 /// background and once for its MAD - and a crowded field produces tens of
 /// thousands of candidates. A full sort is O(n log n) for a single order
 /// statistic; `select_nth_unstable_by` is O(n), and the two sorts were 18% of
@@ -844,7 +864,7 @@ fn median_f64(v: &mut [f64]) -> f64 {
     }
     let len = v.len();
     let mid = len / 2;
-    let (lo, nth, _) = v.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+    let (lo, nth, _) = v.select_nth_unstable_by(mid, f64::total_cmp);
     if len % 2 == 1 {
         *nth
     } else {
@@ -977,9 +997,7 @@ mod tests {
         // brightness sort ("comparison function does not implement a total order").
         let w = 64;
         let mut img = ImageBuffer::new(w, w);
-        for v in img.data.iter_mut() {
-            *v = 100.0;
-        }
+        img.data.fill(100.0);
         // A bright blob with NaNs punched through it.
         for dy in -3i32..=3 {
             for dx in -3i32..=3 {
@@ -1004,9 +1022,7 @@ mod tests {
     fn find_stars_survives_nan_pixels() {
         let w = 128;
         let mut img = ImageBuffer::new(w, w);
-        for v in img.data.iter_mut() {
-            *v = 100.0;
-        }
+        img.data.fill(100.0);
         for (i, &(cx, cy)) in [(30usize, 30usize), (80, 40), (50, 90), (100, 100)]
             .iter()
             .enumerate()
@@ -1048,5 +1064,15 @@ mod tests {
         assert_eq!(median_f64(&mut v), 2.0);
         let mut v2 = vec![4.0, 1.0, 3.0, 2.0];
         assert_eq!(median_f64(&mut v2), 2.5);
+    }
+
+    /// Degenerate image sizes must yield no stars rather than panic.
+    #[test]
+    fn tiny_images_yield_no_stars() {
+        for (w, h) in [(0, 0), (1, 1), (2, 2), (0, 5), (5, 0), (2, 10)] {
+            let img = ImageBuffer::new(w, h);
+            let stars = find_stars(&img, 1.0, 100);
+            assert!(stars.is_empty(), "{w}x{h}");
+        }
     }
 }

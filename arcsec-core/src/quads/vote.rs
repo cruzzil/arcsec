@@ -1,13 +1,13 @@
-// Vote-accumulator quad filter.
-//
-// After the standard O(M×N) ratio test finds raw quad matches, each match
-// implies a plate scale and a rotation angle.  True matches all vote for the
-// same (scale, rotation) cell; false matches scatter across the grid.
-//
-// Implementation: 2-D HashMap accumulator keyed by
-//   (round(scale / SCALE_STEP), round(angle_diff / ANGLE_STEP))
-// so no explicit range assumption is needed.  The peak cell's matches are
-// returned, then optionally narrowed by scale with the existing median filter.
+//! Vote-accumulator quad filter.
+//!
+//! After the standard O(M×N) ratio test finds raw quad matches, each match
+//! implies a plate scale and a rotation angle.  True matches all vote for the
+//! same (scale, rotation) cell; false matches scatter across the grid.
+//!
+//! Implementation: 2-D `HashMap` accumulator keyed by
+//! `(round(scale / SCALE_STEP), round(angle_diff / ANGLE_STEP))`
+//! so no explicit range assumption is needed.  The peak cell's matches are
+//! returned, then optionally narrowed by scale with the existing median filter.
 
 use core::f64::consts::PI;
 use std::collections::HashMap;
@@ -27,14 +27,15 @@ const ANGLE_STEP: f64 = PI / 18.0;
 /// median-scale pass removes any residual outliers.
 ///
 /// Two angle-key formulas are tried in parallel:
-///   • **Direct** (det > 0, pure rotation):    key = (φ_img − φ_cat) mod π
-///   • **Reflected** (det < 0, FITS convention): key = (φ_img + φ_cat) mod π
+///   • **Direct** (det > 0, pure rotation):    key = `(φ_img − φ_cat) mod π`
+///   • **Reflected** (det < 0, FITS convention): key = `(φ_img + φ_cat) mod π`
 ///
 /// For a direct transform, all true matches share the same diff-key.
 /// For a reflected transform (which is the common FITS case — CDELT1 is
 /// negative so RA increases opposite to pixel x), the diff-key scatters
 /// while the sum-key is constant.  By searching both grids we handle both
 /// cases without knowing the handedness in advance.
+#[must_use]
 pub fn vote_filter(
     img_quads: &QuadList,
     cat_quads: &QuadList,

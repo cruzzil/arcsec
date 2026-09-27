@@ -7,9 +7,21 @@ at the image centre and the four corners, so scale and rotation error are visibl
 separately from pointing error.
 
 Usage:
-    scripts/benchmark.py [--db ~/star_database] [--db-name d80] [--jobs 8]
-                         [--images resources/testset] [--radius 5]
-                         [--offset-hint 0.0] [--tier A] [--id foo] [--csv out.csv]
+    scripts/benchmark.py [--arcsec target/release/arcsec] [--db ~/star_database]
+                         [--db-name d80 | --auto-db] [--jobs 8] [--threads N]
+                         [--images resources/testset] [--manifest scripts/test-images.tsv]
+                         [--workdir /tmp/arcsec_bench_out] [--radius 5] [--timeout 300]
+                         [--offset-hint 0.0] [--method quads|tetra] [--stars N]
+                         [--max-corner-err 5] [--tier A] [--id foo] [--csv out.csv]
+                         [--astap ~/astap_cli]
+
+--tier and --id are repeatable; --id takes precedence over --tier. --auto-db omits -D so
+arcsec picks the database from the field size. --astap also solves every image with ASTAP
+(-D from --db-name) and prints a head-to-head. Use --jobs 1 for meaningful timings.
+
+A reported solve whose worst corner error exceeds --max-corner-err arcsec counts as a
+false positive. The exit status is 1 if arcsec returned any false positive (including a solution
+for a tier D negative control), 0 otherwise.
 
 No third-party dependencies (no astropy/numpy).
 """
@@ -252,6 +264,8 @@ def run_one(entry, args):
 
     ps_deg = truth.pixscale()
     fov_deg = ps_deg * max(naxis1, naxis2)
+    # What -fov means to ASTAP (and what N.I.N.A. sends): the image height.
+    fov_height_deg = ps_deg * naxis2
     cra, cdec = truth.pix2sky((naxis1 + 1) / 2.0, (naxis2 + 1) / 2.0)
     res["fov_deg"] = round(fov_deg, 4)
     res["pixscale_as"] = round(ps_deg * 3600.0, 3)
@@ -273,7 +287,7 @@ def run_one(entry, args):
     cmd += [
         "--ra", f"{(hint_ra % 360.0) / 15.0:.9f}",
         "--spd", f"{hint_dec + 90.0:.9f}",
-        "--fov", f"{fov_deg:.9f}",
+        "--fov", f"{fov_height_deg:.9f}",
         "-r", str(args.radius),
         "-o", out_base,
     ]
@@ -296,7 +310,7 @@ def run_one(entry, args):
 
     def with_astap(r):
         if args.astap:
-            r.update(run_astap(args, path, hint_ra, hint_dec, fov_deg,
+            r.update(run_astap(args, path, hint_ra, hint_dec, fov_height_deg,
                                out_base + "_astap", truth, naxis1, naxis2))
         return r
 
@@ -328,7 +342,7 @@ def run_one(entry, args):
     res["rot_err_deg"] = round(min(dr, 360.0 - dr), 4)
 
     if args.astap:
-        res.update(run_astap(args, path, hint_ra, hint_dec, fov_deg,
+        res.update(run_astap(args, path, hint_ra, hint_dec, fov_height_deg,
                              out_base + "_astap", truth, naxis1, naxis2))
 
     ini = out_base + ".ini"
@@ -410,7 +424,7 @@ def main():
         return 1
 
     print(f"arcsec   : {args.arcsec}")
-    print(f"database : {args.db} ({args.db_name})")
+    print(f"database : {args.db} ({'auto' if args.auto_db else args.db_name})")
     print(f"images   : {len(entries)} from {args.images}")
     print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
     print()
@@ -544,7 +558,13 @@ def main():
             for r in only_a:
                 print(f"    - {r['id']:<16} arcsec={r['status']}")
         print("=" * 78)
-    return 0
+
+    # Non-zero when arcsec reported any wrong solution, so a script or CI step can
+    # gate on the false-positive count without parsing the summary.
+    false_pos = [r for r in results
+                 if r["status"] == "WRONG"
+                 or (r["tier"] == "D" and r["status"] == "OK")]
+    return 1 if false_pos else 0
 
 
 if __name__ == "__main__":

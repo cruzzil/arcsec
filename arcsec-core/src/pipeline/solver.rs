@@ -1,7 +1,6 @@
-// Full plate-solving pipeline.
+//! Full plate-solving pipeline.
 
 use core::f64::consts::PI;
-use std::io;
 use std::path::PathBuf;
 
 use crate::catalog::read_catalog_stars;
@@ -21,16 +20,17 @@ use crate::wcs::output::derive_wcs;
 use super::spiral::SpiralSearch;
 
 /// Which pattern-matching algorithm to use in the catalog spiral loop.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SolveMethod {
-    /// ASTAP-style 5-ratio quad matching with vote_filter (default).
+    /// ASTAP-style 5-ratio quad matching with `vote_filter` (default).
     #[default]
     Quads,
     /// TETRA 2-ratio triangle matching with bijective filter.
     Tetra,
 }
 
-/// Parameters for `solve_image`.
+/// Parameters for [`solve_image`].
+#[derive(Debug, Clone)]
 pub struct SolveParams {
     /// Approximate RA of image centre (radians, hint only).
     pub ra_hint: f64,
@@ -81,9 +81,8 @@ fn sigma_clip_pairs(
         if img_pos.len() < min_count.max(3) {
             break;
         }
-        let plate = match solve_plate_constants(&img_pos, &cat_pos) {
-            Ok(p) => p,
-            Err(_) => break,
+        let Ok(plate) = solve_plate_constants(&img_pos, &cat_pos) else {
+            break;
         };
         let residuals: Vec<f64> = img_pos
             .iter()
@@ -125,7 +124,7 @@ fn sigma_clip_pairs(
 ///
 /// Correct solves typically match 200-375 stars, so this is deliberately loose;
 /// its job is to reject the handful-of-coincidences case. Together with
-/// MIN_VERIFY_SPREAD it separates two otherwise identical-looking results: M31 at
+/// `MIN_VERIFY_SPREAD` it separates two otherwise identical-looking results: M31 at
 /// 2 degrees (22 stars, spread 0.221, rms 0.65", rotation wrong by 1.56 degrees)
 /// from the Dec -88 field (46 stars, spread 0.207, rms 0.66", correct to 2.3").
 const MIN_VERIFIED_STARS: usize = 30;
@@ -153,7 +152,7 @@ type VerifyPass = (PlateConstants, usize, f64, f64);
 /// and repeat with a shrinking radius.
 ///
 /// Returns `(refined_plate, n_matched_stars, rms_arcsec)`, or `None` if the plate is
-/// degenerate or too few stars agree.
+/// degenerate, too few stars agree, or the matches are too clustered.
 fn verify_and_refit(
     img_stars: &StarList,
     cat_stars: &StarList,
@@ -190,7 +189,7 @@ fn verify_and_refit(
     let mut current = plate.clone();
     let mut best: Option<VerifyPass> = None;
 
-    for &radius in VERIFY_RADII.iter() {
+    for &radius in &VERIFY_RADII {
         let det = current.a * current.e - current.b * current.d;
         if det.abs() < 1e-12 {
             return None;
@@ -250,9 +249,8 @@ fn verify_and_refit(
         if img_pos.len() < 4 {
             break;
         }
-        let refined = match solve_plate_constants(&img_pos, &cat_pos) {
-            Ok(p) => p,
-            Err(_) => break,
+        let Ok(refined) = solve_plate_constants(&img_pos, &cat_pos) else {
+            break;
         };
         let mut sq = 0.0;
         for (&(xi, yi), &(xc, yc)) in img_pos.iter().zip(cat_pos.iter()) {
@@ -325,7 +323,7 @@ struct PositionTry {
 }
 
 impl PositionTry {
-    const NONE: Self = PositionTry {
+    const NONE: Self = Self {
         sep_deg: None,
         outcome: None,
     };
@@ -362,6 +360,8 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         return PositionTry::NONE;
     }
 
+    // Any read failure (a missing tile included) counts as "nothing catalogued
+    // here"; `solve_image` has already checked that the database exists at all.
     let cat_raw = match read_catalog_stars(
         &params.db_path,
         &params.db_name,
@@ -371,11 +371,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         ctx.nrstars_required,
     ) {
         Ok(v) if !v.is_empty() => v,
-        Ok(_) => return PositionTry::NONE,
-        Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => {
-            return PositionTry::NONE;
-        }
-        Err(_) => return PositionTry::NONE,
+        Ok(_) | Err(_) => return PositionTry::NONE,
     };
 
     let sep_deg = sep.to_degrees();
@@ -423,7 +419,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             crate::quads::r#match::sort_catalog_quads(&mut cat_quads);
             let raw = find_matches_sorted(ctx.img_quads, &cat_quads, params.quad_tolerance);
             let n_raw = raw.len();
-            log::info!("Found {} references", n_raw);
+            log::info!("Found {n_raw} references");
             let mut filtered = vote_filter(ctx.img_quads, &cat_quads, &raw, params.quad_tolerance);
             if filtered.len() < ctx.min_quads {
                 let (by_scale, _) = filter_by_scale(&raw, params.quad_tolerance);
@@ -445,7 +441,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             let tol = params.quad_tolerance * TETRA_TOL_FACTOR;
             let raw = find_triangle_matches(ctx.img_tris, &cat_tris, tol);
             let n_raw = raw.len();
-            log::info!("Found {} triangle references", n_raw);
+            log::info!("Found {n_raw} triangle references");
             let biject = bijective_filter(&raw, ctx.img_tris, &cat_tris);
             let (filtered, _) = filter_triangles_by_scale(&biject, params.quad_tolerance);
             if filtered.len() < ctx.min_quads {
@@ -461,29 +457,21 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         }
     };
 
-    let plate = match solve_plate_constants(&img_pos, &cat_pos) {
-        Ok(p) => p,
-        Err(_) => return failed,
+    let Ok(plate) = solve_plate_constants(&img_pos, &cat_pos) else {
+        return failed;
     };
 
-    let (plate, n_verified, rms) = match verify_and_refit(
+    let Some((plate, n_verified, rms)) = verify_and_refit(
         ctx.stars,
         &cat_star_list,
         &plate,
         ctx.img.width,
         ctx.img.height,
-    ) {
-        Some(v) => v,
-        None => {
-            log::info!("Verification failed at this position; continuing search.");
-            return failed;
-        }
+    ) else {
+        log::info!("Verification failed at this position; continuing search.");
+        return failed;
     };
-    log::info!(
-        "Verified {} stars against the catalogue, residual {:.2}\"",
-        n_verified,
-        rms
-    );
+    log::info!("Verified {n_verified} stars against the catalogue, residual {rms:.2}\"");
 
     PositionTry {
         sep_deg: Some(sep_deg),
@@ -502,11 +490,39 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
     }
 }
 
-/// Solve the WCS for an image using the .1476 catalog.
+/// Solve the WCS for an image against an ASTAP star database.
+///
+/// Walks a square spiral out from the hint in steps of one field of view, and
+/// returns the first position whose quad match survives star-by-star verification.
+/// If `params.binning > 1`, `img` is taken to be the binned image and the returned
+/// CRPIX/CD/CDELT are scaled back to the unbinned pixel grid.
 ///
 /// All progress is emitted via the `log` crate at INFO level — callers install
 /// whichever logger backend they need (file, stderr, both, or none).
+///
+/// # Errors
+///
+/// - [`ArcsecError::InvalidParameter`] if `fov` is not positive and finite, or
+///   `search_radius` is negative or not finite.
+/// - [`ArcsecError::CatalogNotFound`] if `db_path` holds no database called `db_name`.
+/// - [`ArcsecError::InsufficientStars`] if fewer than 5 stars are detected.
+/// - [`ArcsecError::InsufficientQuads`] if no spiral position yields a verified match.
 pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Result<WcsSolution> {
+    // The spiral steps by one FOV out to the search radius, so a zero, negative or
+    // NaN FOV would make the step count infinite (and saturate to i32::MAX).
+    if !(params.fov.is_finite() && params.fov > 0.0) {
+        return Err(ArcsecError::InvalidParameter(format!(
+            "field of view must be positive, got {} rad",
+            params.fov
+        )));
+    }
+    if !(params.search_radius.is_finite() && params.search_radius >= 0.0) {
+        return Err(ArcsecError::InvalidParameter(format!(
+            "search radius must be non-negative, got {} rad",
+            params.search_radius
+        )));
+    }
+
     // Check the database up front. Every spiral position swallows a missing-file
     // error as "nothing catalogued here", so without this a wrong -d/-D reads
     // nothing everywhere and surfaces as InsufficientQuads - exit 1, "no
@@ -722,24 +738,28 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     })
 }
 
-/// Format RA (radians) and Dec (radians) as ASTAP-style "HH: MM  SS.S ±DDd MM  SS".
+/// Format RA (radians) and Dec (radians) as ASTAP-style `"HH: MM  SS.S ±DDd MM  SS"`.
+#[must_use]
 pub fn format_radec(ra_rad: f64, dec_rad: f64) -> String {
-    let ra_h = ra_rad.to_degrees() / 15.0;
-    let ra_h = ra_h.rem_euclid(24.0);
-    let h = ra_h as u32;
-    let ra_min = (ra_h - h as f64) * 60.0;
-    let m = ra_min as u32;
-    let s = (ra_min - m as f64) * 60.0;
+    // Round once, at the printed precision, and only then split into fields.
+    // Splitting first and letting `{:.1}` round the seconds printed 59.96 s as
+    // "60.0" without carrying into the minutes (and 23:59:59.96 as "23: 59  60.0").
+    const TENTHS_PER_DAY: f64 = 24.0 * 36_000.0;
+    let ra_tenths = ((ra_rad.to_degrees() / 15.0 * 36_000.0)
+        .round()
+        .rem_euclid(TENTHS_PER_DAY)) as u64;
+    let h = ra_tenths / 36_000;
+    let m = ra_tenths / 600 % 60;
+    let s = (ra_tenths % 600) as f64 / 10.0;
 
     let dec_deg = dec_rad.to_degrees();
     let sign = if dec_deg < 0.0 { '-' } else { '+' };
-    let dec_abs = dec_deg.abs();
-    let dd = dec_abs as u32;
-    let dec_min = (dec_abs - dd as f64) * 60.0;
-    let dm = dec_min as u32;
-    let ds = (dec_min - dm as f64) * 60.0;
+    let dec_secs = (dec_deg.abs() * 3600.0).round() as u64;
+    let dd = dec_secs / 3600;
+    let dm = dec_secs / 60 % 60;
+    let ds = dec_secs % 60;
 
-    format!("{h}: {m:02}  {s:.1} {sign}{dd}d {dm:02}  {ds:.0}")
+    format!("{h}: {m:02}  {s:.1} {sign}{dd}d {dm:02}  {ds}")
 }
 
 #[cfg(test)]
@@ -845,6 +865,46 @@ mod tests {
             };
             assert!((1.0..=2.0).contains(&ov), "oversize={ov} for n={n}");
         }
+    }
+
+    #[test]
+    fn format_radec_carries_rounded_seconds() {
+        // 1h 59m 59.97s must round up to 2h 00m 00.0s, not print "60.0" seconds.
+        let ra = deg((1.0 + 59.0 / 60.0 + 59.97 / 3600.0) * 15.0);
+        // +10° 59' 59.7" rounds to +11° 00' 00".
+        let dec = deg(10.0 + 59.0 / 60.0 + 59.7 / 3600.0);
+        assert_eq!(format_radec(ra, dec), "2: 00  0.0 +11d 00  0");
+        // RA just short of 24h wraps to 0h.
+        let s = format_radec(deg(359.999_999_9), deg(-0.5));
+        assert!(s.starts_with("0: 00  0.0 -0d 30  0"), "{s}");
+        // An ordinary value is unchanged by the rewrite.
+        assert_eq!(
+            format_radec(deg((5.0 + 35.0 / 60.0 + 17.3 / 3600.0) * 15.0), deg(-5.39)),
+            "5: 35  17.3 -5d 23  24"
+        );
+    }
+
+    #[test]
+    fn solve_image_rejects_a_non_positive_fov() {
+        let img = ImageBuffer::new(64, 64);
+        let params = SolveParams {
+            ra_hint: 0.0,
+            dec_hint: 0.0,
+            fov: 0.0,
+            search_radius: 0.1,
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: std::path::PathBuf::from("/nonexistent"),
+            db_name: "d50".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            threads: 1,
+        };
+        assert!(matches!(
+            solve_image(&img, &params),
+            Err(ArcsecError::InvalidParameter(_))
+        ));
     }
 
     #[test]

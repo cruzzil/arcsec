@@ -10,6 +10,7 @@ Companion to [plate-solving.md](plate-solving.md). Fetch everything with:
 scripts/fetch-test-images.sh                  # all tiers → resources/testset/
 scripts/fetch-test-images.sh --tier A         # just the synthetic-truth tier
 scripts/fetch-test-images.sh --list           # show the manifest without downloading
+scripts/benchmark.py --auto-db                # solve and score everything (§6.7)
 ```
 
 The manifest lives at [`scripts/test-images.tsv`](../scripts/test-images.tsv). Images are
@@ -27,12 +28,12 @@ The corpus is stratified into four tiers.
 |---|---|---|---|
 | **A — Synthetic cutouts** | We *request* the centre, FOV and projection, so the true WCS is known exactly | exact (< 1 mas) | Correctness of the core solver across FOV and star density |
 | **B — Survey cutouts** | The archive's own pipeline WCS in the header | 0.02–0.3″ | Real PSFs, real noise, real artefacts; sub-arcsecond accuracy |
-| **C — Real observing frames** | A reference solution from ASTAP and/or astrometry.net, cross-checked | ~0.5–1″ | Gradients, trailing, Bayer mosaics, hot pixels, clouds |
+| **C — Real observing frames** | A reference solution from ASTAP and/or astrometry.net, cross-checked | ~0.5–1″ | Gradients, trailing, Bayer mosaics, hot pixels, clouds (none in the manifest yet) |
 | **D — Negative / stress** | Known to be unsolvable, or known-hard | n/a | **False-positive rate** and graceful failure |
 
 Tier D is the one most benchmark suites omit and the one that matters most for us: a solver
 that always returns *something* is worse than one that says "no solution". See
-[plate-solving.md §11.1](plate-solving.md#111-the-catalogue-path-performs-no-verification).
+[plate-solving.md §11.1](plate-solving.md#111-the-catalogue-path-performs-no-verification--fixed-2026-09-02).
 
 ---
 
@@ -172,15 +173,16 @@ https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:HST/product/<rootname>_dr
 ```
 
 Verified reachable (HTTP 200), but a single ACS/WFC drizzled product is **295 MB** and the
-field is only ~3.4′ — below what the ASTAP `d80` database supports (documented for FOV ≥
-0.6°). Include at most one, and expect it to fail with our current catalogue; it is here to
-document the limit, not to pass. A denser database (`d50`/`v50`) or a purpose-built index
-would be needed.
+field is only ~3.4′ — below what any ASTAP database supports (`d80`'s published floor is
+0.15°). Include at most one, and expect it to fail with our current catalogue; it is here to
+document the limit, not to pass. A purpose-built index would be needed. None is in the
+manifest at present.
 
 ### 2.7 Real observing frames — tier C
 
-* **Our own NGC 3372 set** — 240 frames, ASI533MC Pro + RedCat 51, ~3.13″/px, already in
-  `resources/` and already used by `scripts/bench_all.sh`. This is the most valuable tier-C
+* **Our own NGC 3372 set** — 240 frames, ASI533MC Pro + RedCat 51, ~3.13″/px, ~2.6° field.
+  Not in the repository or the manifest; `scripts/bench_all.sh` expects the frames as
+  `resources/*.fits`. This is the most valuable tier-C
   data we have: a single night, one target, so it isolates frame-to-frame consistency.
   Pick ~10 frames spanning the session (including frame 0200, which ASTAP failed to solve
   and arcsec solved — see `ARCSEC_VS_ASTAP.md`).
@@ -221,12 +223,15 @@ catalogue window and the quad scale. Sample geometrically:
     0.25°   0.5°   1.0°   1.5°   2.0°   3.0°   5.0°   10°
       │      │      │      │      │      │      │      │
       └─ small refractor + small sensor        └─ camera lens / all-sky
-                     └─ the regime our NGC 3372 data sits in (4.6°)
+                                   └─ the regime our NGC 3372 data sits in (2.6°)
 ```
 
 At the wide end, ASTAP-family databases thin out and distortion dominates; at the narrow
-end, `d80` runs out of stars (documented floor: 0.6°). Both ends are where we expect to
+end, `d80` runs out of stars (published floor: 0.15°). Both ends are where we expect to
 fail, and knowing *where* the cliff is, is the point.
+
+The manifest carries the whole ladder, plus `stress_narrow` (0.10°) and `stress_wide15`
+(15°); with `--auto-db` the wide end is solved from G05 rather than the D-series.
 
 ### 3.2 Star-density ladder (tier A/B)
 
@@ -246,8 +251,8 @@ Galactic latitude is the single best proxy for star density. Sample it deliberat
 | Near the SCP | 0.0, −88.0 | −27° | as above, southern |
 
 The two polar fields matter disproportionately: `solver.rs` contains explicit pole-wrap
-handling (`δ > π/2 → π − δ`, flip RA by π) and an RA-offset guard, and none of it is
-covered by a test today.
+handling (`δ > π/2 → π − δ`, flip RA by π) and an RA-offset guard, and no unit test covers
+it; the `pole_*` corpus entries are its only coverage.
 
 ### 3.3 Field-type ladder
 
@@ -266,6 +271,10 @@ covered by a test today.
 These must return "no solution". Any solve reported here is a **false positive** and a
 release blocker.
 
+Only the first kind is in the manifest today: five tiny (0.03°–0.05°) HiPS crops of
+nebula and galaxy cores (`neg_nebula_core`, `neg_m42_tiny`, `neg_m42_core2`,
+`neg_m8_core`, `neg_m31_core`). Items 2–5 are proposed and not yet built.
+
 1. A pure-nebula crop with almost no stars (small HiPS cutout inside M42's core).
 2. Random Gaussian noise, no sources — synthesise locally, no download needed.
 3. A correct star field, but solved with a **deliberately wrong hint** 40° away and a
@@ -277,6 +286,9 @@ release blocker.
    Star-like sources, no real asterisms.
 
 ### 3.5 Distortion cases (tier D)
+
+None of these is in the manifest as a tier-D entry; `fov_10p0` and `stress_wide15` are the
+closest, and they are tier A and solve (worst corner error 4.5″ on the 15° field).
 
 * An HST drizzled product (SIP in the header) — expected to fail on FOV grounds today.
 * A wide-field (≥ 8°) HiPS cutout in TAN — at that width the tangent-plane approximation
@@ -327,53 +339,61 @@ rotation and distortion error from pointing error, and is the number that will m
 
 ## 5. Running the benchmark
 
-The existing scripts already cover part of this and should be extended rather than
-replaced:
-
 | Script | Covers |
 |---|---|
-| `scripts/hips_solve_test.sh` | tier A, fixed 1.5° FOV, ~12 fields, solve rate + accuracy |
-| `scripts/hips_extended_test.sh` | tier A, 20 further fields including expected-failure types |
-| `scripts/hips_fov_sweep.sh` | tier A, the FOV ladder of §3.1 |
-| `scripts/bench_all.sh` | tier C, our NGC 3372 set, arcsec vs `astap-cli` |
+| **`scripts/fetch-test-images.sh`** | materialises tiers A, B and D from the manifest into `resources/testset/` |
+| **`scripts/benchmark.py`** | solves every manifest entry, scores centre and corner error against the header truth, counts false positives, optional ASTAP head-to-head, CSV output |
+| `scripts/hips_solve_test.sh` | blind mode (`-i`), fixed 1.5° FOV, 20 fields, solve rate + accuracy |
+| `scripts/hips_extended_test.sh` | blind mode, 20 further fields including expected-failure types |
+| `scripts/hips_fov_sweep.sh` | blind mode, 8 fields × 6 FOVs (0.5°–5°) |
+| `scripts/bench_all.sh` | tier C, our NGC 3372 set (`resources/*.fits`), arcsec vs `astap_cli` |
 | `scripts/compare-solvers.sh` | single-image arcsec vs ASTAP diff |
-| **`scripts/fetch-test-images.sh`** | **new** — materialises tiers A/B from the manifest |
 
-What is missing and should be added:
+The three HiPS scripts download their own fields into `/tmp` and test the blind path; they
+predate the manifest and are not part of the corpus.
 
-1. A **corner-error** computation (all current scripts compare centres only).
-2. A **tier-D harness** that asserts failure, and fails the run if any negative control
-   solves.
-3. A single `scripts/benchmark.sh` that runs every tier and emits one CSV plus a summary,
-   so a regression is one command and one diff.
+Of the gaps this section originally listed, the corner-error computation and the single
+run-everything command are done (`benchmark.py`), and `benchmark.py` exits 1 when arcsec
+returns any false positive (including a tier-D solve), so it can gate a CI run on its own.
 
 ### 5.1 Manifest format
 
-`scripts/test-images.tsv`, tab-separated, `#` comments:
+`scripts/test-images.tsv`, whitespace-separated columns (spaces, despite the extension),
+`#` comments:
 
 ```
-id      tier  ra        dec      fov_deg  width  height  source        extra
-m42     A     83.82     -5.39    1.5      1000   1000    hips2fits     CDS/P/DSS2/blue
-cygx    A     305.55    40.73    1.0      1000   1000    hips2fits     CDS/P/DSS2/red
-ngc188  B     11.80     85.24    0.5      1024   1024    skyview       DSS2R
-ls_sparse B   180.00    20.00    0.28     1024   1024    legacysurvey  r
-ps1_m67 B     132.83    11.81    0.07     1024   1024    panstarrs     r
-sdss_1  B     276.95    -0.16    0.22     -      -       sdss          301/2505/3/r/38
+id              tier  ra         dec       fov_deg  width  height  source        extra
+fov_1p50        A     51.400     49.850    1.5      4300   4300    hips2fits     CDS/P/DSS2/blue
+dens_cygnusx    A     305.550    40.730    1.5      4300   4300    hips2fits     CDS/P/DSS2/red
+sv_ngc188       B     11.800     85.240    0.5      1000   1000    skyview       DSS2R
+ls_field1       B     180.000    20.000    0.284    1024   1024    legacysurvey  r
+ps1_m67         B     132.830    11.810    0.284    4096   4096    panstarrs     r
+sdss_2505_38    B     276.945    -0.164    0.225    2048   1489    sdss          301/2505/3/r/38
+neg_m42_tiny    D     83.822     -5.391    0.03     400    400     hips2fits     CDS/P/DSS2/red
 ```
 
 `ra`/`dec`/`fov_deg` are the ground truth for tier A; for tier B they are the *request*
-and the truth is read back from the delivered header.
+and the truth is read back from the delivered header. `benchmark.py` takes the truth from
+the delivered header for every tier.
+
+The manifest holds 103 entries: 64 tier A, 34 tier B, 5 tier D. By source: 69 hips2fits,
+11 Legacy Survey, 10 SkyView, 8 SDSS, 5 Pan-STARRS.
 
 ---
 
 ## 6. Results — 103 images, arcsec vs ASTAP
 
-Corpus of 103 images (63 tier A, 34 tier B, 6 tier D), d80 database, both solvers given the
-same true field centre and FOV, `-r 3`. ASTAP is `astap_cli` CLI-2026.07.30. A reported
-solve counts as **correct** only if its worst corner error is under 5″; anything else is a
-false positive.
+Corpus of 103 images (64 tier A, 34 tier B, 5 tier D), both solvers given the same true
+field centre and FOV. ASTAP is `astap_cli` CLI-2026.07.30 with the d80 database; arcsec
+runs with `--auto-db`, so it uses d80 up to 6° and G05 beyond. A reported solve counts as
+**correct** only if its worst corner error is under 5″; anything else is a false positive.
+The earlier rows of the table below used d80 only and a corpus that was one or two images
+different in each tier as entries moved between tiers (§6.6).
 
-### 6.1 Where it started and where it ended (2026-09-02)
+Last re-measured 2026-09-25 on the 0.1.0 code, at both `-r 3` and the script's default
+`-r 5` (identical results).
+
+### 6.1 Where it started and where it stands
 
 | | correct | false positives | tier A | tier B | tier D solved |
 |---|---|---|---|---|---|
@@ -382,22 +402,26 @@ false positive.
 | + star-level verification | 86 | 0 | 54/63 | 32/34 | 0/6 |
 | + spread check, no star trim | 89 | 0 | 55/63 | 34/34 | 0/6 |
 | + `.290`/`.001` catalogues, `--auto-db` | **90** | **0** | **56/64** | **34/34** | 0/5 |
-| **ASTAP CLI-2026.07.30** | 47 | 0 | 39/63 | 8/34 | 0/6 |
+| **ASTAP CLI-2026.07.30** | 47 | 0 | 39/64 | 8/34 | 0/5 |
 
-Accuracy of arcsec's correct solves:
+Accuracy of arcsec's correct solves (2026-09-25):
 
-| Tier | centre (median / max) | corner (median / max) | scale (median) | time (median) |
-|---|---|---|---|---|
-| A | 0.733″ / 1.691″ | 0.958″ / 4.137″ | 0.0053% | 0.33 s |
-| B | **0.161″** / 1.123″ | **0.272″** / 1.719″ | 0.0059% | 0.15 s |
+| Tier | centre (median / max) | corner (median / max) | scale (median) | time (median, `--jobs 1`) | time (median, `--jobs 8`) |
+|---|---|---|---|---|---|
+| A | 0.740″ / 1.807″ | 0.999″ / 4.473″ | 0.0054% | 0.19 s | 0.52 s |
+| B | **0.158″** / 1.123″ | **0.272″** / 1.719″ | 0.0059% | 0.11 s | 0.20 s |
 
-On the 45 images both solvers get right, arcsec's corner accuracy is now slightly ahead
-(0.897″ vs 0.938″) at essentially equal centre accuracy (0.691″ vs 0.660″). ASTAP solves
-only two images arcsec does not (`type_m31`, `type_m44`); arcsec solves 44 that ASTAP does
+Times depend heavily on `--jobs`: each arcsec process also uses every core, so running
+eight images at once inflates every per-image time. Use `--jobs 1` for timing.
+
+On the 45 images both solvers get right, arcsec's corner accuracy is slightly ahead
+(0.897″ vs 0.938″) at essentially equal centre accuracy (0.690″ vs 0.660″). ASTAP solves
+only two images arcsec does not (`type_m31`, `type_m44`); arcsec solves 45 that ASTAP does
 not.
 
-The cost is speed: **0.60× ASTAP** (median 0.33 s vs 0.18 s on tier A). 126 quads per star
-is not free. See §6.5.
+Speed on those 45 is at parity: median 0.15 s for both with `--jobs 1` (1.00×). It was
+0.60× ASTAP when 126 quads per star and verification first landed; §6.5 is how it got
+back.
 
 ### 6.2 What moved the numbers
 
@@ -460,7 +484,7 @@ Recorded so they are not re-tried:
   makes this trap convincing if you look at the median alone. Reverted, with the reason
   recorded at the line.
 
-### 6.4 What still fails (8 of 63 tier A, 0 of 34 tier B)
+### 6.4 What still fails (8 of 64 tier A, 0 of 34 tier B)
 
 ```
   dens_carina  dens_scutum  dens_vela        very dense galactic-plane fields
@@ -582,7 +606,13 @@ are the largest remaining single item — two per candidate over ~91 annulus pix
 obvious ways to cut them (subsampling the annulus, a cheaper scale estimator) all change the
 background estimate, and everything above was achieved without changing a single result.
 
-**Negative and neutral results, so they are not re-tried:**### 6.6 A truth bug found by the comparison
+The negative and neutral results from this work — including the level-1 grid histogram
+limit, whose "obvious" fix is slower — are recorded in §6.3 so they are not re-tried.
+
+Re-measured 2026-09-25 with `--jobs 1`: arcsec and ASTAP both at a 0.15 s median on the 45
+shared solves (1.00×), with arcsec solving 90 to ASTAP's 47.
+
+### 6.6 A truth bug found by the comparison
 
 On `ps1_m67`, arcsec and ASTAP both reported corner errors of ~5626″ — and **agreed with
 each other to 0.5″**. Two independent solvers converging on the same "wrong" answer is a
@@ -604,8 +634,13 @@ floor, but it solves correctly to 0.607″, so it moved from tier D to tier A.
 
 ```bash
 scripts/fetch-test-images.sh                       # 103 images, ~2.2 GB
-scripts/benchmark.py --astap ~/astap_cli --jobs 10 --radius 3 --csv results.csv
+scripts/benchmark.py --auto-db --astap ~/astap_cli --radius 3 --csv results.csv
+scripts/benchmark.py --auto-db --astap ~/astap_cli --radius 3 --jobs 1   # for timings
 ```
+
+`benchmark.py` expects the star databases in `~/star_database` (`--db`) and the binary at
+`target/release/arcsec` (`--arcsec`). Without `--auto-db` it passes `-D d80`
+(`--db-name`), and `stress_wide15` (15°) then fails: 89/103 rather than 90.
 
 ## 7. Licensing and attribution
 

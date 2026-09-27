@@ -1,2 +1,10 @@
+# Profiling aid for local builds on x86-64 Linux. Rust links with lld there, and lld
+# puts read-only data in its own segment by default, which leaves perf (and so
+# cargo-flamegraph) unable to resolve symbols in the release binary. `--no-rosegment`
+# restores the single-segment layout perf expects.
+#
+# This file is not part of the published crates, so `cargo install` never sees it,
+# and the release workflow overrides it with RUSTFLAGS: distributed binaries keep the
+# linker's default layout, where read-only data is not mapped executable.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-Clink-arg=-Wl,--no-rosegment"]

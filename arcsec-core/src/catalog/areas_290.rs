@@ -1,22 +1,26 @@
-// Sky area lookup for the .290 catalog format (HNSKY/ASTAP 290-tile grid).
-//
-// The .290 databases (G05 for 3°–20° fields, W08 for 20°–80°) carry exactly the
-// same 110-byte header and packed star records as .1476 — only the sky tiling
-// differs, so `format_1476::read_area_file` reads both unchanged.
-//
-// Unlike the 1476 grid, whose rings are equal-width in declination, the 290 grid is
-// **equal-area**: every cell subtends the same solid angle. With ring RA counts
-//
-//     1, 4, 8, 12, 16, 20, 24, 28, 32, 32, 28, 24, 20, 16, 12, 8, 4, 1   (= 290)
-//
-// and the two polar caps counting half a cell each (total weight 289), the ring
-// boundaries satisfy
-//
-//     sin(dec_k) = -1 + 2 * (cumulative weight up to k) / 289
-//
-// That formula was derived from the shipped G05 files and reproduces the observed
-// per-ring declination ranges to better than 0.001° (the residual is just the
-// granularity of the brightest star in each ring).
+//! Sky area lookup for the .290 catalog format (HNSKY/ASTAP 290-tile grid).
+//!
+//! The .290 databases (G05 for 3°–20° fields, W08 for 20°–80°) carry exactly the
+//! same 110-byte header and packed star records as .1476 — only the sky tiling
+//! differs, so `format_1476::read_area_file` reads both unchanged.
+//!
+//! Unlike the 1476 grid, whose rings are equal-width in declination, the 290 grid is
+//! **equal-area**: every cell subtends the same solid angle. With ring RA counts
+//!
+//! ```text
+//! 1, 4, 8, 12, 16, 20, 24, 28, 32, 32, 28, 24, 20, 16, 12, 8, 4, 1   (= 290)
+//! ```
+//!
+//! and the two polar caps counting half a cell each (total weight 289), the ring
+//! boundaries satisfy
+//!
+//! ```text
+//! sin(dec_k) = -1 + 2 * (cumulative weight up to k) / 289
+//! ```
+//!
+//! That formula was derived from the shipped G05 files and reproduces the observed
+//! per-ring declination ranges to better than 0.001° (the residual is just the
+//! granularity of the brightest star in each ring).
 
 use core::f64::consts::PI;
 
@@ -65,6 +69,7 @@ fn ring_of_dec(dec: f64) -> usize {
 }
 
 /// 1-based area number of the cell containing `(ra, dec)`.
+#[must_use]
 pub fn area_nr_290(ra: f64, dec: f64) -> usize {
     let ring = ring_of_dec(dec);
     let n_ra = RING_N_290[ring];
@@ -77,6 +82,7 @@ pub fn area_nr_290(ra: f64, dec: f64) -> usize {
 /// Format is `{ring:02}{cell:02}.290`, both 1-based — the same shape the 1476 grid
 /// uses, which is why the south-pole cell is `0101` in both and can be probed to
 /// tell the two layouts apart.
+#[must_use]
 pub fn filename_290(area_nr: usize) -> String {
     let area = area_nr.clamp(1, 290);
     let mut ring = 17usize;
@@ -99,6 +105,7 @@ pub fn filename_290(area_nr: usize) -> String {
 /// that ring whole.
 ///
 /// Areas are returned in south-to-north, increasing-RA order and are unique.
+#[must_use]
 pub fn find_areas_290(ra: f64, dec: f64, fov: f64) -> Vec<usize> {
     let half = (fov * 0.5).clamp(0.0, PI);
     let dec_lo = (dec - half).max(-PI / 2.0);

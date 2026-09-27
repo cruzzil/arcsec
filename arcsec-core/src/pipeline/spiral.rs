@@ -1,11 +1,11 @@
-// Square spiral iterator.
-// Sequence starting at (0,0): (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1),
-// (0,-1), (1,-1), (2,-1), (2,0), ...
-//
-// The iterator stops when `spiral_x > max_distance`.
+//! Square spiral iterator.
+//! Sequence starting at (0,0): (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1),
+//! (0,-1), (1,-1), (2,-1), (2,0), ...
+//!
+//! The iterator stops when `spiral_x > max_distance`.
 
-/// Iterates (spiral_x, spiral_y) over a square spiral centred at the origin.
-/// Stops when spiral_x exceeds `max_distance`.
+/// Iterates (`spiral_x`, `spiral_y`) over a square spiral centred at the origin.
+/// Stops when `spiral_x` exceeds `max_distance`.
 pub struct SpiralSearch {
     x: i32,
     y: i32,
@@ -17,6 +17,8 @@ pub struct SpiralSearch {
 }
 
 impl SpiralSearch {
+    /// A spiral that stops once `spiral_x` would exceed `max_distance`.
+    #[must_use]
     pub fn new(max_distance: i32) -> Self {
         Self {
             x: 0,

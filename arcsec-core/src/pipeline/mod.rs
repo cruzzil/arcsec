@@ -1,3 +1,5 @@
+//! The end-to-end solvers: the catalogue spiral search and the blind index solve.
+
 pub mod blind;
 pub mod solver;
 pub mod spiral;

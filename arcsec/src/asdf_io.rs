@@ -40,10 +40,10 @@ const MAX_WALK_DEPTH: usize = 8;
 /// silently, so it is stated once here and used everywhere.
 fn shape_2d(array: &Ndarray) -> Option<(usize, usize)> {
     let dims: Vec<u64> = array.shape.iter().copied().collect::<Option<Vec<u64>>>()?;
-    let (&rows, &cols) = match dims.as_slice() {
-        [.., rows, cols] => (rows, cols),
-        _ => return None,
+    let [.., rows, cols] = dims.as_slice() else {
+        return None;
     };
+    let (rows, cols) = (*rows, *cols);
     if rows == 0 || cols == 0 {
         return None;
     }

@@ -6,8 +6,22 @@ on:
       - main
   push:
 
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR makes the running workflow moot. Runs on main
+# are left to finish so every commit there gets a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
+
+# Toolchains are installed explicitly per job. Lint and tests run on current stable,
+# which is what contributors use and what `cargo install` users most likely have. The
+# MSRV job builds and tests on the exact `rust-version` from Cargo.toml, read from
+# there rather than repeated here. Nightly clippy runs as an advisory job only.
 
 jobs:
   lint:
@@ -15,11 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The toolchain comes from rust-toolchain.toml; rustup installs it on the
-      # first cargo invocation. Do not pin a version here as well - two places
-      # to change is how local and CI drifted apart in the first place.
-      - name: Show the toolchain
-        run: rustup show active-toolchain && cargo --version
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -28,12 +41,12 @@ jobs:
       # here rather than advisory: it is what keeps OS dependencies out of the
       # pure maths in arcsec-core.
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Build the documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --workspace
+        run: cargo doc --no-deps --workspace --locked
 
   test:
     name: ${{ matrix.name }}
@@ -48,16 +61,24 @@ jobs:
           - { name: windows-x64, os: windows-latest }
     steps:
       - uses: actions/checkout@v7
-      # The toolchain comes from rust-toolchain.toml; rustup installs it on the
-      # first cargo invocation. Do not pin a version here as well - two places
-      # to change is how local and CI drifted apart in the first place.
-      - name: Show the toolchain
-        run: rustup show active-toolchain && cargo --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --workspace --verbose
+        run: cargo build --workspace --locked --verbose
       - name: Run tests
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --locked --verbose
+
+      # N.I.N.A. reads the executable's FileVersion and, when it is missing, refuses
+      # to run it with automatic downsampling (its default). build.rs embeds it and
+      # only warns if it cannot, so assert it here.
+      - name: Check the Windows version resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = (Get-Item target/debug/arcsec.exe).VersionInfo
+          $v | Format-List FileVersion, ProductVersion, FileDescription
+          if (-not $v.FileVersion) { throw "arcsec.exe has no FileVersion resource" }
 
       # The solver itself needs star catalogues and a corpus that are not in the
       # repo, so CI cannot check a solve. These paths need no data and are the
@@ -66,7 +87,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          run() { cargo run --quiet --bin arcsec -- "$@"; }
+          run() { cargo run --quiet --locked --bin arcsec -- "$@"; }
 
           run --help > /dev/null
           run --version > /dev/null
@@ -105,3 +126,61 @@ jobs:
           expect 32 run -f tiny.fits -d /nonexistent/catalogs -D d50
           expect 1  run --sip -f tiny.fits
           rm -f tiny.fits not-an-image.dat
+
+  # Nightly clippy, for lints that have not reached stable yet. Advisory: a failure
+  # here shows up on the run but does not block a merge. Fix what it finds, or wait for
+  # the lint to reach stable, where the lint job will enforce it.
+  nightly-clippy:
+    name: Clippy (nightly, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          set -euo pipefail
+          msrv=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')
+          echo "MSRV is $msrv"
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      # --locked: the MSRV claim is about the committed lockfile. A dependency update
+      # that needs a newer compiler fails here, and rust-version is then raised on
+      # purpose rather than by accident.
+      - name: Test
+        run: cargo +${{ steps.msrv.outputs.version }} test --workspace --locked
+
+  # Builds both crates from the files that would be uploaded, so a missing file or an
+  # unpublishable manifest is caught before release day. `--workspace` packages
+  # arcsec-core into a temporary local registry, so the CLI verifies against it even
+  # before arcsec-core is on crates.io.
+  package:
+    name: Package for crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Package
+        run: cargo package --workspace --locked
+      - name: List the packaged files
+        run: |
+          for crate in target/package/*.crate; do
+            echo "$crate ($(du -h "$crate" | cut -f1))"
+            tar tzf "$crate" | sed 's/^/  /'
+          done

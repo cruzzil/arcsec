@@ -1,18 +1,20 @@
-// Blind astrometric solver using an Astrometry.net index file.
-//
-// Algorithm:
-// 1. Detect stars in the image; build all image quads (triangles or 4-star quads,
-//    depending on index DIMQUADS).
-// 2. For each image quad, compute the code using the astrometry.net formula.
-//    Both image parities are tried (CDELT1<0 normal, CDELT1>0 flipped).
-//    Canonical form: code[0] ≤ 0.5; for quads additionally code[0] ≤ code[2].
-// 3. Scale-filter: only try image quads whose A-B axis pixel length
-//    corresponds to the index's angular scale range given the image FOV.
-//    (Skipped when fov_deg == 0 — truly blind solve.)
-// 4. For each (image_quad, index_quad) code match, compute a precise
-//    WCS hypothesis from the star affine transform and vote in 0.1° bins.
-// 5. Verify the top-K vote cells by projecting index stars; return the
-//    cell with the highest verified star-match count.
+//! Blind astrometric solver using an Astrometry.net index file.
+//!
+//! Algorithm:
+//! 1. Detect stars in the image; build all image quads (triangles or 4-star quads,
+//!    depending on index DIMQUADS).
+//! 2. For each image quad, compute the code using the astrometry.net formula.
+//!    Both image parities are tried (CDELT1<0 normal, CDELT1>0 flipped).
+//!    Canonical form: `CX ≤ 0.5` for triangles; `CX + DX ≤ 1` and `CX ≤ DX` for
+//!    quads (see `make_quad4`).
+//! 3. Scale-filter: only try image quads whose A-B axis pixel length
+//!    corresponds to the index's angular scale range given the image FOV.
+//!    (Skipped when `fov_deg == 0` — truly blind solve.)
+//! 4. For each (image quad, index quad) code match, compute a precise
+//!    WCS hypothesis from the star affine transform and vote in 0.1° bins.
+//! 5. Verify vote cells, most-voted first, by projecting index stars; return the
+//!    cell with the highest verified star-match count (stopping early once a cell
+//!    reaches `EARLY_STOP_SCORE`).
 
 use core::f64::consts::PI;
 
@@ -25,12 +27,17 @@ use crate::math::lsq::solve_plate_constants;
 use crate::types::StarList;
 use crate::wcs::output::derive_wcs;
 
-/// Parameters for `blind_solve` / `estimate_position_from_index`.
-#[derive(Clone)]
+/// Parameters for [`blind_solve`].
+#[derive(Debug, Clone)]
 pub struct BlindSolveParams {
+    /// Code-space matching tolerance (Euclidean distance between codes).
     pub quad_tolerance: f64,
+    /// Minimum HFD for valid stars (pixels).
     pub hfd_min: f64,
+    /// Maximum number of image stars to detect.
     pub max_stars: usize,
+    /// Binning already applied to the image. Informational only: the blind solver
+    /// returns a sky position, which binning does not affect.
     pub binning: usize,
     /// Image height in degrees (used for scale filtering). 0 = auto (no filter).
     pub fov_deg: f64,
@@ -42,29 +49,26 @@ pub struct BlindSolveParams {
 struct ImageEntry {
     /// [CX, CY] for triangles, [CX, CY, DX, DY] for quads; unused slots are 0.
     code: [f64; 4],
-    /// Pixel positions of stars [A, B, C[, D]]; only first n_stars are valid.
+    /// Pixel positions of stars [A, B, C[, D]]; only first `n_stars` are valid.
     stars: [(f64, f64); 4],
     n_stars: usize,
     /// Pixel length of the A-B axis, for scale filtering.
     d_ab_px: f64,
 }
 
-/// Compute the code coordinates of point `p` in the A-B frame.
+/// Compute the (CX, CY) code of point P relative to the axis A→B, where
+/// `(adx, ady)` is A→P, `(abx, aby)` is A→B and `scale` is `|AB|²`.
+///
+/// The frame is astrometry.net's 45°-rotated one, so that A maps to (0, 0) and B to
+/// (1, 1): `cos_t = (aby+abx)/|AB|²`, `sin_t = (aby-abx)/|AB|²`.
 ///
 /// `parity_flip = false` (normal):  east = −x (CDELT1 < 0, standard FITS).
-///   code_x = −adx·sin + ady·cos   (east-dominant)
-///   code_y =  adx·cos + ady·sin
+///   `code_x = −adx·sin + ady·cos`   (east-dominant)
+///   `code_y =  adx·cos + ady·sin`
 ///
 /// `parity_flip = true`  (flipped): east = +x (CDELT1 > 0).
-///   code_x =  adx·cos + ady·sin
-///   code_y = −adx·sin + ady·cos
-/// Compute the (CX, CY) quad code for point P relative to axis A→B.
-///
-/// CX = dot(A→P, A→B) / |AB|²  (projection along axis, normalized)
-/// CY = cross(A→P, A→B) / |AB|² (perpendicular component; negated for flipped parity)
-///
-/// NOTE: The cos/sin theta encoding matches the astrometry.net index file convention
-/// which uses a 45°-rotated frame: cos_t = (aby+abx)/|AB|², sin_t = (aby-abx)/|AB|².
+///   `code_x =  adx·cos + ady·sin`
+///   `code_y = −adx·sin + ady·cos`
 fn code_for_point(
     adx: f64,
     ady: f64,
@@ -168,7 +172,9 @@ fn make_quad4(
     }
 
     // Canonical step 2: CX ≤ DX (if equal: CY ≤ DY) — swap C↔D
-    if dx < cx || (dx == cx && dy < cy) {
+    #[allow(clippy::float_cmp)] // exact tie-break, as astrometry.net does it
+    let swap_cd = dx < cx || (dx == cx && dy < cy);
+    if swap_cd {
         core::mem::swap(&mut pc, &mut pd);
         core::mem::swap(&mut cx, &mut dx);
         core::mem::swap(&mut cy, &mut dy);
@@ -223,6 +229,8 @@ fn build_triangles(stars: &StarList, n: usize, parity_flip: bool) -> Vec<ImageEn
 /// For each combination of 4 stars, the A-B pair is the one with maximum
 /// pixel separation (matching astrometry.net's convention).
 fn build_quads4(stars: &StarList, n: usize, parity_flip: bool) -> Vec<ImageEntry> {
+    const PAIR_INDICES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+
     let n = stars.len().min(n);
     let mut out = Vec::new();
     if n < 4 {
@@ -230,7 +238,6 @@ fn build_quads4(stars: &StarList, n: usize, parity_flip: bool) -> Vec<ImageEntry
     }
 
     let pts: Vec<(f64, f64)> = stars.0[..n].iter().map(|s| (s.x, s.y)).collect();
-    const PAIR_INDICES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
     for i in 0..n {
         for j in (i + 1)..n {
@@ -247,8 +254,11 @@ fn build_quads4(stars: &StarList, n: usize, parity_flip: bool) -> Vec<ImageEntry
                         })
                         .unwrap();
 
-                    let cd: Vec<usize> = (0..4).filter(|&x| x != ai && x != bi).collect();
-                    let (ci, di) = (cd[0], cd[1]);
+                    // The other two, in ascending order.
+                    let mut rest = (0..4).filter(|&x| x != ai && x != bi);
+                    let (Some(ci), Some(di)) = (rest.next(), rest.next()) else {
+                        unreachable!("four stars minus a pair leaves two");
+                    };
 
                     if let Some(e) =
                         make_quad4(group[ai], group[bi], group[ci], group[di], parity_flip)
@@ -285,7 +295,7 @@ struct HypEntry {
     ref_dec: f64,
     plate: crate::types::PlateConstants,
     /// RA/Dec of the catalog stars used to derive this WCS (quad stars).
-    /// These are excluded from verify_score so they don't inflate the count.
+    /// These are excluded from `verify_score` so they don't inflate the count.
     quad_cat_ra: [f64; 4],
     quad_cat_dec: [f64; 4],
     n_quad: usize,
@@ -354,7 +364,7 @@ fn sky_to_px(
     }
 }
 
-/// Count how many index stars project within sqrt(match_px_sq) of any detected star,
+/// Count how many index stars project within `sqrt(match_px_sq)` of any detected star,
 /// excluding the catalog stars that were used to derive this WCS hypothesis.
 /// `stars_by_dec` must be sorted ascending by DEC for binary-search pre-filtering.
 fn verify_score(
@@ -528,7 +538,7 @@ fn run_blind_pass(
     let mut best_ra = 0.0f64;
     let mut best_dec = 0.0f64;
 
-    'outer: for (_, hyps) in vote_cells.iter() {
+    'outer: for (_, hyps) in &vote_cells {
         let h = &hyps[0];
         let sc = verify_score(
             h,
@@ -572,8 +582,14 @@ fn run_blind_pass(
 
 /// Blind-solve one index file, returning `(ra_rad, dec_rad, verify_score)`.
 ///
-/// Tries both parities; fails if best score < MIN_VERIFY_SCORE.
+/// Tries both parities; fails if best score < `MIN_VERIFY_SCORE`.
 /// Call for each candidate index file and keep the result with the highest score.
+///
+/// # Errors
+///
+/// - [`ArcsecError::InsufficientStars`] if fewer than 5 stars are detected.
+/// - [`ArcsecError::InsufficientQuads`] if no hypothesis verifies; `found` is the
+///   best verification score reached.
 pub fn blind_solve(
     img: &crate::types::ImageBuffer,
     index: &AnetIndex,
@@ -601,7 +617,7 @@ pub fn blind_solve(
         });
     }
 
-    log::info!("Blind: {} stars detected.", n);
+    log::info!("Blind: {n} stars detected.");
 
     let (min_d_px, max_d_px) = if params.fov_deg > 0.0 {
         let fov = params.fov_deg.to_radians();

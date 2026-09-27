@@ -1,13 +1,15 @@
-// Quad pattern matching.
+//! Quad pattern matching.
 
 use crate::types::{PairedPositions, Quad, QuadList};
 
 /// A pair of matching quads: image index and catalog index.
 #[derive(Debug, Clone, Copy)]
 pub struct QuadMatch {
+    /// Index into the image `QuadList`.
     pub img_idx: usize,
+    /// Index into the catalogue `QuadList`.
     pub cat_idx: usize,
-    /// d1_img / d1_cat — the pixel/catalog scale ratio for this match
+    /// `d1_img` / `d1_cat` — the pixel/catalog scale ratio for this match
     pub scale_ratio: f64,
 }
 
@@ -24,6 +26,7 @@ fn ratios_match(img: &Quad, cat: &Quad, tolerance: f64) -> bool {
 /// Find all quad pairs where the 5 normalized ratios agree within `quad_tolerance`.
 ///
 /// Returns a list of `QuadMatch` with raw scale ratios.
+#[must_use]
 pub fn find_matches(
     img_quads: &QuadList,
     cat_quads: &QuadList,
@@ -78,6 +81,7 @@ pub fn sort_catalog_quads(cat_quads: &mut QuadList) {
 ///
 /// Sorting by the wrong ratio fails silently: `partition_point` on unsorted data
 /// returns an arbitrary split and matches are simply dropped.
+#[must_use]
 pub fn find_matches_sorted(
     img_quads: &QuadList,
     cat_quads: &QuadList,
@@ -102,6 +106,7 @@ pub struct CatalogCodes {
 
 impl CatalogCodes {
     /// `cat_quads` must already be sorted ascending by `ratios[INDEX_RATIO]`.
+    #[must_use]
     pub fn build(cat_quads: &QuadList) -> Self {
         let ratios = cat_quads
             .0
@@ -121,6 +126,7 @@ impl CatalogCodes {
 }
 
 /// As `find_matches_sorted`, but reusing a prebuilt [`CatalogCodes`].
+#[must_use]
 pub fn find_matches_indexed(
     img_quads: &QuadList,
     cat_quads: &QuadList,
@@ -192,13 +198,13 @@ pub fn find_matches_indexed(
     matches
 }
 
-/// Compute the median of a slice (in-place sort of a copy).
-fn median(values: &[f64]) -> f64 {
+/// Compute the median of a slice (sorts a copy).
+pub(crate) fn median(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
     let mut v = values.to_vec();
-    v.sort_by(|a, b| a.total_cmp(b));
+    v.sort_by(f64::total_cmp);
     let mid = v.len() / 2;
     if v.len().is_multiple_of(2) {
         (v[mid - 1] + v[mid]) * 0.5
@@ -213,6 +219,7 @@ fn median(values: &[f64]) -> f64 {
 /// where `|ratio - median| <= quad_tolerance * median`.
 ///
 /// Returns `(filtered_matches, median_ratio)`.
+#[must_use]
 pub fn filter_by_scale(matches: &[QuadMatch], quad_tolerance: f64) -> (Vec<QuadMatch>, f64) {
     if matches.is_empty() {
         return (vec![], 0.0);
@@ -235,13 +242,14 @@ pub fn filter_by_scale(matches: &[QuadMatch], quad_tolerance: f64) -> (Vec<QuadM
     (filtered, med)
 }
 
-/// Extract (image_xy, catalog_xy) position pairs from matching quads.
+/// Extract (`image_xy`, `catalog_xy`) position pairs from matching quads.
 ///
 /// The image coordinates are quad centre positions (pixels).
 /// The catalog coordinates are quad centre positions in whatever space the catalog
 /// quads were built in (standard projection coordinates when calling from the pipeline).
 ///
 /// Returns `(img_positions, cat_positions)` suitable for `solve_plate_constants`.
+#[must_use]
 pub fn extract_star_pairs(
     img_quads: &QuadList,
     cat_quads: &QuadList,

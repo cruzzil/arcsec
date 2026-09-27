@@ -3,8 +3,8 @@
 A survey of astrometric plate-solving algorithms, the mathematics behind them, a precise
 description of what **arcsec** currently implements, and an assessment of our gaps.
 
-Written 2026-08-31. Sources are linked inline and collected in
-[§14 References](#14-references).
+Written 2026-08-31; §10–§13 revised 2026-09-25 against the 0.1.0 code. Sources are
+linked inline and collected in [§14 References](#14-references).
 
 **Contents**
 
@@ -132,12 +132,18 @@ clipped mean and median as
 ```
 
 **ASTAP / arcsec** use a cheaper global scheme: build a 16-bit histogram of the pixel
-values and run an iterative σ-clipped mean (σ_low = 3, σ_high = 2) until convergence,
-yielding `(background, noise)`. The detection threshold is then
+values and take its peak (the mode) as the background, falling back to the histogram mean
+when that is more than 1.5× the mode. The noise is the RMS deviation from that background
+over a sparse grid of sample pixels, iteratively clipped at 3σ until it changes by less
+than 5% (at most 7 passes). Two star levels are then read off the histogram's upper tail,
+and the detection threshold is
 
 ```
     star_level = background + k · noise         (ASTAP uses a multi-pass k)
 ```
+
+Only the last-resort detection pass estimates a *local* background: it splits the frame
+into a ~12×12 grid and runs a histogram σ-clipped mean (upper clip 2σ) in each cell.
 
 The trade-off is explicit: no spatial background model means strong gradients bias the
 threshold, but the estimate costs one pass over the pixels instead of a mesh + spline.
@@ -253,9 +259,10 @@ case analysis, trivially reflection-invariant. Very low false-match rate.
 
 **Weakness**: the descriptor discards *all* orientation information, so a matched pair of
 quads tells you the two quads are congruent but not which star corresponds to which. ASTAP
-and arcsec therefore fit the plate using **quad centroids** rather than star correspondences
-(see §7.3 and §11.4). It is also degenerate for symmetric configurations (e.g. a square,
-where several ratios coincide).
+therefore fits the plate using **quad centroids** rather than star correspondences (see
+§7.3). arcsec does the same for its first fit, then recovers individual star pairs by
+projecting the catalogue through that fit and re-fitting (§11.4). The descriptor is also
+degenerate for symmetric configurations (e.g. a square, where several ratios coincide).
 
 ### 4.3 Code-space quads — the astrometry.net family
 
@@ -344,6 +351,13 @@ quads can nearly stand alone.**
 `d₂/d₁` clusters near 1 — so the true rate is somewhat higher, but the ratio *between*
 families is right.)
 
+The working numbers above assume one quad per star, as ASTAP builds. arcsec now builds all
+C(9,4) = 126 quads from each star's neighbourhood (§10.3), so `M` and `R` are each up to
+two orders of magnitude larger and the expected number of random 5-ratio matches per
+position rises towards ~0.1–1 (overlapping quads are not independent, so this overstates
+it). That is still far below the several agreeing matches a solve needs, and the vote
+filter and star-level verification (§6.2, §11.1) are what keep it from mattering.
+
 ### 4.5 Star-tracker patterns — Pyramid, TETRA, tetra3
 
 The spacecraft attitude-determination literature solves the same lost-in-space problem
@@ -380,7 +394,7 @@ makes: **directly-addressed hashing is unbeatably fast and unforgivingly narrow.
 | Invariant dims | 2 | 5 | 4 | 5 (binned) |
 | Reflection-invariant | yes | yes | **no** (2 parities) | yes |
 | Gives star correspondence | yes (with ordering) | **no** (centroids only) | **yes** | yes |
-| Features from `n` stars | C(n,3) | C(n,4) or n (3-NN) | C(n,4) | limited set |
+| Features from `n` stars | C(n,3) | C(n,4), or n (3-NN, ASTAP), or ≤126·n (9-NN, arcsec) | C(n,4) | limited set |
 | Reference structure | kd-tree in 2-D | sorted array / hash bins | kd-tree in 4-D | direct hash |
 | Robust to missing stars | best (`p³`) | `p⁴` | `p⁴` | `p⁴`, narrow FOV band |
 | Used by | FOCAS, astroalign, arcsec `--method tetra` | ASTAP, Watney, arcsec (default) | astrometry.net, arcsec blind mode | tetra3, cedar-solve |
@@ -400,10 +414,12 @@ sky is searched**.
                                         compare all N ratios
      ASTAP ≤ 120 quads; arcsec's find_matches()
 
- (b) SORTED + BINARY SEARCH        sort reference by ratio[0];
-     O(M · (log R + hits))           binary-search the ±t window on ratio[0];
+ (b) SORTED + BINARY SEARCH        sort reference by one ratio;
+     O(M · (log R + hits))           binary-search the ±t window on that ratio;
                                      check the remaining N−1 ratios on the survivors
-     arcsec's find_matches_sorted()
+     arcsec's find_matches_sorted(), keyed on ratio[4] = d₆/d₁
+     (INDEX_RATIO): the most widely spread ratio gives the
+     narrowest window
 
  (c) HASH BINS                     bin each ratio to width ~2t; hash the bin tuple;
      O(M) expected                   probe the 2^N neighbouring bins for edge cases
@@ -646,14 +662,16 @@ The crucial detail for accuracy is **what the correspondences are**:
 
 | Solver | Correspondence used for the fit | Count |
 |---|---|---|
-| ASTAP, arcsec (quads) | quad **centroids** | `n_matched` |
+| ASTAP | quad **centroids** | `n_matched` |
+| arcsec (quads) | quad centroids for the first fit, then individual **stars** matched by projecting the catalogue (`verify_and_refit`) | ≥ 30, typically 200–375 |
 | astrometry.net | individual **stars** (A,B,C,D of each matched quad, then all verified stars) | up to hundreds |
 | astroalign, SCAMP | individual stars after cross-match | hundreds–thousands |
 
 Fitting on centroids is a real limitation. A quad centroid averages four centroid errors —
 so it is *individually* more precise by √4 — but you get one constraint per quad instead of
 four, and (worse) the centroid is insensitive to any distortion that is antisymmetric about
-the quad, so distortion signal is partially cancelled rather than measured.
+the quad, so distortion signal is partially cancelled rather than measured. arcsec uses the
+centroid fit only as a starting point and replaces it with a star-level fit (§11.4).
 
 ### 7.4 Distortion
 
@@ -737,13 +755,15 @@ The pragmatic version, and what ASTAP and arcsec use: accept if the number of co
 matches exceeds a fixed or star-count-scaled threshold. arcsec uses
 
 ```
-    catalogue path:  min_quads = 3 + n_stars_image / 140     (as low as 3!)
+    catalogue path:  min_quads = 3 + n_stars_image / 140 agreeing quads to attempt a fit,
+                     then ≥ MIN_VERIFIED_STARS = 30 individually matched stars spanning
+                     ≥ MIN_VERIFY_SPREAD = 0.20 of the image half-diagonal to accept
     blind path:      MIN_VERIFY_SCORE = 18 verified stars, EARLY_STOP_SCORE = 20
 ```
 
-The blind path is genuinely verified — it projects index stars and counts agreement. The
-catalogue path is not: it accepts the first spiral position that yields enough quad
-matches, with no independent confirmation. See §11.1.
+Both paths are now genuinely verified — they project catalogue or index stars into the
+image and count agreement. The catalogue path gained this on 2026-09-02; before that it
+accepted the first spiral position that yielded enough quad matches. See §11.1.
 
 ---
 
@@ -775,8 +795,8 @@ database uses is dictated by the field sizes it targets.
 
 | Format | Databases | Layout | Field range |
 |---|---|---|---|
-| `.1476` | D80, D50, D20, D05, V50, V05 | 1476 tiles, 36 **equal-declination** rings, 5-byte packed records | 0.15°–6° |
-| `.290` | G05 | 290 tiles, 18 **equal-area** rings, *identical* 5-byte records | 3°–20° |
+| `.1476` | D80, D50, D20, D05, V50 | 1476 tiles, 36 **equal-declination** rings, 5-byte packed records | 0.15°–6° |
+| `.290` | G05, V05 | 290 tiles, 18 **equal-area** rings, *identical* 5-byte records | 3°–20° |
 | `.001` | W08 | one all-sky file of f32 triples | 20°–80° |
 
 `.1476` and `.290` differ only in the sky grid — same 110-byte ASCII header, same
@@ -849,9 +869,9 @@ where one of your few stars is a high-PM object, or (c) using an older catalogue
 ### 10.1 Overview
 
 arcsec implements the 5-ratio quad family (§4.2) introduced by ASTAP, with an online
-spiral search (§5.2), plus two additions of our own: an
-astrometry.net-index **blind** front-end (§4.3), and an alternative **triangle** matcher
-(§4.1).
+spiral search (§5.2), plus additions of our own: star-level verification and re-fitting of
+every candidate solution, an astrometry.net-index **blind** front-end (§4.3), and an
+alternative **triangle** matcher (§4.1).
 
 ```
                             ┌─────────────────────────────┐
@@ -859,15 +879,20 @@ astrometry.net-index **blind** front-end (§4.3), and an alternative **triangle*
                             └──────────────┬──────────────┘
                                            │
                       ┌────────────────────▼─────────────────────┐
-                      │ read FITS; get RA/Dec hint from -ra/-spd │
-                      │ or header RA/DEC or CRVAL1/2             │
-                      │ get pixel scale from --fov or            │
-                      │ FOCALLEN/XPIXSZ, else assume 1″/px       │
+                      │ read FITS / XISF / ASDF                  │
+                      │ normalise: replace NaN/Inf; rescale      │
+                      │   float data spanning < 4096 counts      │
+                      │ RA/Dec hint from --ra/--spd, else header │
+                      │ pixel scale from --fov (image height),   │
+                      │   else header optics, else 1″/px         │
+                      │ FOV = scale × max(width, height)         │
                       └────────────────────┬─────────────────────┘
                                            │
                       ┌────────────────────▼─────────────────────┐
-                      │ auto-bin if arcsec/px < 1                │
+                      │ -z absent or 0: auto-bin if arcsec/px < 1│
                       │   factor = round(1 / arcsec_per_px), ≤16 │
+                      │ -D absent: pick the densest installed    │
+                      │   database whose FOV range fits          │
                       └────────────────────┬─────────────────────┘
                                            │
                      ┌─────────────────────┴──────────────────────┐
@@ -881,6 +906,7 @@ astrometry.net-index **blind** front-end (§4.3), and an alternative **triangle*
               │ → (α,δ) estimate           │            │
               │ narrow search radius to    │            │
               │   max(2·FOV, 5°)           │            │
+              │ (on failure: keep the hint)│            │
               └─────────────┬──────────────┘            │
                             └────────────┬──────────────┘
                                          │
@@ -898,41 +924,52 @@ astrometry.net-index **blind** front-end (§4.3), and an alternative **triangle*
 
 ```
    image ──► get_background()                    16-bit histogram over the frame
-             ├─ σ-clipped mean (σ_lo=3, σ_hi=2, iterate to convergence)
-             ├─ background, noise
-             └─ star_level = detection threshold
+             ├─ background = histogram mode (or the mean if > 1.5 × mode)
+             ├─ noise = RMS about it on a sparse pixel grid, 3σ-clipped,
+             │          iterated until it changes < 5% (≤ 7 passes)
+             └─ star_level, star_level2 = histogram tail thresholds
                     │
                     ▼
-             find_stars_with_background()
-             ├─ scan for pixels above threshold
+             find_stars_with_background()      detection cascade, stops once
+             │                                 `-s` stars have been found
+             ├─ level 4: threshold star_level   (if > 30 σ)
+             ├─ level 3: threshold star_level2  (if > 30 σ)
+             ├─ level 2: threshold 30 σ
+             ├─ level 1: ~12×12 grid of cells, local σ-clipped background,
+             │           threshold 7 σ_local
+             │    each level scans horizontal bands in parallel
+             │    (BAND_OVERLAP = 90 rows), merged with a positional dedup
              ├─ measure_star(): HFD in a 14-px annulus, sub-pixel bilinear
              │     centroid, SNR, flux; reject if not "boxed", single hot
-             │     pixel, or too large
-             ├─ fallback retry on a 12×12 raster sub-grid if too few found
-             └─ sort by brightness, keep the top `-s` (default 500)
+             │     pixel, too large, or any result non-finite
+             └─ sort by SNR, keep the top `-s` (default 500)
 ```
 
-If detection finds more stars than requested, arcsec keeps only the brightest
-`max(max_stars/2, 50)` for quad building — faint stars absent from the catalogue corrupt
-the 3-nearest-neighbour quads — while still reading the full catalogue depth.
+The detected list is not trimmed further. A brightest-half trim (`max(max_stars/2, 50)`)
+used to guard the 3-nearest-neighbour quads against faint stars missing from the
+catalogue; with 9-NN redundancy and star-level verification it only halved the quad
+count, and removing it took tier B to 34/34 (see [test-images.md §6.2](test-images.md#62-what-moved-the-numbers)).
+The blind front-end still applies it.
 
 ### 10.3 The catalogue spiral solve (`pipeline/solver.rs`)
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │ A. DETECT              stars (top ~500, trimmed to ~250)                 │
+  │ A. DETECT              up to `-s` stars (default 500), no further trim   │
   ├──────────────────────────────────────────────────────────────────────────┤
-  │ B. BUILD IMAGE QUADS   build_quads(): mode chosen by star count          │
-  │      n < 15  → 7 nearest neighbours, all C(7,4) = 35 quads per star      │
-  │      n < 30  → 6 nearest neighbours, all C(6,4) = 15 quads per star      │
-  │      n < 60  → 5 nearest neighbours, all C(5,4) =  5 quads per star      │
-  │      n ≥ 60  → sort by x; 3 nearest neighbours only → 1 quad per star    │
-  │                (bandwidth-limited to ±2√n neighbours when n ≥ 150)       │
+  │ B. BUILD IMAGE QUADS   build_quads(): each star plus its nearest         │
+  │                        neighbours, all 4-subsets of that group           │
+  │      n < 15  → group of 7 (star + 6 NN), C(7,4) =  35 quads per star     │
+  │      n < 30  → group of 6 (star + 5 NN), C(6,4) =  15 quads per star     │
+  │      else    → group of 9 (star + 8 NN), C(9,4) = 126 quads per star     │
+  │                (IMAGE_NEIGHBOURS = CATALOG_NEIGHBOURS = 9)               │
   │      dedup: reject a quad whose centroid is within 1 px of an existing   │
   │             one (hash grid, 5-px cells, bucket capacity 10)              │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ C. SPIRAL              max_distance = search_radius/FOV + 2              │
-  │    for (sx, sy) in SpiralSearch:                                         │
+  │    positions from SpiralSearch, evaluated in batches of `--threads`      │
+  │    (position 0 alone first); the lowest-index position that verifies     │
+  │    wins, so the result equals the serial search                          │
   │        (0,0),(1,0),(1,1),(0,1),(−1,1),(−1,0),(−1,−1),(0,−1),(1,−1),…     │
   │                                                                          │
   │        δ_db = δ_hint + FOV·sy         (pole wrap → flip RA by π)         │
@@ -940,97 +977,130 @@ the 3-nearest-neighbour quads — while still reading the full catalogue depth.
   │        skip if ang_sep(hint, trial) > radius + FOV/2                     │
   │                                                                          │
   │        read_catalog_stars(α_db, δ_db, FOV·oversize, N_required)          │
-  │            oversize = 2.0 (n<35) … 1.0 (n>140);  N = n_max · oversize²   │
-  │            → mmap'd .1476 area files, 5-byte records                     │
+  │            oversize = 2.0 (n<35), 2·√(35/n), 1.0 (n>140)                 │
+  │            N_required = max_stars · oversize²   (max_stars = `-s`)       │
+  │            → mmap'd .1476/.290 area files or the .001 file               │
   │                                                                          │
   │        project catalogue → tangent plane (arcsec), sort by x             │
   │        build_quads_presorted() with the *image* star count               │
-  │        sort catalogue quads by ratios[0]                                 │
+  │        sort_catalog_quads(): sort by ratios[INDEX_RATIO = 4]             │
   │                                                                          │
-  │        find_matches_sorted(): binary-search ±t on ratios[0],             │
-  │                               then check ratios[1..4]                    │
+  │        find_matches_sorted(): binary-search ±t on ratios[4] over a       │
+  │                               compact f32 copy, then check all five      │
   │        vote_filter(): 2-D (scale × angle) accumulator, both parities     │
-  │        fallback to filter_by_scale() if the vote peak is small           │
+  │        if fewer than min_quads survive, use filter_by_scale() on the     │
+  │           raw matches instead when it keeps more                         │
   │                                                                          │
   │        if matches < min_quads = 3 + n/140:  next position                │
   │                                                                          │
   │        extract_star_pairs(): (image quad centroid, catalogue centroid)   │
   │        solve_plate_constants(): Givens-rotation LSQ, 6 constants         │
-  │        derive_wcs(): tangent-plane inverse at the image centre           │
-  │        un-scale CRPIX and CD/CDELT for binning                           │
-  │        RETURN — the first position that fits wins                        │
+  │        verify_and_refit(): project every catalogue star through the      │
+  │           plate, pair it with the nearest unused detected star within    │
+  │           6 → 3 → 2 px, re-fit on those pairs at each radius             │
+  │        reject unless ≥ 30 stars matched and their spread ≥ 0.20 of the   │
+  │           image half-diagonal:  next position                            │
+  ├──────────────────────────────────────────────────────────────────────────┤
+  │ D. OUTPUT              derive_wcs(): tangent-plane inverse at the image  │
+  │                        centre; un-scale CRPIX and CD/CDELT for binning   │
   └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 The `--method tetra` variant replaces build/match/filter with `build_triangles`,
 `find_triangle_matches` (tolerance × 0.3), `bijective_filter`,
-`filter_triangles_by_scale`, and `sigma_clip_pairs`.
+`filter_triangles_by_scale`, and `sigma_clip_pairs`; the plate fit and `verify_and_refit`
+are shared.
+
+The reported `RMS` is the per-star residual of the final `verify_and_refit` pass, and the
+count written as `NQUADS` in the `.ini` (and "`n` of `m` quads selected" on stdout) is the
+number of verified stars, not quads.
 
 ### 10.4 The blind solve (`pipeline/blind.rs`)
 
 ```
-   detect stars ──► build image entries in astrometry.net code space
-                    (DIMQUADS 3 or 4, both parities, canonical form)
+   detect stars (trimmed to max(max_stars/2, 50) when detection overflows)
+                    ──► build image entries from the N_ENTRY_STARS = 30 brightest,
+                        in astrometry.net code space (DIMQUADS 3 or 4, canonical
+                        form: triangles CX ≤ 0.5; quads CX + DX ≤ 1 and CX ≤ DX)
                           │
                           ▼
-   for each image entry:  scale filter — is |AB| in pixels consistent with
-                          this index's angular scale band, given the FOV?
+   for each parity (normal, then flipped; skip the second if the first ≥ 20):
+     scale filter — keep entries whose |AB| in pixels lies within the index's
+                    angular scale band mapped through the image scale (×0.8, ×1.2)
                           │
                           ▼
-                    find_code_matches() over the compact f32 code array
-                    (9 MB, L3-resident) rather than the 70 MB entry array
+     find_code_matches_into() over the compact f32 code array
+     (9 MB, L3-resident) rather than the 70 MB entry array
                           │
                           ▼
-   for each (image, index) code match:
+     for each (image, index) code match:
         solve_plate_constants on the 3–4 star correspondences
         derive_wcs → an (α, δ) hypothesis
         vote into 0.1° sky bins                  ← VOTE_STEP
                           │
                           ▼
-   for every vote cell, in descending vote order:
+     for every vote cell, in descending vote order:
         take the cell's first hypothesis and run verify_score():
         project the index stars in a ±1.1·FOV declination band into the
         image and count those landing within MATCH_PX = 5 px of a detected
         star (excluding the quad's own stars, which would always match and
         would inflate false positives just as much as true ones)
+        stop early once a score reaches EARLY_STOP_SCORE = 20
                           │
                           ▼
-   accept if best score ≥ MIN_VERIFY_SCORE = 18   (early stop at 20)
+   accept if best score ≥ MIN_VERIFY_SCORE = 18
    → feed (α, δ) to the catalogue solver with radius = max(2·FOV, 5°)
 ```
 
-`main.rs` ranks candidate index files by how close their scale band's midpoint is to
-`FOV/2`, discards any with no overlap with `[0.2·FOV, 1.5·FOV]`, and runs the best
-`BLIND_MAX_INDEXES = 2` on separate threads, taking the highest-scoring result.
+The `arcsec` binary ranks candidate index files (`collect_index_files`) by how close their
+scale band's midpoint is to `FOV/2`, discards any with no overlap with
+`[0.2·FOV, 1.5·FOV]`, and runs the best `BLIND_MAX_INDEXES = 2` on separate threads
+(fewer if `--threads` is lower), taking the highest-scoring result. If every index fails,
+it prints a warning and runs the catalogue solve from the original hint and radius.
 
 ### 10.5 Constants and defaults
 
 | Constant | Value | Where | Meaning |
 |---|---|---|---|
 | `quad_tolerance` | 0.007 | `-t` | per-ratio match tolerance |
-| `max_stars` | 500 | `-s` | detection cap |
-| `hfd_min` | 1.5″ | `-m` | minimum star size |
+| `max_stars` | 500 | `-s` | detection cap; also sets catalogue depth |
+| `hfd_min` | 1.5″ | `-m` | minimum star size; converted to binned pixels, floor 0.8 px |
 | `search_radius` | 180° | `-r` | spiral radius |
-| `min_quads` | `3 + n/140` | `solver.rs` | matches needed to accept |
+| binning | `round(1/arcsec_per_px)`, ≤ 16 | `-z` absent or 0 | auto downsample when `arcsec/px < 1`; any factor is capped so the binned image keeps ≥ 2 px a side |
+| `IMAGE_NEIGHBOURS` / `CATALOG_NEIGHBOURS` | 9 | `quads/build.rs` | quad group size for ≥ 30 stars |
+| `INDEX_RATIO` | 4 | `quads/match.rs` | ratio the catalogue quads are sorted and searched on |
+| `min_quads` | `3 + n/140` | `solver.rs` | agreeing quads needed to attempt a fit |
 | `oversize` | 2.0 → 1.0 | `solver.rs` | catalogue window vs FOV |
-| `TETRA_TOL_FACTOR` | 0.3 | `tetra.rs` | triangle tolerance scaling |
-| `SCALE_STEP` / `ANGLE_STEP` | 0.05 / 10° | `vote.rs` | vote bin sizes |
+| `VERIFY_RADII` | 6, 3, 2 px | `solver.rs` | star-level verification match radii |
+| `MIN_VERIFIED_STARS` | 30 | `solver.rs` | stars that must agree to accept a position |
+| `MIN_VERIFY_SPREAD` | 0.20 | `solver.rs` | spread of those stars, fraction of the half-diagonal |
+| `TETRA_TOL_FACTOR` | 0.3 | `quads/tetra.rs` | triangle tolerance scaling |
+| `SCALE_STEP` / `ANGLE_STEP` | 0.05 / 10° | `quads/vote.rs` | vote bin sizes |
+| `BAND_OVERLAP` | 90 rows | `detection/stars.rs` | overlap between parallel detection bands |
 | `MIN_VERIFY_SCORE` | 18 | `blind.rs` | blind acceptance |
 | `EARLY_STOP_SCORE` | 20 | `blind.rs` | blind early exit |
 | `MATCH_PX` | 5.0 | `blind.rs` | verification match radius |
 | `VOTE_STEP` | 0.1° | `blind.rs` | sky vote bin |
 | `N_ENTRY_STARS` | 30 | `blind.rs` | brightest detected stars used to build blind quads |
-| `BLIND_MAX_INDEXES` | 2 | `main.rs` | parallel index files |
-| binning trigger | `arcsec/px < 1` | `main.rs` | auto downsample |
+| `BLIND_MAX_INDEXES` | 2 | `arcsec` binary | parallel index files |
 
 ### 10.6 Measured performance
 
-From `ARCSEC_VS_ASTAP.md`, on a 240-frame NGC 3372 set (ASI533MC Pro, RedCat 51,
+On the 103-image benchmark corpus (`scripts/benchmark.py --auto-db --astap`, 2026-09-25):
+90 correct and 0 false positives, against ASTAP's 47 and 0. On the 45 images both solve
+correctly, median centre error is 0.690″ (ASTAP 0.660″), median corner error 0.897″ (ASTAP
+0.938″), and median time per image is the same, 0.15 s each, when run one image at a time
+(`--jobs 1`). Details in [test-images.md §6](test-images.md#6-results--103-images-arcsec-vs-astap).
+
+Earlier, from `ARCSEC_VS_ASTAP.md`, on a 240-frame NGC 3372 set (ASI533MC Pro, RedCat 51,
 3.13″/px): positional agreement with ASTAP better than 0.3″ on every frame checked, pixel
-scale agreement better than 0.005%, and **3–4× faster than ASTAP** (0.07–0.10 s vs
-0.25–0.35 s per frame). For context, [AstroKeith][astrokeith] measures astrometry.net at
-<1 s on a Pi 5 with an accurate scale hint, tetra3 at ~200 ms and cedar-solve at ~12 ms.
-arcsec is firmly in the "fast hinted solver" class.
+scale agreement better than 0.005%, and 3–4× faster than ASTAP (0.07–0.10 s vs 0.25–0.35 s
+per frame). That predates the 9-NN quads and star-level verification, which made each
+solve slower (0.60× ASTAP) until the optimisations in test-images.md §6.5 brought it back
+to parity.
+For context, [AstroKeith][astrokeith] measures astrometry.net at <1 s on a Pi 5 with an
+accurate scale hint, tetra3 at ~200 ms and cedar-solve at ~12 ms. arcsec is firmly in the
+"fast hinted solver" class.
 
 ---
 
@@ -1039,6 +1109,8 @@ arcsec is firmly in the "fast hinted solver" class.
 Ordered roughly by how much they limit us.
 
 ### 11.1 The catalogue path performs no verification — FIXED 2026-09-02
+
+The problem as first written, before the fix below:
 
 `solve_image` returns the **first** spiral position that yields `min_quads = 3 + n/140`
 consistent quad matches. With `n = 250` that is 4 quads. There is no projection of the
@@ -1072,7 +1144,8 @@ reported tier-A solves were **wrong**, the worst by 0.57° at the image corners
 — 43° per step at Dec −88° — and because the 5-ratio descriptor is rotation invariant, a
 ring of circumpolar stars matches itself under that rotation. Six quads agreed, the vote
 filter found a perfectly coherent peak, the plate fit converged, and a half-degree error was
-returned as a success. See [test-images.md §6.1](test-images.md#61-three-silent-false-positives-tier-a).
+returned as a success. That field (`pole_scp`) now solves correctly to 2.3″; see
+[test-images.md §6.1](test-images.md#61-where-it-started-and-where-it-stands).
 
 
 ### 11.1b Any FITS containing NaN pixels crashes the solver — FIXED 2026-09-01
@@ -1087,7 +1160,8 @@ user-provided comparison function does not correctly implement a total order
   11: arcsec_core::detection::stars::detect_pass
 ```
 
-The culprit is `median_f64` in `detection/stars.rs:461`:
+The culprit was `median_f64` in `detection/stars.rs` (it has since been rewritten as a
+quickselect):
 
 ```rust
 v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1149,8 +1223,8 @@ rescaled. So this is purely a dynamic-range assumption, not a limitation of the 
 The failure was silent and misreported: the user saw `exit 2, insufficient stars`, which
 suggests a sparse field rather than a units problem.
 
-**Fix applied**: `ImageBuffer::normalize_for_detection` (`types.rs`), called from `main.rs`
-immediately after the FITS read and before binning. It replaces non-finite pixels with the
+**Fix applied**: `ImageBuffer::normalize_for_detection` (`types.rs`), called by the CLI
+immediately after the image is read and before binning. It replaces non-finite pixels with the
 finite minimum, then:
 
 * leaves the data **exactly** as-is when it already spans ≥ 4096 counts, so camera output
@@ -1177,8 +1251,8 @@ stars, the catalogue has stars below the detection limit — so a star's 3-NN ne
 in one list is frequently not its neighbourhood in the other, and the two quads simply do
 not correspond.
 
-The codebase is visibly fighting this. The `oversize` heuristic, the "trim to the brightest
-half" rule, and the comment
+The codebase was visibly fighting this. The `oversize` heuristic, the "trim to the brightest
+half" rule (since removed), and the comment
 
 > When detection finds many more stars than requested the extra stars are faint enough to
 > be absent from the catalogue, which corrupts 3-NN quads.
@@ -1209,28 +1283,32 @@ trim in `solve_image`:
 
 Raising `-s` to 1000 so the trim leaves 500 stars matches ASTAP's counts and recovers 2 of
 9 tested failures — but 7 still fail at matched star *and* quad counts, so the trim is a
-real cost on top of, not instead of, the correspondence problem described above. See
-[test-images.md §6.2](test-images.md#62-why-astap-wins-on-the-hips-renders--the-star-trim-heuristic).
+real cost on top of, not instead of, the correspondence problem described above. The trim
+was removed once verification existed. See
+[test-images.md §6.2](test-images.md#62-what-moved-the-numbers).
 
 ### 11.3 We cannot solve without a good pixel-scale estimate
 
 The spiral **step size is the FOV**. If the FOV estimate is wrong by 2×, the steps are wrong
 by 2× and the catalogue window is wrong by 2×, so the correct position is stepped over.
-Worse, when neither `--fov` nor `FOCALLEN`/`XPIXSZ` is available, `main.rs` silently
+Worse, when neither `--fov` nor `FOCALLEN`/`XPIXSZ` is available, the CLI silently
 assumes **1 arcsec/pixel**:
 
 ```rust
-} else {
-    let ps = 1.0;
-    let fov = naxis * ps / 3600.0 * PI / 180.0;
-    (ps, fov)
-};
+let ps = image_io::read_pixel_scale(file).unwrap_or(1.0);
 ```
 
 For a 3000-px frame that asserts a 0.83° field. A DSLR-and-lens frame is 20°+; the solve
 cannot succeed and the failure mode gives the user no hint that the scale was the problem.
 There is no scale search, no scale refinement, and no warning. astrometry.net sweeps scale
 bands by design; tetra3 takes an `fov_estimate` with an explicit `fov_max_error`.
+
+Still open as of 0.1.0. A related trap, now fixed: `--fov` used to be read as the
+**larger** image dimension (pixel scale `--fov / max(width, height)`), but ASTAP defines
+`-fov` as the image *height* and N.I.N.A. sends exactly that (`FoVH`), so on a landscape
+frame the scale came out low by the aspect ratio. The pixel scale is now
+`--fov / height`; the internal field size used for database selection and the search
+window is still the larger dimension.
 
 ### 11.4 The plate fit uses quad centroids, not stars — FIXED 2026-09-02
 
@@ -1249,59 +1327,61 @@ image, match each to the nearest detected star within a few pixels, and refit on
 pairs. That single step would also supply the verification statistic missing in §11.1 —
 the same computation serves both purposes.
 
+**Fixed** by the same change as §11.1: `verify_and_refit` re-fits on individual star pairs
+(typically 200–375), and the reported `RMS` is now that per-star residual. The first fit
+at each spiral position is still built from quad centroids by `extract_star_pairs`; it is
+only a starting point.
+
 ### 11.5 No distortion model
 
-`--sip` is accepted on the command line and then **never read**:
-
-```
-  sip        PARSED-BUT-UNUSED
-```
+`--sip` is not implemented: it is parsed for ASTAP compatibility and then rejected with
+`Error: --sip (SIP distortion coefficients) is not implemented` and exit code 1.
 
 Every solution is a pure 6-parameter affine map. That is fine at 3″/px on a 4.6° field
 with a well-corrected refractor; it is not fine for fast astrographs, camera lenses, or
 anything wider than a few degrees, where field curvature and barrel distortion produce
-radial residuals of several pixels at the corners. We have no way to even *measure* this
-today, because the residual we compute is a quad-centroid residual (§11.4).
+radial residuals of several pixels at the corners. Since §11.4 was fixed the star-level
+residuals needed to measure and fit it exist; nothing uses them for that yet.
 
-### 11.6 Several CLI flags are accepted and ignored
+### 11.6 Several CLI flags are accepted and ignored — MITIGATED
 
-A user reading `--help` is told these work:
+This used to read "accepted and ignored": a script that passed `--analyse 10` got a full
+(slow) solve and no CSV, silently. The flags are still parsed for ASTAP compatibility, but
+now say what they do:
 
 | Flag | Status |
 |---|---|
-| `--sip` | parsed, never read |
-| `--wcs` | parsed, never read — the `.wcs` file is written **unconditionally** |
-| `--check` | parsed, never read |
-| `--speed` | parsed, never read (stdout always prints `Speed: normal`) |
-| `--analyse` | parsed, never read |
-| `--extract` / `--extract2` | parsed, never read |
-| `-f` help text | ~~claims "fits, tiff, png, pbm, jpg"; only FITS is implemented~~ — **fixed**: reads FITS, XISF and ASDF, and the help text says so |
+| `--sip` | help says `[not implemented]`; passing it exits 1 with an error |
+| `--check` | help says `[not implemented]`; passing it exits 1 with an error |
+| `--analyse` | help says `[not implemented]`; passing it exits 1 with an error |
+| `--extract` / `--extract2` | help says `[not implemented]`; passing them exits 1 with an error |
+| `--speed` | only `auto` is accepted; any other value exits 1 (stdout still prints `Speed: normal`) |
+| `--wcs` | accepted and ignored; the help text says the `.wcs` file is `{always written}` |
+| `-f` help text | ~~claims "fits, tiff, png, pbm, jpg"~~ — **fixed**: reads FITS, XISF and ASDF, and the help text says so |
 
-For an ASTAP-compatible CLI this is worse than not offering the flags: a script that passes
-`--analyse 10` gets a full (slow) solve and no CSV, silently.
+What remains is to implement the missing modes (§12.6).
 
 ### 11.7 Documentation drift
 
 `ARCSEC_VS_ASTAP.md` states that "the `-z` CLI flag … is parsed but not applied — the image
 is always passed to the solver at full resolution", and `FUTURE_IMPROVEMENTS.md` repeats
-it. That is no longer true: `main.rs` implements binning, including an auto mode, and
+it. That is no longer true: the CLI implements binning, including an auto mode, and
 `solver.rs` correctly un-scales `CRPIX`/`CD`/`CDELT` afterwards. The accuracy table in that
 document attributes a ~0.2″ offset to ASTAP binning and arcsec not binning, an explanation
 that no longer holds.
 
-Relatedly, the binning comment in `main.rs` describes a rule the code does not implement:
-
-```rust
-// Bin when height > 2500 px OR pixel scale < 1 arcsec/px.
-```
-
-Only the pixel-scale test exists.
+Relatedly, the auto-binning comment in the CLI source used to describe a rule the code did
+not implement ("Bin when height > 2500 px OR pixel scale < 1 arcsec/px"; only the
+pixel-scale test exists). That comment has since been replaced by an accurate one on
+`choose_binning`.
 
 ### 11.8 Catalogue and epoch limitations
 
-* We depend on the user having ASTAP's `.1476` databases installed. The format is
+* We depend on ASTAP's star databases (`.1476`, `.290`, `.001`). The format is
   documented by GPL source and the data is Gaia, so there is no legal barrier, but there
-  is a practical dependency on a third-party download.
+  is a practical dependency on a third-party download. `arcsec catalog install` now
+  fetches them from ASTAP's distribution and puts them where the solver looks, which
+  removes the friction but not the dependency.
 * No proper-motion correction (§9.3). The `.1476` record has no room for it.
 * No colour/magnitude information is used, so we cannot weight the fit by expected
   detectability or reject a match on implausible photometry.
@@ -1311,8 +1391,11 @@ Only the pixel-scale test exists.
 The spiral is `O((r/FOV)²)` positions and each position rebuilds catalogue quads from
 scratch. The blind front-end exists precisely to avoid this, but it needs astrometry.net
 index files — so a user with only the ASTAP database and no position hint has no fast path.
-The catalogue solve is also entirely single-threaded; only the blind stage uses threads
-(and only `BLIND_MAX_INDEXES = 2` of them). Spiral positions are embarrassingly parallel.
+
+The thread-usage half is **fixed**: spiral positions are evaluated a batch at a time across
+`--threads` workers (lowest spiral index wins, so the result matches the serial search),
+and detection, the background histogram and the pixel-range scan are parallel too. The
+blind stage still runs at most `BLIND_MAX_INDEXES = 2` index files concurrently.
 
 ### 11.10 Smaller items
 
@@ -1323,28 +1406,33 @@ The catalogue solve is also entirely single-threaded; only the blind stage uses 
   contains only WCS cards where ASTAP dumps the full original header.
 * `CROTA1` is written equal to `CROTA2`, which is conventional but not strictly correct for
   a skewed CD matrix.
-* `blind.rs`'s own header comment says it verifies "the top-K vote cells", but
-  `run_blind_pass` iterates over **every** cell (sorted by vote count, with an early stop
-  once a score reaches 20). On an image that will not solve, every cell is verified, which
+* `run_blind_pass` verifies **every** vote cell (sorted by vote count, with an early stop
+  once a score reaches 20), not a top-K subset as `blind.rs`'s header comment once
+  claimed (the comment has since been corrected). On an image that will not solve, every
+  cell is verified, which
   is why blind failures are much slower than blind successes — `bench_all.sh` already
   reduces concurrency to 4 for `quads+blind` because of this.
 * Blind verification tests only `hyps[0]`, the first hypothesis deposited in each vote
   cell, rather than the cell's best or a consensus of its members. A cell can therefore
   hold the right answer and be scored on the wrong member.
-* No test covers an end-to-end solve — there is no `tests/` directory, and the in-file unit
-  tests cover components (spiral order, LSQ, areas, coordinate round-trips) but never the
-  pipeline. The shell scripts in `scripts/` are the only integration coverage and they
-  require external data that is not in the repository.
+* No unit test covers an end-to-end solve — there is no `tests/` directory, and the in-file
+  unit tests cover components (spiral order, LSQ, areas, coordinate round-trips) but never
+  the pipeline. `scripts/benchmark.py` over the 103-image corpus is the integration
+  coverage, and it needs data that is not in the repository (fetched by
+  `scripts/fetch-test-images.sh`, plus the star databases).
 
 ---
 
 ## 12. Improvement roadmap
 
-Ordered by (value ÷ effort). Items 1–3 are the ones I would do first, and they interlock:
-one piece of machinery — *project the catalogue and match individual stars* — fixes the
-verification gap, the accuracy cap and the distortion blocker at once.
+Ordered by (value ÷ effort) as originally written. Items 1–3 are the ones I would do first,
+and they interlock: one piece of machinery — *project the catalogue and match individual
+stars* — fixes the verification gap, the accuracy cap and the distortion blocker at once.
 
-### 12.1 Add a star-level refit and verification pass ★ highest value
+Status as of 0.1.0: §12.1 and §12.7 are done, §12.5 option 1 and §12.6 are partly done,
+§12.10 is partly done; the rest are open.
+
+### 12.1 Add a star-level refit and verification pass ★ highest value — DONE 2026-09-02
 
 After `solve_plate_constants` succeeds at a spiral position:
 
@@ -1365,6 +1453,11 @@ is plenty at ~500 stars).
 
 The acceptance threshold should be set the way `MIN_VERIFY_SCORE` was: measured against
 the HiPS test fields, tuned so that no known-wrong field passes.
+
+**Done** as `verify_and_refit` in `solver.rs`, with three passes at 6, 3 and 2 px. The
+thresholds were tuned on the benchmark corpus rather than the HiPS blind fields: at least
+`MIN_VERIFIED_STARS = 30` matched stars, spanning at least `MIN_VERIFY_SPREAD = 0.20` of
+the image half-diagonal. See §11.1 and §11.4 for the effect.
 
 ### 12.2 Report and use a proper odds ratio
 
@@ -1401,6 +1494,7 @@ The deeper fix for §11.2. Options, cheapest first:
 1. **Build image quads from several neighbour counts** (3-NN *and* 4-NN/5-NN combinations)
    so that a quad survives when one neighbour is missing from the catalogue. Costs more
    quads to match, but `find_matches_sorted` is `O(M log R)` so this is affordable.
+   **Done** in the form of all C(9,4) subsets of each star's 9-star neighbourhood (§11.2).
 2. **Match the star sets by count, not by magnitude cut.** Choose the catalogue depth so
    that the *number* of catalogue stars in the field equals the number of detected stars,
    rather than over-reading by `oversize²` and hoping.
@@ -1414,25 +1508,35 @@ The deeper fix for §11.2. Options, cheapest first:
    `FUTURE_IMPROVEMENTS.md`'s 10–40 GB — sizing grid cells to the quad diameter rather
    than a third of the field puts a typical rig at **87–350 MB**, built from the ASTAP
    database the user already has, with no new download. But the *motivation* is weaker,
-   because items 1 and 2 above (now implemented as 9-NN redundancy) plus star-level
-   verification already absorbed most of the damage, and all 8 remaining tier-A failures
+   because item 1 above (implemented as 9-NN redundancy) plus star-level verification
+   already absorbed most of the damage, and all 8 remaining tier-A failures
    are detection problems rather than indexing problems. See
    [offline-index.md §1](offline-index.md#1-read-this-first-the-case-is-weaker-than-it-was)
    and its §9, a one-day experiment that settles it before committing two weeks.
 
-### 12.6 Finish or remove the ignored CLI flags
+### 12.6 Finish or remove the ignored CLI flags — PARTLY DONE
 
 `--analyse`, `--extract`, `--extract2` are small (the star list and HFDs already exist —
 they need a median and a CSV writer). `--wcs` should gate the `.wcs` file. `--check` and
-`--speed` should either do something or be dropped from `--help`. The `-f` help text should
-list only FITS until other formats are read.
+`--speed` should either do something or be dropped from `--help`.
 
-### 12.7 Parallelise the spiral
+Done so far: the unimplemented flags are marked `[not implemented]` in `--help` and exit 1
+with an error rather than being silently ignored, `--speed` accepts only `auto`, the
+`--wcs` help text says the file is always written, and the `-f` help text lists the
+formats actually read (FITS, XISF, ASDF). Implementing the analyse/extract modes is still
+open.
+
+### 12.7 Parallelise the spiral — DONE
 
 Spiral positions are independent up to the "first match wins" rule. Evaluate a batch of
 positions across a thread pool, and take the *best-verified* (not the first) result — which
 is strictly better than first-wins once §12.1 gives a score to compare. With 8 threads this
 turns a wide-radius hinted solve from seconds into hundreds of milliseconds.
+
+**Done**, but deliberately keeping first-wins semantics: positions run in batches of
+`--threads`, and the lowest spiral index that verifies wins, so the answer is identical to
+the serial search. `dens_scutum` went from 7.6 s to 3.8 s. Choosing the best-verified
+position across a batch is still open.
 
 ### 12.8 Proper motion
 
@@ -1458,21 +1562,24 @@ remaining win may be small compared with §12.7.
 
 * Add an end-to-end test that builds a synthetic star field with a known WCS (the machinery
   already exists in `solver.rs`'s `make_test_scene`), writes it to a temporary FITS, solves
-  it and asserts sub-arcsecond agreement. This is the missing regression net.
-* Commit a small, checked-in corpus of real FITS frames with reference solutions and a
-  pass/fail harness — see [test-images.md](test-images.md).
+  it and asserts sub-arcsecond agreement. This is the missing regression net. Still open.
+* A corpus of FITS frames with reference solutions and a pass/fail harness — **done** as
+  `scripts/test-images.tsv`, `scripts/fetch-test-images.sh` and `scripts/benchmark.py`;
+  see [test-images.md](test-images.md). The images are fetched rather than checked in.
 * Add a false-positive test: solve a field with a deliberately wrong hint far from the
-  truth and assert the solver *fails* rather than inventing a solution. This is the test
-  that §11.1 currently would not pass.
+  truth and assert the solver *fails* rather than inventing a solution. Tier D of the
+  corpus covers star-poor fields; the wrong-hint case is still open
+  (`benchmark.py --offset-hint` moves the hint, but does not assert failure).
 
 ---
 
 ## 13. Benchmarking
 
 The accuracy and robustness claims above only mean something against a fixed corpus. See
-**[test-images.md](test-images.md)** for the proposed benchmark set: where to get FITS
-images with trustworthy ground truth, what the corpus should span (field size, star
-density, image quality), and the metrics and pass criteria to hold ourselves to.
+**[test-images.md](test-images.md)** for the benchmark set: where the FITS images with
+trustworthy ground truth come from, what the corpus spans (field size, star density, image
+quality), the metrics and pass criteria, and the measured results — currently 90 of 103
+correct with 0 false positives, against ASTAP's 47.
 
 ---
 

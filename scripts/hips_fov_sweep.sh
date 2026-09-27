@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # hips_fov_sweep.sh — test the blind solver across multiple FOV sizes.
-# Uses a fixed set of reliable star fields; downloads images at each FOV.
+# Uses a fixed set of 8 star fields; downloads a 1000x1000 image of each at
+# 0.5, 1, 1.5, 2, 3 and 5 degrees. Same requirements as hips_solve_test.sh.
+# Run from the repository root.
 #
-# Usage: scripts/hips_fov_sweep.sh [--skip-download]
+# Usage: scripts/hips_fov_sweep.sh [--index <path>] [--arcsec <path>]
+#                                  [--work-dir <dir>] [--skip-download]
+#   --index <path>    index dir or file [default: the output of `arcsec catalog path`]
+#   --arcsec <path>   arcsec binary [default: ./target/release/arcsec]
+#   --work-dir <dir>  download and output directory [default: /tmp/hips_fov_sweep]
+#   --skip-download   reuse FITS files already in work-dir
 
 set -uo pipefail
 
 ARCSEC_BIN="./target/release/arcsec"
-INDEX_PATH="resources/indexes/4100"
+INDEX_PATH=""
 WORK_DIR="/tmp/hips_fov_sweep"
 SKIP_DOWNLOAD=0
 HIPS="CDS/P/DSS2/blue"
@@ -38,6 +45,10 @@ declare -a TARGETS=(
 
 # FOVs to sweep; each column in the output
 declare -a FOVS=("0.5" "1.0" "1.5" "2.0" "3.0" "5.0")
+
+# Default to the catalogue directory, where `arcsec catalog install anet-4100` puts the
+# astrometry.net index files.
+[[ -n "$INDEX_PATH" ]] || INDEX_PATH="$("$ARCSEC_BIN" catalog path)"
 
 mkdir -p "$WORK_DIR"
 

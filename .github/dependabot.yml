@@ -1,14 +1,29 @@
 version: 2
 updates:
+  # Weekly rather than daily: a solo-maintained project gains little from same-day
+  # bumps, and a daily stream of PRs each running the full CI matrix is noise. Security
+  # updates are not affected by the schedule - Dependabot raises those as soon as an
+  # advisory is published.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: daily
-    # No ignore rule for patch/minor here, unlike a library. arcsec ships a
-    # binary, so the lockfile is what users actually run and its dependencies
-    # should be kept current rather than left to a consumer's own resolution.
+      interval: weekly
+    # No ignore rule for patch/minor here, unlike a library. arcsec ships a binary,
+    # and the release archives and `cargo install --locked` are built from the
+    # committed lockfile, so its dependencies should be kept current rather than left
+    # to a consumer's own resolution.
+    #
+    # Compatible updates arrive as one grouped PR a week; semver-major updates stay
+    # separate, since each may need code changes. The MSRV job in CI fails if an update
+    # needs a newer compiler than rust-version - raise it then, deliberately.
+    groups:
+      cargo-compatible:
+        update-types: ["minor", "patch"]

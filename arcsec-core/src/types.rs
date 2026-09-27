@@ -1,12 +1,22 @@
-/// Row-major pixel buffer. Access: `data[y * width + x]`
+//! Plain data types shared across the pipeline.
+
+/// Row-major greyscale pixel buffer. Access: `data[y * width + x]`.
+///
+/// `data.len()` must equal `width * height`; the detection code indexes on that
+/// assumption.
 #[derive(Debug, Clone)]
 pub struct ImageBuffer {
+    /// Pixel values, row by row from the top-left.
     pub data: Vec<f32>,
+    /// Columns.
     pub width: usize,
+    /// Rows.
     pub height: usize,
 }
 
 impl ImageBuffer {
+    /// A zero-filled image of the given size.
+    #[must_use]
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             data: vec![0.0; width * height],
@@ -15,12 +25,20 @@ impl ImageBuffer {
         }
     }
 
+    /// Pixel at `(x, y)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the coordinates are outside the buffer.
     #[inline]
+    #[must_use]
     pub fn get(&self, x: usize, y: usize) -> f32 {
         self.data[y * self.width + x]
     }
 
+    /// Pixel at `(x, y)`, or `None` if the coordinates are outside the image.
     #[inline]
+    #[must_use]
     pub fn get_checked(&self, x: i32, y: i32) -> Option<f32> {
         if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height {
             Some(self.data[y as usize * self.width + x as usize])
@@ -139,7 +157,7 @@ impl ImageBuffer {
         if sample.is_empty() {
             return None;
         }
-        sample.sort_unstable_by(|a, b| a.total_cmp(b));
+        sample.sort_unstable_by(f32::total_cmp);
         let p999 = sample[((sample.len() as f64 * 0.999) as usize).min(sample.len() - 1)];
 
         let span = p999 - lo;
@@ -148,14 +166,17 @@ impl ImageBuffer {
         }
         let scale = TARGET_P999 / span;
         let offset = FLOOR - lo * scale;
-        for v in self.data.iter_mut() {
+        for v in &mut self.data {
             *v = *v * scale + offset;
         }
         Some((scale, offset))
     }
 
     /// Downsample by averaging N×N pixel blocks. Returns a clone if factor ≤ 1.
-    pub fn bin_image(&self, factor: usize) -> ImageBuffer {
+    ///
+    /// Partial blocks at the right and bottom edges are dropped.
+    #[must_use]
+    pub fn bin_image(&self, factor: usize) -> Self {
         if factor <= 1 {
             return self.clone();
         }
@@ -176,7 +197,7 @@ impl ImageBuffer {
                 data[ny * new_w + nx] = sum / fac_sq;
             }
         }
-        ImageBuffer {
+        Self {
             data,
             width: new_w,
             height: new_h,
@@ -187,9 +208,13 @@ impl ImageBuffer {
 /// A detected star in image coordinates.
 #[derive(Debug, Clone)]
 pub struct Star {
+    /// Sub-pixel column of the centroid (0-based).
     pub x: f64,
+    /// Sub-pixel row of the centroid (0-based).
     pub y: f64,
+    /// Signal-to-noise ratio of the star's aperture flux.
     pub snr: f64,
+    /// Half-flux diameter in pixels.
     pub hfd: f64,
 }
 
@@ -198,9 +223,13 @@ pub struct Star {
 pub struct StarList(pub Vec<Star>);
 
 impl StarList {
+    /// Number of stars.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    /// Whether the list is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -213,9 +242,11 @@ pub struct Quad {
     pub d1: f64,
     /// d2/d1 through d6/d1: the 5 normalized distance ratios.
     pub ratios: [f64; 5],
+    /// Mean x of the four stars.
     pub center_x: f64,
+    /// Mean y of the four stars.
     pub center_y: f64,
-    /// Direction angle (radians, 0..π) of the longest pair, used by vote_filter.
+    /// Direction angle (radians, 0..π) of the longest pair, used by `vote_filter`.
     pub d1_angle: f64,
 }
 
@@ -224,9 +255,13 @@ pub struct Quad {
 pub struct QuadList(pub Vec<Quad>);
 
 impl QuadList {
+    /// Number of quads.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    /// Whether the list is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -240,37 +275,60 @@ impl QuadList {
 pub type PairedPositions = (Vec<(f64, f64)>, Vec<(f64, f64)>);
 
 /// The 6 plate constants for the linear WCS transformation.
-/// X_ref = a·x + b·y + c
-/// Y_ref = d·x + e·y + f
-/// Units depend on context: when called with equatorial_standard coords (cdelt=1),
-/// a/b/d/e are in standard coordinate units per pixel and c/f are offsets.
+///
+/// `X_ref = a·x + b·y + c` and `Y_ref = d·x + e·y + f`.
+///
+/// Units depend on context: when called with `equatorial_standard` coords (cdelt=1),
+/// a/b/d/e are in standard coordinate units (arcsec) per pixel and c/f are offsets.
 #[derive(Debug, Clone)]
 pub struct PlateConstants {
+    /// `∂X_ref/∂x`.
     pub a: f64,
+    /// `∂X_ref/∂y`.
     pub b: f64,
+    /// `X_ref` at pixel (0, 0).
     pub c: f64,
+    /// `∂Y_ref/∂x`.
     pub d: f64,
+    /// `∂Y_ref/∂y`.
     pub e: f64,
+    /// `Y_ref` at pixel (0, 0).
     pub f: f64,
 }
 
 /// The final WCS solution for an image.
 #[derive(Debug, Clone)]
 pub struct WcsSolution {
-    pub ra0: f64,    // CRVAL1 in radians
-    pub dec0: f64,   // CRVAL2 in radians
-    pub crpix1: f64, // reference pixel X (1-based FITS convention)
-    pub crpix2: f64, // reference pixel Y (1-based FITS convention)
-    pub cd1_1: f64,  // CD matrix elements (degrees/pixel)
+    /// CRVAL1: RA of the reference pixel, radians.
+    pub ra0: f64,
+    /// CRVAL2: Dec of the reference pixel, radians.
+    pub dec0: f64,
+    /// CRPIX1: reference pixel X (1-based FITS convention; the image centre).
+    pub crpix1: f64,
+    /// CRPIX2: reference pixel Y (1-based FITS convention; the image centre).
+    pub crpix2: f64,
+    /// `CD1_1`, degrees/pixel.
+    pub cd1_1: f64,
+    /// `CD1_2`, degrees/pixel.
     pub cd1_2: f64,
+    /// `CD2_1`, degrees/pixel.
     pub cd2_1: f64,
+    /// `CD2_2`, degrees/pixel.
     pub cd2_2: f64,
-    pub cdelt1: f64, // degrees/pixel
+    /// CDELT1, degrees/pixel. Negative (FITS convention, east to the left).
+    pub cdelt1: f64,
+    /// CDELT2, degrees/pixel.
     pub cdelt2: f64,
-    pub crota2: f64,       // rotation in degrees
-    pub residual_rms: f64, // arcsec
+    /// CROTA2, degrees.
+    pub crota2: f64,
+    /// RMS residual of the verified star matches, arcsec.
+    pub residual_rms: f64,
+    /// Number of individual stars matched during verification.
     pub stars_matched: usize,
-    /// The 6 plate constants in arcsec/pixel units (as returned by solve_plate_constants).
+    /// The 6 plate constants in arcsec/pixel units (as returned by `solve_plate_constants`).
+    ///
+    /// These are in the pixel units of the image that was solved, i.e. *after*
+    /// binning; the CRPIX/CD/CDELT fields have been scaled back to the original image.
     pub plate: PlateConstants,
     /// Faintest catalog star magnitude used in the matching step.
     pub mag_limit: f64,
@@ -316,8 +374,8 @@ mod tests {
         let mut img = buf(d, 100, 10);
         let (scale, _offset) = img.normalize_for_detection().expect("should rescale");
         assert!(scale > 1000.0, "scale={scale} should open the range up");
-        let lo = img.data.iter().cloned().fold(f32::INFINITY, f32::min);
-        let hi = img.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let lo = img.data.iter().copied().fold(f32::INFINITY, f32::min);
+        let hi = img.data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         assert!(lo >= 0.0, "minimum {lo} should be non-negative");
         assert!(hi - lo > 4096.0, "range {} should be resolvable", hi - lo);
     }

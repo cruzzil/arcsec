@@ -1,25 +1,45 @@
 #!/usr/bin/env bash
-# Parallel benchmark: run arcsec and astap-cli on all resources/*.fits
-# Usage: bench_all.sh [concurrency] [method]
-#   method: quads (default), tetra, quads+blind
-# Results land in /tmp/arcsec_bench/<method>/
+# Parallel benchmark: run arcsec and astap_cli on all resources/*.fits
+# (tier C of docs/test-images.md: our NGC 3372 frames, which are not in the repo).
+# Run from the repository root.
+#
+# Usage: scripts/bench_all.sh [concurrency] [method]
+#   concurrency: parallel jobs [default 10, or 4 for quads+blind]
+#   method:      quads (default), tetra, quads+blind
+#
+# Environment overrides:
+#   ARCSEC     arcsec binary          [default ./target/release/arcsec]
+#   ASTAP      ASTAP CLI binary       [default ~/astap_cli]
+#   DB         star database dir      [default ~/star_database]
+#   INDEX_DIR  astrometry.net indexes for quads+blind
+#              [default: `arcsec catalog path`, where `arcsec catalog install anet-4100` puts them]
+#
+# Both solvers get a fixed --fov 2.61 (the NGC 3372 set) and -r 180. ASTAP is only run on
+# frames with no <frame>.ini next to them and no cached result in /tmp/arcsec_bench/astap/.
+# Results land in /tmp/arcsec_bench/<method>/ plus a summary.csv there.
+# For the benchmark corpus (tiers A/B/D) use scripts/benchmark.py instead.
 
 set -euo pipefail
 
-ARCSEC="./target/release/arcsec"
-ASTAP="~/astap-cli"
-DB="~/star_database"
-INDEX_DIR="resources/indexes/4100"
-RESOURCES="resources"
+ARCSEC="${ARCSEC:-./target/release/arcsec}"
+ASTAP="${ASTAP:-$HOME/astap_cli}"
+DB="${DB:-$HOME/star_database}"
 METHOD="${2:-quads}"
+INDEX_DIR="${INDEX_DIR:-}"
+if [[ -z "$INDEX_DIR" && "$METHOD" == "quads+blind" ]]; then
+    INDEX_DIR="$("$ARCSEC" catalog path)"
+fi
+RESOURCES="resources"
 # blind mode is CPU-intensive (sorts 580K-entry index tables per image);
 # keep concurrency low to avoid CPU saturation and memory pressure.
 DEFAULT_CONCURRENCY=10
 [[ "$METHOD" == "quads+blind" ]] && DEFAULT_CONCURRENCY=4
 CONCURRENCY="${1:-$DEFAULT_CONCURRENCY}"
 BENCH="/tmp/arcsec_bench/${METHOD}"
+# ASTAP results are method-independent, so they are cached in one place and reused.
+ASTAP_BENCH="/tmp/arcsec_bench/astap"
 
-mkdir -p "$BENCH"
+mkdir -p "$BENCH" "$ASTAP_BENCH"
 
 mapfile -t ALL_FITS < <(ls "$RESOURCES"/*.fits | sort)
 TOTAL="${#ALL_FITS[@]}"
@@ -70,7 +90,7 @@ run_astap_one() {
     local file="$1"
     local name="${file##*/}"
     local stem="${name%.fits}"
-    local out="$BENCH/a_${stem}"
+    local out="$ASTAP_BENCH/a_${stem}"
 
     local t0; t0=$(date +%s%3N)
     timeout 120 "$ASTAP" -f "$file" -fov 2.61 -r 180 \
@@ -87,12 +107,12 @@ run_astap_one() {
         crval2=$(grep "^CRVAL2=" "$out.ini" | cut -d= -f2)
     fi
 
-    echo "$stem,$solved,$crval1,$crval2,$ms" > "$BENCH/a_${stem}.result"
+    echo "$stem,$solved,$crval1,$crval2,$ms" > "$ASTAP_BENCH/a_${stem}.result"
     printf '  astap  %-50s %s  %5dms\n' "$name" "$solved" "$ms" >&2
 }
 
 export -f run_arcsec_one run_astap_one
-export ARCSEC ASTAP DB INDEX_DIR BENCH METHOD
+export ARCSEC ASTAP DB INDEX_DIR BENCH ASTAP_BENCH METHOD
 
 # ── Phase 1: run arcsec on all files ────────────────────────────────────────
 echo "--- Phase 1: arcsec($METHOD) on all $TOTAL files ---"
@@ -101,8 +121,6 @@ printf '%s\n' "${ALL_FITS[@]}" \
 echo ""
 
 # ── Phase 2: run astap on files without existing reference .ini ──────────────
-ASTAP_BENCH="/tmp/arcsec_bench/astap"
-mkdir -p "$ASTAP_BENCH"
 mapfile -t NO_INI < <(
     for f in "${ALL_FITS[@]}"; do
         ini="${f%.fits}.ini"
@@ -157,17 +175,17 @@ for f in "${ALL_FITS[@]}"; do
         IFS=',' read -r _ a_s a_r1 a_r2 a_ms < "$ares"
     fi
 
-    if [[ "$p_s" == "Y" ]]; then (( p_solved++ )); else (( p_fail++ )); fi
-    if [[ "$a_s" == "Y" ]]; then (( a_solved++ )); else (( a_fail++ )); fi
+    if [[ "$p_s" == "Y" ]]; then p_solved=$((p_solved + 1)); else p_fail=$((p_fail + 1)); fi
+    if [[ "$a_s" == "Y" ]]; then a_solved=$((a_solved + 1)); else a_fail=$((a_fail + 1)); fi
 
     if [[ -n "$p_ms" && "$p_ms" -gt 0 ]]; then
-        (( p_time_total += p_ms ))
+        p_time_total=$((p_time_total + p_ms))
         (( p_ms < p_time_min )) && p_time_min=$p_ms
         (( p_ms > p_time_max )) && p_time_max=$p_ms
         if [[ "$p_s" == "Y" ]]; then
-            (( p_succ_time += p_ms )); (( p_succ_n++ ))
+            p_succ_time=$((p_succ_time + p_ms)); p_succ_n=$((p_succ_n + 1))
         else
-            (( p_fail_time += p_ms )); (( p_fail_n++ ))
+            p_fail_time=$((p_fail_time + p_ms)); p_fail_n=$((p_fail_n + 1))
         fi
     fi
 
@@ -186,7 +204,7 @@ print(f'{dra:.2f},{ddec:.2f},{sep:.2f}')
         err_ra="$era"; err_dec="$edec"
 
         if [[ -n "$era" && -n "$esep" ]]; then
-            (( p_err_n++ ))
+            p_err_n=$((p_err_n + 1))
             p_err_ra_sum=$(python3 -c "print($p_err_ra_sum + $era)")
             p_err_dec_sum=$(python3 -c "print($p_err_dec_sum + $edec)")
             max_ra_check=$(python3 -c "print(1 if $era > $p_err_max_ra else 0)")
@@ -200,9 +218,9 @@ elif sep<5: print('5')
 else: print('bad')
 ")
             case "$acc" in
-                1)   (( p_acc1++ )) ;;
-                5)   (( p_acc5++ )) ;;
-                bad) (( p_acc_bad++ )) ;;
+                1)   p_acc1=$((p_acc1 + 1)) ;;
+                5)   p_acc5=$((p_acc5 + 1)) ;;
+                bad) p_acc_bad=$((p_acc_bad + 1)) ;;
             esac
         fi
     fi

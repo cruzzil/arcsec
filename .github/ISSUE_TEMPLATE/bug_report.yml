@@ -1,0 +1,61 @@
+name: Bug report
+description: A crash, a wrong solution, a failed solve, or behaviour that differs from ASTAP
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: arcsec version
+      description: Output of `arcsec --version`, or the commit if built from source.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Ubuntu 24.04 x86-64, macOS 15 arm64, Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command line, and its exit code.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: What arcsec printed. For a solving problem, rerun with `--progress` and include the log.
+      render: text
+  - type: dropdown
+    id: format
+    attributes:
+      label: Image format
+      options:
+        - FITS
+        - XISF
+        - ASDF
+        - Not applicable
+    validations:
+      required: true
+  - type: input
+    id: catalogue
+    attributes:
+      label: Catalogue or index
+      description: The star database (`-D`, or the one chosen automatically) or Astrometry.net index set (`-i`).
+      placeholder: e.g. d50, g05, anet-4100
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: For a wrong or missing solution, the true position if known, or what ASTAP reports for the same image.
+    validations:
+      required: true
+  - type: textarea
+    id: image
+    attributes:
+      label: Image
+      description: A link to the image, if you can share it. A failing solve is often impossible to reproduce without one.

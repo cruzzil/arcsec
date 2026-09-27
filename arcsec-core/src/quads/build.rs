@@ -1,9 +1,10 @@
-// Quad creation from star lists.
+//! Quad creation from star lists.
 
 use crate::types::{Quad, QuadList, StarList};
 
-/// Neighbourhood size for image quads and for catalogue quads. See build_quads.
+/// Neighbourhood size for image quads. See `build_quads`.
 pub const IMAGE_NEIGHBOURS: usize = 9;
+/// Neighbourhood size for catalogue quads. See `build_quads_presorted`.
 pub const CATALOG_NEIGHBOURS: usize = 9;
 
 // Hash-dedup constants
@@ -11,7 +12,7 @@ const BUCKET_CAPACITY: usize = 10;
 const GRID_INV: f64 = 0.2; // 1.0 / grid_size(5.0)
 
 /// Fast atan2 approximation (max error ~0.0026 rad ≈ 0.15°).
-/// Adequate for the 10° angle-voting bins used in vote_filter.
+/// Adequate for the 10° angle-voting bins used in `vote_filter`.
 /// Uses the identity atan(z) ≈ z / (1 + 0.28125·z²) for |z|≤1.
 #[inline(always)]
 fn fast_atan2(y: f64, x: f64) -> f64 {
@@ -76,9 +77,9 @@ fn sort6(mut d: [f64; 6]) -> [f64; 6] {
 
 /// Compute all 6 pairwise distances for four (x,y) points and return a sorted Quad.
 fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> Option<Quad> {
-    let pts = [p1, p2, p3, p4];
     // Pair ordering mirrors the `raw` array below (must stay in sync).
     const PAIR_IDXS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let pts = [p1, p2, p3, p4];
 
     let dist = |a: (f64, f64), b: (f64, f64)| -> f64 {
         ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
@@ -97,8 +98,7 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
         .iter()
         .enumerate()
         .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(k, _)| k)
-        .unwrap_or(0);
+        .map_or(0, |(k, _)| k);
     let (ai, bi) = PAIR_IDXS[max_k];
     let dx = pts[bi].0 - pts[ai].0;
     let dy = pts[bi].1 - pts[ai].1;
@@ -122,7 +122,7 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
 
 /// All C(k, 4) index combinations of 4 from 0..k, in lexicographic order.
 ///
-/// Replaces the hand-written COMBOS_5/6/7 tables so that any neighbourhood size can
+/// Replaces the hand-written `COMBOS_5/6/7` tables so that any neighbourhood size can
 /// be used; the generated order is identical to those tables for k ∈ {5, 6, 7}.
 fn combinations_of_4(k: usize) -> Vec<[usize; 4]> {
     let mut out = Vec::with_capacity(k * k * k * k / 24 + 4);
@@ -138,8 +138,8 @@ fn combinations_of_4(k: usize) -> Vec<[usize; 4]> {
     out
 }
 
-/// Small-star-count quad builder (find_many_quads).
-/// For each star, find `num_closest` nearest neighbours, then emit all C(num_closest, 4) quads.
+/// Small-star-count quad builder (`find_many_quads`).
+/// For each star, find `num_closest` nearest neighbours, then emit all `C(num_closest, 4)` quads.
 /// Duplicates are filtered by center proximity (< 1px in both x and y).
 fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
     if !(4..=12).contains(&mode) {
@@ -171,12 +171,12 @@ fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
         closest_idx[0] = i;
         closest_dist[0] = 0.0;
 
-        for j in 0..n {
+        for (j, sj) in stars.0.iter().enumerate() {
             if j == i {
                 continue;
             }
-            let dx = stars.0[j].x - x1;
-            let dy = stars.0[j].y - y1;
+            let dx = sj.x - x1;
+            let dy = sj.y - y1;
             let d = dx * dx + dy * dy;
             if d <= 1.0 {
                 continue;
@@ -270,16 +270,16 @@ fn find_quads_nn(stars: &StarList) -> QuadList {
         let mut j2 = 0usize;
         let mut j3 = 0usize;
 
-        for j in s_start..=s_end {
+        for (j, sj) in (s_start..=s_end).zip(&stars.0[s_start..=s_end]) {
             if j == i {
                 continue;
             }
-            let dy = stars.0[j].y - y1;
+            let dy = sj.y - y1;
             let dy2 = dy * dy;
             if dy2 >= d3 {
                 continue;
             } // pre-check
-            let dx = stars.0[j].x - x1;
+            let dx = sj.x - x1;
             let dist = dx * dx + dy2;
             if dist <= 1.0 {
                 continue;
@@ -343,37 +343,12 @@ fn find_quads_nn(stars: &StarList) -> QuadList {
 ///
 /// `nrstars_image`: the count of stars found in the *image* (used for mode selection;
 /// may differ from `stars.len()` when building catalog quads from a larger catalog area).
+#[must_use]
 pub fn build_quads(stars: &StarList, nrstars_image: usize) -> QuadList {
-    let n = stars.len();
-    if nrstars_image < 15 && n > 6 {
-        return find_many_quads(stars, 7);
+    if let Some(quads) = build_quads_neighbourhood(stars, nrstars_image, IMAGE_NEIGHBOURS) {
+        return quads;
     }
-    if nrstars_image < 30 && n > 5 {
-        return find_many_quads(stars, 6);
-    }
-    // Large star counts: 9 nearest neighbours and all C(9,4) subsets, i.e. 126
-    // quads per star instead of the single 3-nearest-neighbour quad ASTAP builds.
-    //
-    // A 3-NN quad depends entirely on *which* stars are in the list, and the image
-    // and catalogue lists never match exactly (the image has undetected faint stars,
-    // the catalogue has stars below the detection limit). Redundancy is what lets a
-    // correspondence survive that: astrometry.net puts each star in up to 8 quads
-    // and makes ~16 passes for exactly this reason.
-    //
-    // Measured on the 103-image benchmark corpus (see docs/test-images.md).
-    // Without verification, recall rises with the neighbourhood but so do false
-    // positives (5-NN 64/4FP, 7-NN 76/7FP, 10-NN 69/21FP). With the star-level
-    // verification in solver.rs the false-positive count stays at zero and recall
-    // peaks at 9 neighbours:
-    //
-    //   5-NN 68   6-NN 77   7-NN 81   8-NN 83   9-NN 85   10-NN 83   12-NN 80
-    //
-    // Past 9 the extra quads add noise rather than signal and the cost climbs
-    // sharply (12-NN is 20x the wall time for two fewer solves).
-    if n > 4 {
-        return find_many_quads(stars, IMAGE_NEIGHBOURS);
-    }
-    // Large: sort by X then use bandwidth-filtered 3-NN
+    // Four stars or fewer: bandwidth-filtered 3-NN, which wants the list sorted by x.
     let mut sorted = stars.clone();
     sorted.0.sort_by(|a, b| a.x.total_cmp(&b.x));
     find_quads_nn(&sorted)
@@ -381,16 +356,28 @@ pub fn build_quads(stars: &StarList, nrstars_image: usize) -> QuadList {
 
 /// Build quads from a star list that is **already sorted by x ascending**.
 ///
-/// For the ≥60-star path this skips the clone+sort that `build_quads` performs,
-/// saving one heap allocation and ~500-element sort per spiral step.
-/// The caller must guarantee the sort order; results are undefined otherwise.
+/// Identical to [`build_quads`] (with [`CATALOG_NEIGHBOURS`]) except that the
+/// small-list 3-NN path skips its clone and sort. The caller must guarantee the sort
+/// order; results are unspecified otherwise.
+#[must_use]
 pub fn build_quads_presorted(stars: &StarList, nrstars_image: usize) -> QuadList {
+    build_quads_neighbourhood(stars, nrstars_image, CATALOG_NEIGHBOURS)
+        .unwrap_or_else(|| find_quads_nn(stars))
+}
+
+/// The all-subsets-of-k-neighbours builders, or `None` when the list is too short for
+/// any of them and the caller should fall back to 3-NN.
+fn build_quads_neighbourhood(
+    stars: &StarList,
+    nrstars_image: usize,
+    neighbours: usize,
+) -> Option<QuadList> {
     let n = stars.len();
     if nrstars_image < 15 && n > 6 {
-        return find_many_quads(stars, 7);
+        return Some(find_many_quads(stars, 7));
     }
     if nrstars_image < 30 && n > 5 {
-        return find_many_quads(stars, 6);
+        return Some(find_many_quads(stars, 6));
     }
     // Large star counts: 9 nearest neighbours and all C(9,4) subsets, i.e. 126
     // quads per star instead of the single 3-nearest-neighbour quad ASTAP builds.
@@ -411,11 +398,13 @@ pub fn build_quads_presorted(stars: &StarList, nrstars_image: usize) -> QuadList
     //
     // Past 9 the extra quads add noise rather than signal and the cost climbs
     // sharply (12-NN is 20x the wall time for two fewer solves).
+    //
+    // Note that `find_many_quads` needs at least `neighbours` stars, so a list of
+    // 5..neighbours stars that reaches this point yields no quads at all.
     if n > 4 {
-        return find_many_quads(stars, CATALOG_NEIGHBOURS);
+        return Some(find_many_quads(stars, neighbours));
     }
-    // Stars are pre-sorted by x; call find_quads_nn directly with no clone.
-    find_quads_nn(stars)
+    None
 }
 
 #[cfg(test)]
@@ -471,12 +460,8 @@ mod tests {
             "ratio[0] = {}",
             q.ratios[0]
         );
-        for k in 1..5 {
-            assert!(
-                (q.ratios[k] - 1.0 / 2.0_f64.sqrt()).abs() < 1e-10,
-                "ratio[{k}] = {}",
-                q.ratios[k]
-            );
+        for (k, r) in q.ratios.iter().enumerate().skip(1) {
+            assert!((r - 1.0 / 2.0_f64.sqrt()).abs() < 1e-10, "ratio[{k}] = {r}");
         }
         assert_ratios_valid(&q);
     }
