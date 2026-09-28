@@ -41,18 +41,17 @@ impl ImageFormat {
 
 /// Identify a file's format from its leading bytes.
 ///
-/// Unrecognised files are rejected here rather than handed to CFITSIO. This used
-/// to fall back to FITS on the theory that CFITSIO would report the error for us,
-/// but `rsfitsio::fits_open_image` panics instead of setting its status when it
-/// cannot open a file, so the fallback turned a mistyped path into a "Null Pointer"
-/// panic and exit 101 instead of the documented exit 16. See cruzzil/rsfitsio#136.
+/// Unrecognised files are rejected here rather than handed to CFITSIO. Before
+/// rsfitsio 0.470.3, `fits_open_image` panicked instead of setting its status when
+/// it could not open a file (cruzzil/rsfitsio#136), so a fallback to FITS turned a
+/// mistyped path into exit 101. It returns an error now, but naming the formats
+/// arcsec reads is still a clearer message than CFITSIO's.
 ///
 /// Two things reach CFITSIO deliberately:
 ///
-/// - Compressed FITS. CFITSIO decompresses bzip2 and Unix `compress`
+/// - Compressed FITS. CFITSIO decompresses gzip, bzip2 and Unix `compress`
 ///   transparently, so those magic numbers are reported as [`ImageFormat::Fits`].
-///   gzip is the exception: rsfitsio 0.470 panics opening it, so it is refused
-///   here with an error (exit 16) until that is fixed upstream.
+///   (gzip and `compress` need rsfitsio 0.470.3, which fixed their magic numbers.)
 /// - Extended filename syntax (`image.fits[1]`, `image.fits[col>3]`). Those paths
 ///   do not name a file on disk, so when the open fails and the path carries a
 ///   `[`, it is passed through for CFITSIO to parse.
@@ -74,14 +73,8 @@ pub fn detect_format(path: &Path) -> Result<ImageFormat, String> {
         Ok(ImageFormat::Xisf)
     } else if head.starts_with(b"#ASDF ") {
         Ok(ImageFormat::Asdf)
-    } else if head.starts_with(b"\x1f\x8b") {
-        // rsfitsio 0.470 panics opening a gzip file rather than returning an error,
-        // so refuse it here, with a message that says what to do.
-        Err(format!(
-            "{}: gzip-compressed FITS is not supported; decompress it first (gunzip)",
-            path.display()
-        ))
     } else if head.starts_with(b"SIMPLE  =")
+        || head.starts_with(b"\x1f\x8b")  // gzip
         || head.starts_with(b"BZh")      // bzip2
         || head.starts_with(b"\x1f\x9d")
     // Unix compress
@@ -226,13 +219,9 @@ mod tests {
 
     #[test]
     fn compressed_fits_and_extended_syntax_still_reach_cfitsio() {
-        // CFITSIO decompresses these itself, so the magic bytes are its, not ours;
-        // except gzip, which rsfitsio currently panics on.
+        // CFITSIO decompresses these itself, so the magic bytes are its, not ours.
         let g = write("arcsec_fmt_e.fits", b"\x1f\x8b\x08\x00rest-is-deflate");
-        assert!(
-            detect_format(&g).is_err_and(|e| e.contains("gzip")),
-            "gzip is refused"
-        );
+        assert_eq!(detect_format(&g), Ok(ImageFormat::Fits), "gzip");
         std::fs::remove_file(&g).ok();
         let b = write("arcsec_fmt_f.fits", b"BZh91AY&SY");
         assert_eq!(detect_format(&b), Ok(ImageFormat::Fits), "bzip2");
