@@ -1,0 +1,27 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { url } from '../lib/url';
+
+// The 404 page is served at whatever address was not found, so its links must be
+// absolute; url() adds the base path.
+const links = [
+	['', 'Home and downloads'],
+	['getting-started/', 'Getting started'],
+	['nina/', 'Use with N.I.N.A.'],
+	['catalogues/picker/', 'Catalogue picker'],
+	['reference/cli/', 'Command line'],
+];
+---
+
+<StarlightPage frontmatter={{ title: 'Page not found', pagefind: false, editUrl: false, prev: false, next: false }}>
+	<p>That page does not exist, or has moved. Try the search box above, or one of these:</p>
+	<ul>
+		{
+			links.map(([to, text]) => (
+				<li>
+					<a href={url(to)}>{text}</a>
+				</li>
+			))
+		}
+	</ul>
+</StarlightPage>

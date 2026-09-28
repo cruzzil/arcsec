@@ -16,3 +16,8 @@ BUILD_ASTAP_CLI.md
 ARCSEC_VS_ASTAP.md
 FUTURE*
 __pycache__/
+
+# Website (site/)
+/site/node_modules
+/site/dist
+/site/.astro
