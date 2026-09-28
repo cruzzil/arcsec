@@ -11,6 +11,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-28
+
 ### Fixed
 
 - gzip-compressed FITS (`.fits.gz`) is read directly instead of being refused. This
@@ -105,6 +107,7 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/cruzzil/arcsec/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cruzzil/arcsec/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cruzzil/arcsec/releases/tag/v0.1.0
