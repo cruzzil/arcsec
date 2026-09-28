@@ -1,0 +1,93 @@
+---
+// The three claims on the home page. Numbers are from docs/test-images.md §6; change
+// them only when that table changes.
+import { url } from '../lib/url';
+
+const benchmark = 'https://github.com/cruzzil/arcsec/blob/main/docs/test-images.md#6-results--103-images-arcsec-vs-astap';
+---
+
+<ul class="proof not-content" aria-label="Why arcsec">
+	<li>
+		<p class="figure"><span class="big">90</span><span class="of">of 103</span></p>
+		<p class="what">benchmark images solved correctly</p>
+		<p class="detail">
+			ASTAP solved 47 given the same position hints and field sizes. Every solve is checked against the
+			known coordinates at the centre and all four corners. <a href={benchmark}>Benchmark details</a>
+		</p>
+	</li>
+	<li>
+		<p class="figure"><span class="big">0</span><span class="of">false positives</span></p>
+		<p class="what">across the same benchmark</p>
+		<p class="detail">
+			A reported solve more than 5″ out at any corner counts as wrong. Five of the images are deliberate
+			traps, tiny crops of nebula and galaxy cores that should not solve; arcsec reports no solution rather than
+			inventing one.
+		</p>
+	</li>
+	<li>
+		<p class="figure"><span class="big word">N.I.N.A.</span></p>
+		<p class="what">works as its “ASTAP” solver</p>
+		<p class="detail">
+			Same flags, same <code>.ini</code> and <code>.wcs</code> files, same exit codes. Point N.I.N.A. at{" "}
+			<code>arcsec.exe</code> and keep your ASTAP star databases. <a href={url('nina/')}>Set-up guide</a>
+		</p>
+	</li>
+</ul>
+
+<style>
+	.proof {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 1rem;
+		display: grid;
+		gap: 1rem;
+		grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+	}
+	li {
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 0.5rem;
+		padding: 1.25rem 1.25rem 1rem;
+		background: var(--sl-color-gray-6);
+	}
+	p {
+		margin: 0;
+	}
+	.figure {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+	.big {
+		font-size: var(--sl-text-5xl);
+		font-weight: 700;
+		line-height: 1;
+		letter-spacing: -0.02em;
+		color: var(--sl-color-text-accent);
+		font-variant-numeric: tabular-nums;
+	}
+	.big.word {
+		font-size: var(--sl-text-4xl);
+	}
+	.of {
+		font-size: var(--sl-text-lg);
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+	.what {
+		margin-top: 0.35rem;
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+	.detail {
+		margin-top: 0.75rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.detail a {
+		color: var(--sl-color-text-accent);
+	}
+	code {
+		font-size: 0.9em;
+	}
+</style>

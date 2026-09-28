@@ -1,0 +1,122 @@
+---
+// Every prebuilt archive in the latest release, with its checksum. Filled in at build
+// time from the GitHub API (src/lib/release.ts); falls back to a link to the releases
+// page if the API could not be reached.
+import { getLatestRelease, PLATFORMS, RELEASES_URL } from '../lib/release';
+import { human } from '../lib/catalogues';
+
+const release = await getLatestRelease();
+---
+
+<div class="downloads not-content">
+	{
+		release.ok ? (
+			<>
+				<p class="release">
+					Latest release: <a href={release.pageUrl}>arcsec {release.version}</a>
+					{release.date && <>, published {release.date}</>}.
+				</p>
+				<table>
+					<thead>
+						<tr>
+							<th scope="col">Platform</th>
+							<th scope="col">Archive</th>
+							<th scope="col">Size</th>
+							<th scope="col">SHA-256</th>
+						</tr>
+					</thead>
+					<tbody>
+						{release.assets.map((a) => (
+							<tr>
+								<th scope="row">{a.label}</th>
+								<td>
+									<a href={a.url} class="file">
+										<span class="long">{a.name}</span>
+										<span class="short">Download {a.note.split(',')[0]}</span>
+									</a>
+								</td>
+								<td class="num">{human(a.size)}</td>
+								<td>{a.sha256Url ? <a href={a.sha256Url}>.sha256</a> : '-'}</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+				{release.checksumsUrl && (
+					<p class="sums">
+						All checksums in one file: <a href={release.checksumsUrl}>SHA256SUMS</a>.
+					</p>
+				)}
+			</>
+		) : (
+			<p class="release">
+				Prebuilt archives for {PLATFORMS.map((p) => p.label).join(', ')} are attached to each{' '}
+				<a href={RELEASES_URL}>GitHub release</a>, with SHA-256 checksums.
+			</p>
+		)
+	}
+</div>
+
+<style>
+	.downloads {
+		margin-block: 1rem;
+	}
+	.release,
+	.sums {
+		margin: 0.5rem 0;
+	}
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: var(--sl-text-sm);
+		display: block;
+		overflow-x: auto;
+	}
+	th,
+	td {
+		text-align: start;
+		padding: 0.5rem 0.75rem;
+		border-bottom: 1px solid var(--sl-color-hairline-light);
+		vertical-align: top;
+	}
+	thead th {
+		color: var(--sl-color-gray-2);
+		font-weight: 600;
+	}
+	tbody th {
+		font-weight: 600;
+		color: var(--sl-color-white);
+		white-space: nowrap;
+	}
+	.file {
+		font-family: var(--sl-font-system-mono);
+		font-size: 0.85em;
+		word-break: break-all;
+	}
+	.short {
+		display: none;
+	}
+	@media (max-width: 40rem) {
+		.long {
+			display: none;
+		}
+		.short {
+			display: inline;
+			font-family: system-ui, sans-serif;
+			font-size: 1.15em;
+			white-space: nowrap;
+		}
+		th,
+		td {
+			padding-inline: 0.4rem;
+		}
+		tbody th {
+			white-space: normal;
+		}
+	}
+	.num {
+		white-space: nowrap;
+	}
+	a {
+		color: var(--sl-color-text-accent);
+	}
+</style>

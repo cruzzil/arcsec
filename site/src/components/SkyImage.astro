@@ -1,0 +1,148 @@
+---
+// An SDSS frame with the RA/Dec grid from arcsec's own solution drawn over it.
+// Regenerate the image and grid with site/scripts/make-hero-image.py.
+import { Image } from 'astro:assets';
+import sky from '../assets/hero/sky.png';
+import grid from '../assets/hero/sky-grid.json';
+
+const { width, height } = grid;
+const alt = `A greyscale telescope image of faint stars and galaxies in Coma Berenices, overlaid with the right ascension and declination grid that arcsec solved for it. The field is ${grid.field}, centred on RA ${grid.centre.ra}, Dec ${grid.centre.dec}.`;
+---
+
+<figure class="sky not-content">
+	<div class="frame">
+		<Image
+			src={sky}
+			alt={alt}
+			widths={[480, 768, 1024]}
+			sizes="(min-width: 72rem) 36rem, (min-width: 50rem) 45vw, 100vw"
+			format="webp"
+			quality={82}
+			loading="eager"
+			fetchpriority="high"
+		/>
+		<svg
+			class="grid"
+			viewBox={`0 0 ${width} ${height}`}
+			preserveAspectRatio="none"
+			aria-hidden="true"
+			fill="none"
+			stroke="hsla(186, 85%, 62%, 0.7)"
+			stroke-width="1.25"
+			stroke-dasharray="6 4"
+		>
+			{grid.paths.map((p) => <path d={p.d} vector-effect="non-scaling-stroke" />)}
+		</svg>
+		{
+			grid.labels.map((l) => (
+				<span class={`label ${l.edge}`} style={`left:${l.x}%;top:${l.y}%`} aria-hidden="true">
+					{l.text}
+				</span>
+			))
+		}
+		<span class="reticle" aria-hidden="true"></span>
+	</div>
+	<figcaption>
+		<span class="solved">
+			Solved by arcsec: <strong>RA {grid.centre.ra}, Dec {grid.centre.dec}</strong>, {grid.scale}, field {grid.field}.
+		</span>
+		<span class="credit">Image: Sloan Digital Sky Survey</span>
+	</figcaption>
+</figure>
+
+<style>
+	.sky {
+		margin: 0;
+		width: 100%;
+	}
+	.frame {
+		position: relative;
+		border-radius: 0.5rem;
+		overflow: hidden;
+		background: #000;
+		box-shadow: var(--sl-shadow-lg);
+		outline: 1px solid var(--sl-color-hairline-light);
+		container-type: inline-size;
+	}
+	.frame :global(img) {
+		display: block;
+		width: 100%;
+		height: auto;
+	}
+	.grid {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+	}
+	.label {
+		position: absolute;
+		font: 600 clamp(0.6rem, 2.1cqi, 0.8rem) / 1 var(--sl-font-system-mono);
+		color: hsl(186, 85%, 82%);
+		background: hsla(220, 45%, 6%, 0.72);
+		padding: 0.15em 0.35em;
+		border-radius: 0.2em;
+		white-space: nowrap;
+		pointer-events: none;
+	}
+	.label.left {
+		transform: translate(0.3em, -50%);
+	}
+	.label.right {
+		transform: translate(calc(-100% - 0.3em), -50%);
+	}
+	.label.bottom {
+		transform: translate(-50%, calc(-100% - 0.3em));
+	}
+	.label.top {
+		transform: translate(-50%, 0.3em);
+	}
+	/* The solved image centre. */
+	.reticle {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: 7%;
+		aspect-ratio: 1;
+		transform: translate(-50%, -50%);
+		border: 1.5px solid hsla(40, 95%, 65%, 0.9);
+		border-radius: 50%;
+	}
+	.reticle::before,
+	.reticle::after {
+		content: '';
+		position: absolute;
+		background: hsla(40, 95%, 65%, 0.9);
+	}
+	.reticle::before {
+		left: 50%;
+		top: -45%;
+		bottom: -45%;
+		width: 1.5px;
+		transform: translateX(-50%);
+		mask: linear-gradient(#000 0 30%, transparent 30% 70%, #000 70%);
+	}
+	.reticle::after {
+		top: 50%;
+		left: -45%;
+		right: -45%;
+		height: 1.5px;
+		transform: translateY(-50%);
+		mask: linear-gradient(90deg, #000 0 30%, transparent 30% 70%, #000 70%);
+	}
+	figcaption {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 0.25rem 1rem;
+		margin-top: 0.6rem;
+		font-size: var(--sl-text-xs);
+		color: var(--sl-color-gray-3);
+		text-align: start;
+	}
+	figcaption strong {
+		color: var(--sl-color-gray-2);
+		font-weight: 600;
+	}
+</style>

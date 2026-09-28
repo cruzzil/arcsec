@@ -1,0 +1,111 @@
+---
+title: arcsec
+description: An accurate astrometric plate solver and a drop-in replacement for ASTAP's command-line solver. Same flags, same star databases, same output files; works as the "ASTAP" solver in N.I.N.A.
+template: splash
+editUrl: false
+hero:
+  title: arcsec
+  tagline: An accurate plate solver, and a drop-in replacement for ASTAP. Same command line, same star databases, same output files.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import ProofPoints from '../../components/ProofPoints.astro';
+import DownloadTable from '../../components/DownloadTable.astro';
+
+Give arcsec an image from your telescope and it works out exactly where in the sky
+it was pointing, then writes the answer (a WCS solution) where your imaging software
+expects to find it.
+
+## Why arcsec
+
+<ProofPoints />
+
+The benchmark is 103 survey images with known coordinates, fields from 0.1° to 15° wide,
+sparse to crowded. It is published with the scripts to reproduce it. arcsec still
+fails on very crowded Milky Way fields and on frames dominated by one bright object,
+such as M31 or Sirius; the [benchmark write-up](https://github.com/cruzzil/arcsec/blob/main/docs/test-images.md#64-what-still-fails-8-of-64-tier-a-0-of-34-tier-b)
+lists every failure.
+
+## Download
+
+<DownloadTable />
+
+Unpack the archive and put `arcsec` (or `arcsec.exe`) somewhere on your `PATH`, or
+anywhere you like if only N.I.N.A. will run it. To check a download against its
+`.sha256` file, run `sha256sum -c <file>.sha256` on Linux or `shasum -a 256 -c <file>.sha256`
+on macOS; on Windows, compare the output of `Get-FileHash <file>` in PowerShell with the
+file's contents. Each archive also carries a signed build attestation, which
+`gh attestation verify <file> -R cruzzil/arcsec` checks.
+
+**With Rust installed** (1.96 or newer), on any platform Rust supports, including
+Intel Macs:
+
+```sh
+cargo install arcsec
+```
+
+Then install a star catalogue and solve your first image: see
+[Getting started](./getting-started/).
+
+## What it does
+
+<CardGrid>
+	<Card title="Drop-in for astap_cli" icon="approve-check">
+		The same solving flags, including ASTAP's single-dash spellings (`-fov`, `-ra`,
+		`-spd`), the same report on stdout, the same `.wcs` and `.ini` files and the same
+		exit codes. Software that runs ASTAP can run arcsec instead.
+	</Card>
+	<Card title="Catalogues, managed" icon="database">
+		`arcsec catalog recommend` tells you which star database suits your field, and
+		`arcsec catalog install` fetches it into a folder the solver already searches. It
+		reads ASTAP's own database files, so an existing ASTAP folder works as it is.
+	</Card>
+	<Card title="Fields from 0.15° to 80°" icon="magnifier">
+		From long focal lengths to all-sky lenses. Without `-D`, arcsec picks the densest
+		installed database whose field range covers the image.
+	</Card>
+	<Card title="FITS, XISF and ASDF" icon="document">
+		Reads FITS (including gzip and bzip2 compressed), PixInsight's XISF and ASDF. The
+		format is recognised from the file's contents, not its extension. Pointing and
+		pixel scale come from the usual header keywords.
+	</Card>
+	<Card title="Blind solving" icon="random">
+		No position from the mount? With Astrometry.net index files, `-i` finds the rough
+		position first, then refines it against a star database. It is weakest on narrow
+		fields; see the [FAQ](./faq/#can-it-solve-with-no-position-at-all).
+	</Card>
+	<Card title="Open source" icon="github">
+		MIT licensed, written in Rust. No account, no telemetry, and no internet
+		connection needed to solve. The solving library is published separately as
+		[`arcsec-core`](https://docs.rs/arcsec-core).
+	</Card>
+</CardGrid>
+
+## Built on ASTAP
+
+arcsec would not exist without [ASTAP](https://www.hnsky.org/astap.htm) by Han Kleijn.
+Two debts in particular:
+
+- **The algorithm.** ASTAP's star-pattern approach, describing a group of four stars
+  by five normalised distance ratios that do not change when the image is rotated,
+  scaled or flipped, is the idea arcsec is built on. Kleijn documents it openly in
+  [ASTAP star pattern recognition algorithm and astrometric (plate) solving](https://www.hnsky.org/astap_astrometric_solving.htm).
+- **The catalogue file formats.** arcsec reads ASTAP's `.1476`, `.290` and `.001` star
+  database files, so the same catalogues serve both programs. The `.290` and `.001`
+  layouts are not documented upstream and were worked out from the shipped files.
+
+ASTAP is licensed under the Mozilla Public License 2.0. arcsec is an independent
+implementation in Rust and contains no ASTAP source. ASTAP does much more than solve:
+if you use its viewer, stacking or photometry, keep it.
+
+## Good to know
+
+- **Speed** is roughly on a par with ASTAP: a median of 0.15 s per image for both, on
+  the benchmark images both solve.
+- **N.I.N.A. is the only imaging program tested so far.** Other software that drives
+  `astap_cli` may work too; that is untested, and reports are welcome.
+- **`--method tetra`** is an experimental alternative matcher. It solves far fewer
+  images than the default and is not recommended yet.
+- **Not implemented:** SIP distortion terms (`--sip`), and ASTAP's analyse and
+  star-extraction modes. arcsec refuses these options with an error rather than
+  silently ignoring them.
