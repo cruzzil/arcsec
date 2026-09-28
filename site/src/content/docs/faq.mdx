@@ -1,0 +1,124 @@
+---
+title: FAQ
+description: Common questions about arcsec - how it compares with ASTAP, catalogues, blind solving, file formats, and how to report a problem.
+---
+
+## Why use arcsec instead of ASTAP?
+
+On a [benchmark of 103 images](https://github.com/cruzzil/arcsec/blob/main/docs/test-images.md#6-results--103-images-arcsec-vs-astap)
+with known coordinates, arcsec solved 90 correctly and ASTAP 47, given the same hints,
+with no wrong solutions from either. The gap is widest on deep, narrow survey frames,
+where arcsec solved all 34 and ASTAP 8. On the images both solve, their accuracy is
+about the same.
+
+It is also a small, self-contained program that manages its own catalogues, and it is
+open source under the MIT licence.
+
+## Does it replace ASTAP?
+
+Only ASTAP's command-line solver, `astap_cli`. ASTAP is also an image viewer, stacker
+and photometry tool, and arcsec does none of that. If you use those parts of ASTAP,
+keep it; the two can share one set of star databases.
+
+arcsec is an independent program. It is built on the star-pattern method Han Kleijn
+published for ASTAP and reads ASTAP's database files, but contains no ASTAP code and
+is not affiliated with the ASTAP project.
+
+## Is it faster than ASTAP?
+
+About the same. On the benchmark images both programs solve, the median time is
+0.15 seconds per image for each.
+
+## Does it need an internet connection?
+
+Only to download catalogues with `arcsec catalog install`. Solving is entirely
+offline, and arcsec sends nothing anywhere.
+
+## Which catalogue do I need?
+
+It depends on your field of view. The [catalogue picker](../catalogues/picker/) works it
+out from your focal length and camera. For most telescopes it is one of the D-series;
+camera lenses need `g05`, and all-sky lenses `w08`.
+
+## Where are the catalogues stored?
+
+In a per-user folder that the solver searches automatically:
+
+| Platform | Default folder |
+|---|---|
+| Linux | `~/.local/share/arcsec/catalogs` (or under `$XDG_DATA_HOME`) |
+| macOS | `~/Library/Application Support/arcsec/catalogs` |
+| Windows | `%LOCALAPPDATA%\arcsec\catalogs` |
+
+`arcsec catalog path` prints it, and the `ARCSEC_CATALOG_DIR` environment variable
+moves it. See [where they are stored](../catalogues/#where-they-are-stored).
+
+## Can I use the star databases I already have for ASTAP?
+
+Yes. Set `ARCSEC_CATALOG_DIR` to ASTAP's database folder, or pass it with `-d`. arcsec
+reads ASTAP's `.1476`, `.290` and `.001` files directly and never modifies them. See
+[sharing with ASTAP](../catalogues/#if-you-already-have-astap).
+
+## Can it solve with no position at all?
+
+Yes, with Astrometry.net index files and the `-i` option: arcsec estimates the
+position from the index, then finishes the solve against a star database as usual.
+
+```sh
+arcsec catalog install anet-4100
+arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+```
+
+It works best on wider fields. The `anet-4100` set (355 MB) covers fields of about
+0.7° and wider. For narrower fields the `anet-5200` set is needed, and it is an 8.8 GB
+download. You still need to know the field size (`--fov`, or `FOCALLEN` and `XPIXSZ`
+in the header). If your mount reports where it is pointing, you do not need blind
+solving at all.
+
+## Which image formats does it read?
+
+FITS, XISF (PixInsight) and ASDF (used by the Roman telescope and astropy). The format
+is recognised from the file's contents, not its name. Compressed FITS is read directly
+in gzip (`.fits.gz`), bzip2 and Unix `compress` (`.Z`) form. XISF colour images are
+averaged to greyscale for solving.
+
+## Which imaging programs can use it?
+
+[N.I.N.A.](../nina/) has been tested: set arcsec as its ASTAP solver. Other programs that
+run ASTAP's command-line solver may work too, since arcsec takes the same options and
+writes the same files, but that is untested. If you try one, please
+[report how it went](https://github.com/cruzzil/arcsec/issues).
+
+## Does it correct for lens distortion?
+
+No. arcsec fits a linear (TAN) solution and does not add SIP distortion terms, so
+`--sip` is refused with an error. The 15° field in the benchmark solves with its worst
+corner 4.5″ out, but a strongly distorted camera lens may need a solver that models
+distortion.
+
+## What is `--method tetra`?
+
+An experimental matcher that uses three-star triangles instead of ASTAP-style
+four-star quads. It solves far fewer images than the default (29 of the 98 solvable
+benchmark images, against 90) and is not recommended yet.
+
+## Which platforms does it run on?
+
+Prebuilt downloads are available for Windows (x86-64), macOS (Apple silicon) and
+Linux (x86-64 and arm64, glibc 2.35 or newer). Anywhere else that Rust supports,
+including Intel Macs, `cargo install arcsec` builds it from source with Rust 1.96 or
+newer.
+
+## How do I report a problem?
+
+[Open an issue on GitHub](https://github.com/cruzzil/arcsec/issues). For a failed solve,
+include:
+
+- the full command line (it is on the `CMDLINE=` line of the `.ini` file),
+- the output of the same command run with `--progress`, or the `.log` file from
+  `--log`,
+- the arcsec version (`arcsec --version`),
+- and the image, if you can share it.
+
+Security problems should be reported privately, as described in the
+[security policy](https://github.com/cruzzil/arcsec/blob/main/SECURITY.md).

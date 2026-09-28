@@ -1,0 +1,39 @@
+---
+// Every catalogue `arcsec catalog install` knows, from the same data as the picker.
+import { CATALOGUES, fovRange, human } from '../lib/catalogues';
+
+const purpose = { solving: 'Solving', photometry: 'Photometry', blind: 'Blind' } as const;
+---
+
+<table>
+	<thead>
+		<tr>
+			<th scope="col">Name</th>
+			<th scope="col">Purpose</th>
+			<th scope="col">Download</th>
+			<th scope="col">Fields</th>
+			<th scope="col">Notes</th>
+		</tr>
+	</thead>
+	<tbody>
+		{
+			CATALOGUES.map((c) => (
+				<tr>
+					<td>
+						<code>{c.id}</code>
+					</td>
+					<td>{purpose[c.purpose]}</td>
+					<td class="nowrap">{human(c.bytes)}</td>
+					<td class="nowrap">{fovRange(c)}</td>
+					<td>{c.desc}</td>
+				</tr>
+			))
+		}
+	</tbody>
+</table>
+
+<style>
+	.nowrap {
+		white-space: nowrap;
+	}
+</style>
