@@ -11,6 +11,14 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Fixed
+
+- gzip-compressed FITS (`.fits.gz`) is read directly instead of being refused. This
+  needs rsfitsio 0.470.3, which fixed its compression magic numbers; the same fix covers
+  Unix `compress` (`.Z`) files, which 0.1.0 listed as supported but could not open.
+- A corrupt or empty Astrometry.net index file in the `-i` directory is skipped instead
+  of crashing the blind solve (rsfitsio 0.470.3 returns an error where it panicked).
+
 ## [0.1.1] - 2026-09-28
 
 ### Fixed

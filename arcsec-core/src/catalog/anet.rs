@@ -935,15 +935,12 @@ mod tests {
         }
     }
 
-    /// `peek_anet_scale` is documented to return `CatalogIo` when CFITSIO cannot
-    /// open the file, but rsfitsio's `fits_open_image` (`ffiopn_safer`,
-    /// cfileio.rs:887) unwraps the file handle after a failed open and panics with
-    /// "Null Pointer" instead of returning the status. The CLI's
-    /// `collect_index_files` peeks every `index-*.fits` in the directory and means
-    /// to skip bad ones with `.ok()?`, so one empty or corrupt index file (an
-    /// interrupted download, say) crashes the whole run.
+    /// `peek_anet_scale` must return `CatalogIo`, not panic, when CFITSIO cannot
+    /// open the file. Before rsfitsio 0.470.3 `fits_open_image` panicked with "Null
+    /// Pointer" after a failed open; the CLI's `collect_index_files` peeks every
+    /// `index-*.fits` and skips bad ones with `.ok()?`, so one empty or corrupt
+    /// index file (an interrupted download, say) crashed the whole run.
     #[test]
-    #[ignore = "bug: peek_anet_scale panics inside rsfitsio on a missing, empty or non-FITS file"]
     fn peek_anet_scale_reports_unreadable_files() {
         let dir = TempDir::new("anet-peek");
         let missing = dir.path().join("absent.fits");
