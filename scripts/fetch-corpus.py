@@ -717,19 +717,25 @@ def main():
                               f"{os.path.getsize(p) / 1e6:8.1f} MB", flush=True)
 
     with open(sums_path, "w") as f:
-        for name in sorted(sums):
+        for name in sorted(n for n in sums if os.path.exists(os.path.join(args.out, n))):
             f.write(f"{sums[name]}  {name}\n")
     cache = os.path.join(args.out, ".cache")
     if not args.keep_cache and os.path.isdir(cache) and not failed:
         shutil.rmtree(cache, ignore_errors=True)
 
-    total = sum(os.path.getsize(os.path.join(args.out, n)) for n in os.listdir(args.out)
-                if os.path.isfile(os.path.join(args.out, n)))
+    total = linked = 0
+    for n in os.listdir(args.out):
+        st = os.stat(os.path.join(args.out, n))
+        if os.path.isfile(os.path.join(args.out, n)):
+            if st.st_nlink > 1:
+                linked += st.st_size
+            else:
+                total += st.st_size
     print("\n" + "=" * 70)
     print(f" {results['ok']} fetched/built, {results['linked']} linked from v1, "
           f"{results['skip']} already present, {results['fail']} failed"
           f"   ({time.time() - t0:.0f} s)")
-    print(f" {args.out}: {total / 1e9:.2f} GB")
+    print(f" {args.out}: {total / 1e9:.2f} GB, plus {linked / 1e9:.2f} GB hard-linked from v1")
     if failed:
         print(" failed (re-run to retry transient errors):")
         for i, msg in failed:
