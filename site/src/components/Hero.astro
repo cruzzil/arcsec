@@ -43,7 +43,7 @@ const listHref = url('#download');
 			<LinkButton href={REPO_URL} variant="minimal" icon="github" iconPlacement="start">GitHub</LinkButton>
 		</div>
 		<p class="download-meta" id="download-meta">
-			For Windows, macOS and Linux. <a href={listHref}>All downloads</a>
+			Free and open source, for Windows, macOS and Linux. <a href={listHref}>All downloads</a>
 		</p>
 	</div>
 	<div class="image">
@@ -108,10 +108,9 @@ const listHref = url('#download');
 		button.href = asset.href;
 		label.textContent = `Download for ${osName}`;
 		const list = meta.querySelector('a');
-		meta.textContent = `v${version}, ${asset.label}, ${asset.size}. `;
-		if (asset.os === 'macos') meta.append('Intel Macs: install with cargo. ');
+		meta.textContent = `Free and open source. Version ${version} for ${asset.label}, ${asset.size}. `;
 		if (list) {
-			list.textContent = 'Other platforms and checksums';
+			list.textContent = 'Other systems';
 			meta.append(list);
 		}
 	}

@@ -1,18 +1,15 @@
 ---
 title: FAQ
-description: Common questions about arcsec - how it compares with ASTAP, catalogues, blind solving, file formats, and how to report a problem.
+description: Common questions about arcsec - how it relates to ASTAP, catalogues, blind solving, file formats, and how to report a problem.
 ---
 
-## Why use arcsec instead of ASTAP?
+## Why use arcsec?
 
-On a [benchmark of 103 images](https://github.com/cruzzil/arcsec/blob/main/docs/test-images.md#6-results--103-images-arcsec-vs-astap)
-with known coordinates, arcsec solved 90 correctly and ASTAP 47, given the same hints,
-with no wrong solutions from either. The gap is widest on deep, narrow survey frames,
-where arcsec solved all 34 and ASTAP 8. On the images both solve, their accuracy is
-about the same.
-
-It is also a small, self-contained program that manages its own catalogues, and it is
-open source under the MIT licence.
+It is an alternative for the plate-solving step: a small, self-contained program that
+fetches its own catalogues, runs on Windows, macOS and Linux, and is open source under
+the MIT licence. It takes the same options and writes the same files as ASTAP's
+command-line solver, so trying it in N.I.N.A. means changing one path, and changing it
+back is just as easy. If ASTAP already works well for you, there is no need to switch.
 
 ## Does it replace ASTAP?
 
@@ -24,10 +21,10 @@ arcsec is an independent program. It is built on the star-pattern method Han Kle
 published for ASTAP and reads ASTAP's database files, but contains no ASTAP code and
 is not affiliated with the ASTAP project.
 
-## Is it faster than ASTAP?
+## How fast is it?
 
-About the same. On the benchmark images both programs solve, the median time is
-0.15 seconds per image for each.
+Typically well under a second per image; the median across the test images is
+0.15 seconds, about the same as ASTAP.
 
 ## Does it need an internet connection?
 
@@ -36,7 +33,7 @@ offline, and arcsec sends nothing anywhere.
 
 ## Which catalogue do I need?
 
-It depends on your field of view. The [catalogue picker](../catalogues/picker/) works it
+It depends on your field of view. The [Which catalogue do I need?](../which-catalogue/) page works it
 out from your focal length and camera. For most telescopes it is one of the D-series;
 camera lenses need `g05`, and all-sky lenses `w08`.
 

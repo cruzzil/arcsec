@@ -1,0 +1,86 @@
+---
+// "Get started in three steps" on the home page.
+import { url } from '../lib/url';
+---
+
+<ol class="steps not-content">
+	<li>
+		<span class="num" aria-hidden="true">1</span>
+		<h3>Download arcsec</h3>
+		<p>
+			Unzip it and keep <code>arcsec.exe</code> in a folder of your choice. There is no installer and
+			nothing else to set up.
+		</p>
+		<a href={url('#download')}>Downloads</a>
+	</li>
+	<li>
+		<span class="num" aria-hidden="true">2</span>
+		<h3>Fetch a star catalogue</h3>
+		<p>
+			arcsec recognises your stars by comparing them with a catalogue. One command fetches it, for example{" "}
+			<code>arcsec catalog install d50</code>.
+		</p>
+		<a href={url('which-catalogue/')}>Which catalogue do I need?</a>
+	</li>
+	<li>
+		<span class="num" aria-hidden="true">3</span>
+		<h3>Point N.I.N.A. at it</h3>
+		<p>
+			In N.I.N.A.'s plate solving options, choose ASTAP and enter the path to <code>arcsec.exe</code>. Solve
+			as usual.
+		</p>
+		<a href={url('nina/')}>Set-up guide</a>
+	</li>
+</ol>
+
+<style>
+	.steps {
+		list-style: none;
+		padding: 0;
+		margin: 1rem 0 0;
+		display: grid;
+		gap: 1rem;
+		grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+		counter-reset: none;
+	}
+	li {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		padding: 1.25rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 0.5rem;
+		background: var(--sl-color-gray-6);
+	}
+	.num {
+		display: grid;
+		place-items: center;
+		width: 2.25rem;
+		height: 2.25rem;
+		border-radius: 50%;
+		font-weight: 700;
+		font-size: var(--sl-text-lg);
+		color: var(--sl-color-black);
+		background: var(--sl-color-accent);
+	}
+	h3 {
+		margin: 0.25rem 0 0;
+		font-size: var(--sl-text-lg);
+		color: var(--sl-color-white);
+	}
+	p {
+		margin: 0;
+		flex: 1;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	code {
+		font-size: 0.9em;
+	}
+	a {
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+		color: var(--sl-color-text-accent);
+	}
+</style>

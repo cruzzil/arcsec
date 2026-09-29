@@ -5,6 +5,11 @@
 import { getLatestRelease, PLATFORMS, RELEASES_URL } from '../lib/release';
 import { human } from '../lib/catalogues';
 
+interface Props {
+	/** Also show each archive's SHA-256 file (the developers page does). */
+	checksums?: boolean;
+}
+const { checksums = false } = Astro.props;
 const release = await getLatestRelease();
 ---
 
@@ -22,7 +27,7 @@ const release = await getLatestRelease();
 							<th scope="col">Platform</th>
 							<th scope="col">Archive</th>
 							<th scope="col">Size</th>
-							<th scope="col">SHA-256</th>
+							{checksums && <th scope="col">SHA-256</th>}
 						</tr>
 					</thead>
 					<tbody>
@@ -36,12 +41,12 @@ const release = await getLatestRelease();
 									</a>
 								</td>
 								<td class="num">{human(a.size)}</td>
-								<td>{a.sha256Url ? <a href={a.sha256Url}>.sha256</a> : '-'}</td>
+								{checksums && <td>{a.sha256Url ? <a href={a.sha256Url}>.sha256</a> : '-'}</td>}
 							</tr>
 						))}
 					</tbody>
 				</table>
-				{release.checksumsUrl && (
+				{checksums && release.checksumsUrl && (
 					<p class="sums">
 						All checksums in one file: <a href={release.checksumsUrl}>SHA256SUMS</a>.
 					</p>
@@ -50,7 +55,7 @@ const release = await getLatestRelease();
 		) : (
 			<p class="release">
 				Prebuilt archives for {PLATFORMS.map((p) => p.label).join(', ')} are attached to each{' '}
-				<a href={RELEASES_URL}>GitHub release</a>, with SHA-256 checksums.
+				<a href={RELEASES_URL}>GitHub release</a>.
 			</p>
 		)
 	}
