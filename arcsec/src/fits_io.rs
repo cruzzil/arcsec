@@ -463,6 +463,8 @@ mod tests {
             search_dist_deg: 0.0,
             step_distances: Vec::new(),
             raw_matches: 144,
+            matched_stars: Vec::new(),
+            sip: None,
         }
     }
 

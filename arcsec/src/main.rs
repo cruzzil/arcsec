@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use arcsec_core::ArcsecError;
 use arcsec_core::pipeline::{
-    BlindSolveParams, SolveMethod, SolveParams, format_radec, solve_image,
+    BlindSolveParams, SearchSpeed, SolveMethod, SolveParams, format_radec, solve_image,
 };
 use arcsec_core::types::{ImageBuffer, WcsSolution};
 use clap::ArgMatches;
@@ -274,6 +274,7 @@ fn main() {
             db_name,
             binning,
             method,
+            speed: SearchSpeed::Auto,
             threads,
         },
     );
