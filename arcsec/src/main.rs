@@ -7,6 +7,7 @@ mod blind;
 mod catalog_cmd;
 mod cli;
 mod db_select;
+mod extract;
 mod fits_io;
 mod image_io;
 mod logger;
@@ -23,10 +24,12 @@ use arcsec_core::pipeline::{
     BlindSolveParams, SearchSpeed, SolveMethod, SolveParams, format_radec, solve_image,
 };
 use arcsec_core::types::{ImageBuffer, WcsSolution};
+use arcsec_core::wcs::{TanWcs, fit_sip};
 use clap::ArgMatches;
 
 use crate::blind::BlindOutcome;
 use crate::cli::VERSION;
+use crate::extract::Extract2;
 
 /// Smallest image side, in (binned) pixels, that reaches the solver. Detection
 /// cannot run on a one-pixel-wide image, and would otherwise panic on it.
@@ -54,7 +57,6 @@ fn main() {
             }
             e.exit()
         });
-    reject_unimplemented(&matches);
 
     // ── File path ────────────────────────────────────────────────────────────
     let Some(file) = matches.get_one::<PathBuf>("file") else {
@@ -71,13 +73,14 @@ fn main() {
 
     let do_progress = matches.get_flag("progress");
     let out_base = output_base(file, matches.get_one::<PathBuf>("output"));
-    let unsolved = Unsolved {
+    let mut unsolved = Unsolved {
         ini_path: with_extension(&out_base, "ini"),
         cmdline: argv
             .iter()
             .map(|a| a.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" "),
+        extract2: None,
     };
 
     let log_path = matches
@@ -118,6 +121,43 @@ fn main() {
         );
     }
 
+    let max_stars = arg::<usize>(&matches, "stars");
+
+    // ── Analyse only (--analyse, --extract) ──────────────────────────────────
+    // No solve, no .ini or .wcs: just the report, and for --extract the star list.
+    let analyse = matches.get_one::<f64>("analyse").copied();
+    let extract = matches.get_one::<f64>("extract").copied();
+    if analyse.is_some() || extract.is_some() {
+        run_analysis(file, &img, analyse, extract, max_stars);
+    }
+
+    // ── Check-pattern filter (--check) ───────────────────────────────────────
+    if matches.get_one::<String>("check").is_some_and(|v| v == "y") {
+        if image_io::read_channels(file) > 1 {
+            log::info!("Skipping check pattern filter. This filter works only for raw OSC images!");
+        } else if img.check_pattern_filter() {
+            log::info!("Applying check pattern filter.");
+        }
+    }
+
+    // --extract2 analyses the full-resolution image after the solve, whether or
+    // not it succeeds, so keep a copy before binning.
+    unsolved.extract2 = matches.get_one::<f64>("extract2").map(|&v| Extract2 {
+        snr_min: extract::snr_min(v),
+        max_stars,
+        csv: extract::csv_path(file),
+        img: img.clone(),
+        header_wcs: image_io::read_header_wcs(file),
+    });
+    // SIP is on with --sip (but not --sip n), and always for --extract2, whose
+    // RA/Dec columns ASTAP computes through it.
+    let want_sip =
+        matches.get_one::<String>("sip").is_some_and(|v| v != "n") || unsolved.extract2.is_some();
+    let speed = match matches.get_one::<String>("speed").map(String::as_str) {
+        Some("slow") => SearchSpeed::Slow,
+        _ => SearchSpeed::Auto,
+    };
+
     let (ra_hint_rad, dec_hint_rad) = pointing_hint(&matches, file);
 
     // ── Pixel scale and FOV ──────────────────────────────────────────────────
@@ -140,6 +180,7 @@ fn main() {
         (ps, fov)
     };
 
+    let (image_w, image_h) = (img.width, img.height);
     let binning = choose_binning(
         matches.get_one::<u32>("downsample").copied(),
         arcsec_per_px,
@@ -172,7 +213,6 @@ fn main() {
     // position; the library rejects it, so clamp here. `max` maps NaN to 0.
     let search_radius_rad = arg::<f64>(&matches, "radius").max(0.0) * PI / 180.0;
     let quad_tol = arg::<f64>(&matches, "tolerance");
-    let max_stars = arg::<usize>(&matches, "stars");
 
     // ── Solve header (always printed to stdout, like ASTAP) ──────────────────
     println!("arcsec astrometric solver version {VERSION}");
@@ -196,7 +236,14 @@ fn main() {
     );
     println!("Quad tolerance: {quad_tol:.3}");
     println!("Minimum star size: {hfd_min_arcsec:.1}\"");
-    println!("Speed: normal");
+    println!(
+        "Speed: {}",
+        if speed == SearchSpeed::Slow {
+            "slow"
+        } else {
+            "normal"
+        }
+    );
 
     if img.width < MIN_SOLVE_DIM || img.height < MIN_SOLVE_DIM {
         eprintln!(
@@ -259,7 +306,7 @@ fn main() {
         }
     };
 
-    let wcs = run_catalog_solve(
+    let mut wcs = run_catalog_solve(
         &unsolved,
         &img,
         &SolveParams {
@@ -274,10 +321,13 @@ fn main() {
             db_name,
             binning,
             method,
-            speed: SearchSpeed::Auto,
+            speed,
             threads,
         },
     );
+    if want_sip {
+        wcs.sip = fit_sip(&wcs, image_w, image_h);
+    }
     let elapsed_s = t0.elapsed().as_secs_f64();
 
     print_solution(
@@ -307,6 +357,39 @@ fn main() {
         }
     }
 
+    if let Some(job) = &unsolved.extract2 {
+        job.run(Some(&TanWcs::from(&wcs)));
+    }
+
+    process::exit(0);
+}
+
+/// `--analyse` / `--extract`: report the median HFD and star count, write the star
+/// list for `--extract`, and exit without solving.
+///
+/// Given both, `--extract`'s minimum SNR is the one used, as in ASTAP. The exit code
+/// is 0, except that on Windows `--analyse` reports its result in it (see
+/// [`extract::analyse_exit_code`]).
+fn run_analysis(
+    file: &Path,
+    img: &ImageBuffer,
+    analyse: Option<f64>,
+    extract: Option<f64>,
+    max_stars: usize,
+) -> ! {
+    let snr_min = extract::snr_min(extract.or(analyse).unwrap_or(0.0));
+    let (analysis, hfd) = extract::analyse_and_report(img, snr_min, max_stars);
+    if extract.is_some() {
+        let csv = extract::csv_path(file);
+        let header_wcs = image_io::read_header_wcs(file);
+        if let Err(e) = extract::write_csv(&csv, &analysis.stars, header_wcs.as_ref()) {
+            eprintln!("Error: could not write {}: {e}", csv.display());
+            process::exit(16);
+        }
+    }
+    if cfg!(windows) && analyse.is_some() {
+        process::exit(extract::analyse_exit_code(hfd, analysis.stars.len()));
+    }
     process::exit(0);
 }
 
@@ -316,41 +399,6 @@ fn arg<T: Clone + Send + Sync + 'static>(matches: &ArgMatches, id: &str) -> T {
         .get_one::<T>(id)
         .cloned()
         .unwrap_or_else(|| unreachable!("--{id} has a default value"))
-}
-
-/// Refuse the ASTAP flags that parse but are not implemented.
-///
-/// They parse, for ASTAP command-line compatibility, but nothing reads them.
-/// Accepting an option and then ignoring what it asked for is worse than refusing
-/// it: --sip silently returned a solution with no SIP coefficients, and --analyse
-/// ran a full solve and wrote output files.
-///
-/// Not listed here, because they ask for what already happens: --wcs (the .wcs file
-/// is always written) and --speed auto (the only mode there is).
-fn reject_unimplemented(matches: &ArgMatches) {
-    for (flag, what) in [
-        ("check", "--check (check-pattern filter)"),
-        ("sip", "--sip (SIP distortion coefficients)"),
-        ("analyse", "--analyse (analyse-only mode)"),
-        ("extract", "--extract (star list export)"),
-        ("extract2", "--extract2 (solved star list export)"),
-    ] {
-        // analyse/extract/extract2 parse as f64, check/sip are bare flags.
-        let given = match flag {
-            "check" | "sip" => matches.get_flag(flag),
-            _ => matches.get_one::<f64>(flag).is_some(),
-        };
-        if given {
-            eprintln!("Error: {what} is not implemented");
-            process::exit(1);
-        }
-    }
-    if let Some(speed) = matches.get_one::<String>("speed")
-        && speed != "auto"
-    {
-        eprintln!("Error: --speed {speed} is not implemented (only 'auto')");
-        process::exit(1);
-    }
 }
 
 /// Base path for the output files: `-o` if given, else the image path without its
@@ -447,15 +495,22 @@ fn run_catalog_solve(unsolved: &Unsolved, img: &ImageBuffer, params: &SolveParam
 /// ASTAP writes an `.ini` holding `PLTSOLVD=F` whenever a solve fails, and tools
 /// that drive it (N.I.N.A., Ekos, ...) poll that file rather than the exit code, so
 /// arcsec does the same before exiting.
+///
+/// `--extract2` writes its star list however the solve ends, so that job lives
+/// here too.
 struct Unsolved {
     ini_path: PathBuf,
     cmdline: String,
+    extract2: Option<Extract2>,
 }
 
 impl Unsolved {
     fn exit(&self, code: i32) -> ! {
         if let Err(e) = fits_io::write_unsolved_ini_file(&self.ini_path, &self.cmdline) {
             eprintln!("Warning: could not write {}: {e}", self.ini_path.display());
+        }
+        if let Some(job) = &self.extract2 {
+            job.run(None);
         }
         process::exit(code);
     }
