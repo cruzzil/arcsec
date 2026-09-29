@@ -171,7 +171,7 @@ pub fn solver_command() -> Command {
                 .num_args(0..=1)
                 .default_missing_value("y")
                 .value_parser(["y", "n"])
-                .help("Add third-order SIP (Simple Imaging Polynomial) distortion coefficients to the .wcs file and --update"),
+                .help("Add third-order SIP (Simple Imaging Polynomial) distortion terms to the .wcs file and --update, when the field shows significant distortion"),
         )
         .arg(
             Arg::new("speed")
