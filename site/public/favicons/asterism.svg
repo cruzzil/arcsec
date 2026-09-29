@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <style>
+    .dark { display: none; }
+    @media (prefers-color-scheme: dark) { .light { display: none; } .dark { display: inline; } }
+  </style>
+  <g class="light"><path d="M5.5 25.5 L10.5 7.5 L23 11 L26.5 26 Z" fill="none" stroke="#0e7c90" stroke-width="1.8" stroke-linejoin="round" opacity="0.75"/>
+  <circle cx="5.5" cy="25.5" r="2.9" fill="#0f2a3d"/>
+  <circle cx="10.5" cy="7.5" r="2.5" fill="#0f2a3d"/>
+  <circle cx="26.5" cy="26" r="2.5" fill="#0f2a3d"/>
+  <path d="M23 3.5 L24.5 9.5 L30.5 11 L24.5 12.5 L23 18.5 L21.5 12.5 L15.5 11 L21.5 9.5 Z" fill="#0e7c90"/></g>
+  <g class="dark"><path d="M5.5 25.5 L10.5 7.5 L23 11 L26.5 26 Z" fill="none" stroke="#3cc4d9" stroke-width="1.8" stroke-linejoin="round" opacity="0.75"/>
+  <circle cx="5.5" cy="25.5" r="2.9" fill="#eaf6fa"/>
+  <circle cx="10.5" cy="7.5" r="2.5" fill="#eaf6fa"/>
+  <circle cx="26.5" cy="26" r="2.5" fill="#eaf6fa"/>
+  <path d="M23 3.5 L24.5 9.5 L30.5 11 L24.5 12.5 L23 18.5 L21.5 12.5 L15.5 11 L21.5 9.5 Z" fill="#3cc4d9"/></g>
+</svg>

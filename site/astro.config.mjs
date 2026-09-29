@@ -15,6 +15,24 @@ const base = '/arcsec';
 
 const repo = 'https://github.com/cruzzil/arcsec';
 
+// The logo. Change this one line to switch: 'asterism' (four stars joined, the star
+// pattern arcsec matches), 'angle' (an angle and its arc), or 'wordmark' (the name
+// alone, followed by the arcsecond sign ″). Files: src/assets/logos/, public/favicons/.
+const LOGO = 'asterism';
+
+/** @type {Record<string, { logo?: { light: string, dark: string, alt: string }, css: string[] }>} */
+const logos = {
+	asterism: {
+		logo: { light: './src/assets/logos/asterism-light.svg', dark: './src/assets/logos/asterism-dark.svg', alt: '' },
+		css: [],
+	},
+	angle: {
+		logo: { light: './src/assets/logos/angle-light.svg', dark: './src/assets/logos/angle-dark.svg', alt: '' },
+		css: [],
+	},
+	wordmark: { css: ['./src/styles/wordmark.css'] },
+};
+
 export default defineConfig({
 	site,
 	base,
@@ -36,58 +54,44 @@ export default defineConfig({
 		starlight({
 			title: 'arcsec',
 			description:
-				'An accurate astrometric plate solver and a drop-in replacement for ASTAP: same command line, same star databases, same output files. Works as the "ASTAP" solver in N.I.N.A.',
-			logo: {
-				src: './src/assets/logo.svg',
-				alt: '',
-			},
-			favicon: '/favicon.svg',
+				'Free plate solving for astrophotographers. arcsec works out where your telescope is pointing from the stars in your image, and works in N.I.N.A. in place of ASTAP.',
+			logo: logos[LOGO].logo,
+			favicon: `/favicons/${LOGO}.svg`,
 			// src/pages/404.astro replaces Starlight's 404 page, with links that respect `base`.
 			disable404Route: true,
 			social: [{ icon: 'github', label: 'arcsec on GitHub', href: repo }],
 			editLink: {
 				baseUrl: `${repo}/edit/main/site/`,
 			},
-			customCss: ['./src/styles/custom.css'],
+			customCss: ['./src/styles/custom.css', ...logos[LOGO].css],
 			components: {
 				Hero: './src/components/Hero.astro',
+				// Adds text links to the main pages beside the GitHub icon in the header.
+				SocialIcons: './src/components/HeaderLinks.astro',
 			},
 			head: [
 				{ tag: 'meta', attrs: { name: 'theme-color', content: '#0b1422' } },
 			],
 			sidebar: [
-				{
-					label: 'Start here',
-					items: [
-						{ label: 'Getting started', slug: 'getting-started' },
-						{ label: 'Use with N.I.N.A.', slug: 'nina' },
-					],
-				},
-				{
-					label: 'Catalogues',
-					items: [
-						{ label: 'Catalogue picker', slug: 'catalogues/picker' },
-						{ label: 'Catalogue guide', slug: 'catalogues' },
-					],
-				},
+				{ label: 'Download and install', slug: 'getting-started' },
+				{ label: 'Use with N.I.N.A.', slug: 'nina' },
+				{ label: 'Which catalogue do I need?', slug: 'which-catalogue' },
+				{ label: 'Catalogue guide', slug: 'catalogues' },
+				{ label: 'FAQ', slug: 'faq' },
 				{
 					label: 'Reference',
 					items: [
 						{ label: 'Command line', slug: 'reference/cli' },
-						{ label: 'FAQ', slug: 'faq' },
+						{ label: 'For developers', slug: 'developers' },
 					],
 				},
 				{
 					label: 'Project',
 					items: [
-						{ label: 'GitHub', link: repo, attrs: { rel: 'noopener' } },
+						{ label: 'GitHub', link: repo },
 						{ label: 'Releases', link: `${repo}/releases` },
 						{ label: 'Changelog', link: `${repo}/blob/main/CHANGELOG.md` },
-						{ label: 'Benchmark results', link: `${repo}/blob/main/docs/test-images.md#6-results--103-images-arcsec-vs-astap` },
-						{ label: 'How it works', link: `${repo}/blob/main/docs/plate-solving.md` },
-						{ label: 'Contributing', link: `${repo}/blob/main/CONTRIBUTING.md` },
-						{ label: 'crates.io', link: 'https://crates.io/crates/arcsec' },
-						{ label: 'Library docs (docs.rs)', link: 'https://docs.rs/arcsec-core' },
+						{ label: 'Report a problem', link: `${repo}/issues` },
 					],
 				},
 			],
