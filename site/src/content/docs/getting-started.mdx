@@ -1,13 +1,19 @@
 ---
-title: Getting started
-description: Install arcsec on Windows, macOS or Linux, install a star catalogue, and solve your first image.
+title: Download and install
+description: Install arcsec on Windows, macOS or Linux, fetch a star catalogue, and solve your first image.
 ---
 
 import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
 import DownloadTable from '../../components/DownloadTable.astro';
 
-arcsec is a single program with no installer and no runtime to set up. Getting to a
-first solve takes three steps: install the program, install a star catalogue, solve.
+arcsec is a single program: there is no installer and nothing else to set up. Getting
+to a first solve takes three steps: put the program somewhere, fetch a star catalogue,
+solve.
+
+<Aside type="tip" title="Using N.I.N.A.?">
+Do steps 1 and 2 here, then follow [Use with N.I.N.A.](../nina/) to point N.I.N.A. at
+arcsec. You do not need step 3: N.I.N.A. runs arcsec for you.
+</Aside>
 
 ## 1. Install arcsec
 
@@ -45,7 +51,7 @@ The Windows build is for x86-64. Windows on Arm runs it under emulation.
 <Steps>
 
 1. Download the macOS `.tar.gz` from the table above. It is built for Apple silicon
-   (M1 and later). On an Intel Mac, [install with cargo](#with-cargo) instead.
+   (M1 and later). On an Intel Mac, [build it with cargo](../developers/#install-with-cargo) instead.
 
 2. Unpack it and move the program onto your `PATH`:
 
@@ -94,32 +100,18 @@ The Windows build is for x86-64. Windows on Arm runs it under emulation.
 </TabItem>
 </Tabs>
 
-### With cargo
+### Other platforms
 
-If you have [Rust](https://rustup.rs/) 1.96 or newer, this builds and installs arcsec
-on any platform Rust supports:
-
-```sh
-cargo install arcsec
-```
-
-Building needs a C compiler (`cc` on Linux and macOS, the MSVC build tools on
-Windows) for one dependency. Nothing else: FITS support is built in, so no system
-CFITSIO library is needed. The program lands in `~/.cargo/bin` (on Windows,
-`%USERPROFILE%\.cargo\bin`).
-
-<Aside type="caution" title="Using a cargo build with N.I.N.A.">
-N.I.N.A. checks the version stamped into the `.exe` before running it. A build made
-with `cargo install` only carries that stamp if the Windows SDK's resource compiler is
-installed; without it, N.I.N.A. refuses to run arcsec with automatic downsampling. The
-release `.zip` always has it. See [troubleshooting](../nina/#troubleshooting).
-</Aside>
+There are ready-made downloads for the four platforms above. On anything else,
+including Intel Macs, arcsec can be built from source: see
+[For developers](../developers/#install-with-cargo), which also explains how to check
+a download's checksum.
 
 ## 2. Install a star catalogue
 
-arcsec matches the stars in your image against a star catalogue, and cannot solve
-without one. It needs to know your field of view to choose; the
-[catalogue picker](../catalogues/picker/) works it out from your focal length and camera,
+arcsec recognises your stars by matching them against a star catalogue, and cannot
+solve without one. Which catalogue depends on how much sky your camera sees; the
+[Which catalogue do I need?](../which-catalogue/) page works it out from your focal length and camera,
 or ask arcsec directly, giving the field size in degrees:
 
 ```sh

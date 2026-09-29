@@ -26,11 +26,12 @@ and deploys on every push to `main` that does.
 | Path | What it is |
 |---|---|
 | `src/content/docs/` | The pages, in MDX. `index.mdx` is the home page. |
-| `src/components/` | The home page's hero, download table and proof points; the catalogue picker. |
+| `src/components/` | The home page's hero, three steps and download table; the header links; the catalogue picker. |
 | `src/lib/catalogues.ts` | The catalogue list and the `catalog recommend` rule, for the picker. |
 | `src/lib/release.ts` | Fetches the latest release for the download links. |
 | `src/assets/hero/` | The home page's sky image and its RA/Dec grid (generated, see below). |
 | `src/styles/custom.css` | Colour changes to Starlight's default theme. |
+| `src/assets/logos/`, `public/favicons/` | The three logo options (see below). |
 | `astro.config.mjs` | Site URL and base path, sidebar, Starlight settings. |
 
 Links between pages in `src/content/docs/` are relative (`../nina/`), so they work
@@ -45,7 +46,7 @@ The site states facts about the CLI; when those change, the site must too.
   either, update it and compare a few answers with `arcsec catalog recommend --fov <deg>`.
 - **Options, exit codes and output files** are described in
   `src/content/docs/reference/cli.mdx`; compare with `arcsec --help`.
-- **Benchmark figures** on the home page and in the FAQ come from
+- **Figures** in the FAQ (solve time, tetra's solve count, the 15° field) come from
   `docs/test-images.md` §6.
 
 ## Download links
@@ -71,6 +72,14 @@ JavaScript, or on a platform with no build, it links to the full table.
 `scripts/make-hero-image.py` (pure Python, no packages needed) from an SDSS frame in
 the benchmark corpus and the `.wcs` file arcsec wrote when solving it. The script's
 docstring has the exact commands. The page credits the image to the Sloan Digital Sky Survey.
+
+## The logo
+
+There are three, chosen by one line in `astro.config.mjs`:
+`const LOGO = 'asterism'` (four stars joined into a quad, the pattern arcsec matches),
+`'angle'` (an angle and its arc), or `'wordmark'` (the name alone, followed by the
+arcsecond sign ″; styled in `src/styles/wordmark.css`). Each has a light and a dark
+header image in `src/assets/logos/` and a favicon in `public/favicons/`.
 
 ## Moving to a custom domain
 
