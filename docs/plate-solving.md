@@ -1332,34 +1332,33 @@ the same computation serves both purposes.
 at each spiral position is still built from quad centroids by `extract_star_pairs`; it is
 only a starting point.
 
-### 11.5 No distortion model
+### 11.5 No distortion model — FIXED for `--sip`
 
-`--sip` is not implemented: it is parsed for ASTAP compatibility and then rejected with
-`Error: --sip (SIP distortion coefficients) is not implemented` and exit code 1.
+Every solution used to be a pure 6-parameter affine map. That is fine at 3″/px on a 4.6°
+field with a well-corrected refractor; it is not fine for fast astrographs, camera lenses,
+or anything wider than a few degrees, where field curvature and barrel distortion produce
+radial residuals of several pixels at the corners.
 
-Every solution is a pure 6-parameter affine map. That is fine at 3″/px on a 4.6° field
-with a well-corrected refractor; it is not fine for fast astrographs, camera lenses, or
-anything wider than a few degrees, where field curvature and barrel distortion produce
-radial residuals of several pixels at the corners. Since §11.4 was fixed the star-level
-residuals needed to measure and fit it exist; nothing uses them for that yet.
+**Fixed** for `--sip` (and `--extract2`, which implies it): `wcs::sip::fit_sip` fits
+third-order SIP polynomials to the verified star pairs, which `solve_image` now returns in
+`WcsSolution::matched_stars`. See §12.4 for the method and the measurements. The default
+solve is still linear, as ASTAP's is.
 
-### 11.6 Several CLI flags are accepted and ignored — MITIGATED
+### 11.6 Several CLI flags are accepted and ignored — FIXED
 
 This used to read "accepted and ignored": a script that passed `--analyse 10` got a full
-(slow) solve and no CSV, silently. The flags are still parsed for ASTAP compatibility, but
-now say what they do:
+(slow) solve and no CSV, silently. The flags were then refused with an error until they
+were implemented; now every ASTAP option does what `astap_cli` does (§12.6):
 
 | Flag | Status |
 |---|---|
-| `--sip` | help says `[not implemented]`; passing it exits 1 with an error |
-| `--check` | help says `[not implemented]`; passing it exits 1 with an error |
-| `--analyse` | help says `[not implemented]`; passing it exits 1 with an error |
-| `--extract` / `--extract2` | help says `[not implemented]`; passing them exits 1 with an error |
-| `--speed` | only `auto` is accepted; any other value exits 1 (stdout still prints `Speed: normal`) |
+| `--sip` | fits SIP distortion, when significant (§12.4) |
+| `--check` | the Bayer check-pattern filter, with `-check y` as in ASTAP |
+| `--analyse` | median HFD and star count, no solve |
+| `--extract` / `--extract2` | the star list as CSV; `--extract2` solves first and adds RA/Dec |
+| `--speed` | `auto` or `slow` (a catalogue window of twice the field at every position) |
 | `--wcs` | accepted and ignored; the help text says the `.wcs` file is `{always written}` |
 | `-f` help text | ~~claims "fits, tiff, png, pbm, jpg"~~ — **fixed**: reads FITS, XISF and ASDF, and the help text says so |
-
-What remains is to implement the missing modes (§12.6).
 
 ### 11.7 Documentation drift
 
@@ -1423,6 +1422,23 @@ blind stage still runs at most `BLIND_MAX_INDEXES = 2` index files concurrently.
 
 ---
 
+### 11.11 The 1476 catalogue read starves every tile but the first
+
+`read_catalog_stars_1476` reads the (up to four) database tiles a field overlaps one after
+another, each up to the whole star budget, and stops once the budget is full. The first
+tile usually fills it, so a field that straddles a tile boundary gets catalogue stars on
+one side only. ASTAP shares the budget between the tiles by the fraction of the field
+each covers (`frac1..frac4` from `find_areas`); `find_areas_1476` computes those
+fractions too, and the reader ignores them.
+
+It rarely stops a solve, since half a field of stars is plenty to match, but the fit then
+rests on half the frame and extrapolates to the other. Found while testing `--sip`: in 26
+of the 90 corpus solves the verified stars leave at least one cell of a 3×3 grid over the
+frame empty (`ps1_big_c`: the top two fifths; `decp80`, `type_ngc7000`: the right half
+or more). `fit_sip` refuses to fit a cubic to such a set for that reason. The fix is to
+read each tile up to `max_stars × frac`, as ASTAP does, then merge by magnitude; it
+changes the default solve, so it needs its own benchmark run.
+
 ## 12. Improvement roadmap
 
 Ordered by (value ÷ effort) as originally written. Items 1–3 are the ones I would do first,
@@ -1479,13 +1495,47 @@ Three levels, in increasing effort:
    index scales do) around the assumed value, ordering by likelihood. Naturally
    parallelisable across the ladder.
 
-### 12.4 Fit SIP distortion and honour `--sip`
+### 12.4 Fit SIP distortion and honour `--sip` — DONE
 
 Once star-level correspondences exist (§12.1), fitting SIP is a linear least-squares
-problem in the polynomial coefficients — the same `lsq_fit` with more columns. Follow
-astrometry.net's `tweak2` shape: fit order 2 first, re-match with the improved WCS, then
-consider order 3; stop when the residual stops improving to avoid overfitting. Write
-`A_ORDER`/`B_ORDER`/`A_p_q`/`B_p_q` and set `CTYPE = RA---TAN-SIP`.
+problem in the polynomial coefficients — the same `lsq_fit` with more columns.
+
+**Done** (`arcsec-core/src/wcs/sip.rs`), following ASTAP's `add_sip` so the keywords mean
+what `astap_cli -sip`'s do: a full cubic (all ten terms including the constant and linear
+ones, `A_ORDER = 3`) from pixel offsets to the offsets the linear WCS puts the catalogue
+stars at, with the inverse (`AP`, `BP`) fitted separately from the same pairs; `CTYPE`
+becomes `RA---TAN-SIP`; the keywords go in the `.wcs` file and, with `--update`, the
+header, in ASTAP's order. Where ASTAP fits quad centroids, arcsec fits the individual
+verified stars (typically 100–300). One round of 3σ clipping precedes the final fit.
+
+Unlike ASTAP, the fit is kept only if it is warranted:
+
+* the matched stars must reach every cell of a 3×3 grid over the frame, since a cubic
+  extrapolates wildly beyond its stars (§11.11 leaves a third of corpus solves short of
+  this);
+* the 14 extra terms must pass an F-test against a linear fit (F ≥ 4);
+* no corner may move by more than 5% of the half-diagonal.
+
+The F-test is what the benchmark demanded. The corpus is survey data, reprojected and so
+distortion-free; there, an unconditional cubic fits only centroid noise, which is largest
+in the corners. Fitted regardless (with only the coverage test), `--sip` made the worst
+corner worse on 57 of 89 solves (median 0.85″ → 1.01″, max 2.96″ → 4.58″, one image past
+the 5″ false-positive line). `astap_cli -sip` does the same to its own solutions: median
+0.97″ → 1.40″ over its 39 tier-A solves, three past 5″. With the F-test every corpus image
+stays linear (F from 0.4 to 3.7) and the `--sip` benchmark is identical to the default one.
+On frames with real distortion — corpus images warped by a known radial distortion, the
+truth then being TAN plus that SIP — it is found with F from 18 to 225:
+
+| Frame | Distortion at corners | arcsec | arcsec `--sip` | astap_cli | astap_cli `-sip` |
+|---|---|---|---|---|---|
+| `ra065` | 3 px | 2.73″ | 1.02″ | 2.63″ | 1.21″ |
+| `ra065` | 8 px | 6.13″ | 1.23″ | 6.92″ | 8.95″ |
+| `type_m101` | 20 px | 15.53″ | 2.21″ | 15.76″ | 1.52″ |
+
+(worst-corner error against the truth; grid RMS falls from 1.2–6.6″ to 0.8″.) Still open:
+astrometry.net's `tweak2` shape — re-match with the improved WCS, then raise the order —
+would find more stars in a strongly distorted field's corners, where the linear WCS
+misses them by more than the 2 px verification radius.
 
 ### 12.5 Make quad selection robust to differing star sets
 
@@ -1514,17 +1564,34 @@ The deeper fix for §11.2. Options, cheapest first:
    [offline-index.md §1](offline-index.md#1-read-this-first-the-case-is-weaker-than-it-was)
    and its §9, a one-day experiment that settles it before committing two weeks.
 
-### 12.6 Finish or remove the ignored CLI flags — PARTLY DONE
+### 12.6 Finish or remove the ignored CLI flags — DONE
 
-`--analyse`, `--extract`, `--extract2` are small (the star list and HFDs already exist —
-they need a median and a CSV writer). `--wcs` should gate the `.wcs` file. `--check` and
-`--speed` should either do something or be dropped from `--help`.
+`--wcs` is accepted and the `.wcs` file always written; the rest now behave as in
+`astap_cli` (read from its source, `astap_command_line.lpr`, and checked against the
+binary):
 
-Done so far: the unimplemented flags are marked `[not implemented]` in `--help` and exit 1
-with an error rather than being silently ignored, `--speed` accepts only `auto`, the
-`--wcs` help text says the file is always written, and the `-f` help text lists the
-formats actually read (FITS, XISF, ASDF). Implementing the analyse/extract modes is still
-open.
+* `--analyse` / `--extract` (`detection::analyse`): ASTAP's `analyse_image` — up to four
+  detection passes at falling thresholds on the full-resolution image, each starting
+  afresh, stopping at the first that finds `-s` stars. stdout is `HFD_MEDIAN=` (one
+  decimal) and `STARS=`; `--extract` writes `<image>.csv` (never moved by `-o`). No
+  `.ini`, no solve; on Windows `--analyse`'s exit code is
+  `round(HFD × 100) × 10⁶ + stars`, as ASTAP's. The per-star measurement is the solver's,
+  with one switch: ASTAP's disc test (35% of `(2r − 2)²`, where the solver keeps its
+  stricter `(2r)²`). On `type_m101` at SNR 20, 624 of ASTAP's 769 rows are identical to the
+  last digit and the counts differ by 2–3% (733 vs 713 at SNR 30).
+* `--extract2`: solve (with SIP, as ASTAP forces), then the same CSV with RA and Dec
+  through the solution, whether or not the solve succeeded (the header's WCS, if any, when
+  it did not). RA/Dec agree with ASTAP's to 0.12″ median.
+* `--speed slow`: a catalogue window of twice the field at every position
+  (`SearchSpeed::Slow`), capped at one database tile, and `Speed: slow` on stdout.
+* `--check y`: `ImageBuffer::check_pattern_filter`, which scales the four Bayer phases to
+  the brightest's mean over the central quarter, skipped for a colour image. As in ASTAP it
+  needs the `y`; unlike ASTAP a bare `--check` also turns it on (ASTAP silently ignores a
+  bare `-check`, which its own help text shows as the way to use it).
+
+Two deliberate differences: `--extract` alone prints the real median HFD where ASTAP
+prints its "none" value, 21.5; and `--sip`/`--extract2` add SIP only when significant
+(§12.4).
 
 ### 12.7 Parallelise the spiral — DONE
 
