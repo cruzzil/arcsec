@@ -399,56 +399,56 @@ sdss2_24  B  25.4534  0.3296  0.225  2048  1489  sdss  frame=301/94/4/r/338  SDS
 sdss2_25  B  47.3025  0.9456  0.225  2048  1489  sdss  frame=301/211/6/r/42  SDSS-r  v2,random  header
 #
 # --- v2: ZTF science-image cutouts, native pixels, TPV WCS (tier B) ----------------------
-ztf_01  B  240.6466  13.1505  0.5622  2000  2000  ztf  file=ztf_20240601273681_000533_zg_c12_o_q1_sciimg.fits;size=2000;seeing=1.91  ZTF-g  v2,random,offplane  header-tpv
-ztf_02  B  253.3716  6.9945  0.8433  3000  3000  ztf  file=ztf_20210116578843_000483_zr_c15_o_q4_sciimg.fits;size=3000;seeing=2.50  ZTF-r  v2,random,offplane  header-tpv
-ztf_03  B  303.1556  -11.2243  0.5622  2000  2000  ztf  file=ztf_20251108086354_000387_zr_c06_o_q4_sciimg.fits;size=2000;seeing=1.46  ZTF-r  v2,random,offplane  header-tpv
-ztf_04  B  210.4593  2.1280  0.4217  1500  1500  ztf  file=ztf_20230424285301_000477_zi_c04_o_q1_sciimg.fits;size=1500;seeing=1.88  ZTF-i  v2,random,offplane  header-tpv
-ztf_05  B  81.9728  50.8060  0.7028  2500  2500  ztf  file=ztf_20190908508507_001782_zg_c07_o_q1_sciimg.fits;size=2500;seeing=3.04  ZTF-g  v2,random,plane  header-tpv
-ztf_06  B  242.9187  -19.5452  0.5622  2000  2000  ztf  file=ztf_20190627300509_000328_zr_c02_o_q1_sciimg.fits;size=2000;seeing=1.74  ZTF-r  v2,random,offplane  header-tpv
-ztf_07  B  217.6945  25.8138  0.5622  2000  2000  ztf  file=ztf_20190421303565_001625_zi_c13_o_q1_sciimg.fits;size=2000;seeing=2.65  ZTF-i  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_08  B  281.4687  39.0860  0.5622  2000  2000  ztf  file=ztf_20190922278449_000726_zi_c05_o_q3_sciimg.fits;size=2000;seeing=1.90  ZTF-i  v2,random,offplane  header-tpv
-ztf_09  B  154.1970  80.1776  0.8433  3000  3000  ztf  file=ztf_20241208345185_000872_zg_c01_o_q3_sciimg.fits;size=3000;seeing=3.05  ZTF-g  v2,random,offplane  header-tpv
-ztf_10  B  302.9874  62.6142  0.8433  3000  3000  ztf  file=ztf_20190906246516_000828_zr_c10_o_q4_sciimg.fits;size=3000;seeing=1.35  ZTF-r  v2,random,offplane  header-tpv
-ztf_11  B  5.9555  23.6703  0.5622  2000  2000  ztf  file=ztf_20200723457894_000601_zr_c04_o_q1_sciimg.fits;size=2000;seeing=1.64  ZTF-r  v2,random,offplane  header-tpv
-ztf_12  B  101.3649  32.8108  0.4217  1500  1500  ztf  file=ztf_20191113449248_000661_zr_c07_o_q1_sciimg.fits;size=1500;seeing=1.32  ZTF-r  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_13  B  150.5838  -14.5792  0.5622  2000  2000  ztf  file=ztf_20240201328542_000315_zr_c14_o_q3_sciimg.fits;size=2000;seeing=2.18  ZTF-r  v2,random,offplane  header-tpv
-ztf_14  B  136.2938  51.0469  0.7028  2500  2500  ztf  file=ztf_20231102488877_000750_zi_c15_o_q2_sciimg.fits;size=2500;seeing=2.14  ZTF-i  v2,random,offplane  header-tpv
-ztf_15  B  181.4895  -22.7968  0.7028  2500  2500  ztf  file=ztf_20250223398681_000270_zg_c12_o_q2_sciimg.fits;size=2500;seeing=2.55  ZTF-g  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_16  B  114.4343  -15.6322  0.8433  3000  3000  ztf  file=ztf_20231103503032_000310_zg_c11_o_q1_sciimg.fits;size=3000;seeing=2.57  ZTF-g  v2,random,plane  header-tpv
-ztf_17  B  126.1495  -26.6558  0.8433  3000  3000  ztf  file=ztf_20260314272697_000262_zi_c03_o_q1_sciimg.fits;size=3000;seeing=1.72  ZTF-i  v2,random,plane  header-tpv
-ztf_18  B  111.5607  80.9964  0.8433  3000  3000  ztf  file=ztf_20201129307141_001884_zi_c09_o_q1_sciimg.fits;size=3000;seeing=1.91  ZTF-i  v2,random,offplane  header-tpv
-ztf_19  B  179.2674  -10.3502  0.5622  2000  2000  ztf  file=ztf_20240521293518_000370_zr_c08_o_q1_sciimg.fits;size=2000;seeing=2.31  ZTF-r  v2,random,offplane  header-tpv
-ztf_20  B  254.2873  -25.5785  0.8433  3000  3000  ztf  file=ztf_20220828165116_000280_zg_c08_o_q3_sciimg.fits;size=3000;seeing=1.99  ZTF-g  v2,random,offplane  header-tpv
-ztf_21  B  318.9456  30.0381  0.5622  2000  2000  ztf  file=ztf_20241216137454_000689_zr_c04_o_q4_sciimg.fits;size=2000;seeing=2.06  ZTF-r  v2,random,offplane  header-tpv
-ztf_22  B  325.8891  22.8212  0.4217  1500  1500  ztf  file=ztf_20260309547431_000643_zr_c01_o_q3_sciimg.fits;size=1500;seeing=2.48  ZTF-r  v2,random,offplane  header-tpv
-ztf_23  B  180.6244  39.1145  0.5622  2000  2000  ztf  file=ztf_20200415323958_000715_zi_c08_o_q4_sciimg.fits;size=2000;seeing=1.63  ZTF-i  v2,random,offplane  header-tpv
-ztf_24  B  213.5380  22.8313  0.5622  2000  2000  ztf  file=ztf_20210613236725_000628_zr_c01_o_q3_sciimg.fits;size=2000;seeing=2.12  ZTF-r  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_25  B  345.5025  35.5585  0.7028  2500  2500  ztf  file=ztf_20230720408461_001733_zr_c07_o_q3_sciimg.fits;size=2500;seeing=1.52  ZTF-r  v2,random,offplane  header-tpv
-ztf_26  B  172.9225  70.6128  0.5622  2000  2000  ztf  file=ztf_20181110548785_000843_zr_c12_o_q1_sciimg.fits;size=2000;seeing=1.91  ZTF-r  v2,random,offplane  header-tpv
-ztf_27  B  201.0407  51.0051  0.5622  2000  2000  ztf  file=ztf_20210729183692_000757_zi_c16_o_q1_sciimg.fits;size=2000;seeing=1.69  ZTF-i  v2,random,offplane  header-tpv
-ztf_28  B  167.7928  -17.5223  0.4217  1500  1500  ztf  file=ztf_20240407254583_000318_zr_c08_o_q2_sciimg.fits;size=1500;seeing=1.62  ZTF-r  v2,random,offplane  header-tpv
-ztf_29  B  5.8685  -13.9565  0.5622  2000  2000  ztf  file=ztf_20201129187396_001337_zr_c06_o_q2_sciimg.fits;size=2000;seeing=2.02  ZTF-r  v2,random,offplane  header-tpv
-ztf_30  B  352.5518  37.4336  0.4217  1500  1500  ztf  file=ztf_20190828425509_001734_zg_c12_o_q4_sciimg.fits;size=1500;seeing=1.64  ZTF-g  v2,random,offplane  header-tpv
-ztf_31  B  213.1703  -6.5503  0.7028  2500  2500  ztf  file=ztf_20190514272245_000374_zr_c13_o_q1_sciimg.fits;size=2500;seeing=1.98  ZTF-r  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_32  B  60.8649  -5.7020  0.5622  2000  2000  ztf  file=ztf_20231025393623_001398_zr_c12_o_q3_sciimg.fits;size=2000;seeing=2.10  ZTF-r  v2,random,offplane  header-tpv
-ztf_33  B  297.8667  -0.4364  0.7028  2500  2500  ztf  file=ztf_20220711354225_001483_zg_c06_o_q4_sciimg.fits;size=2500;seeing=1.71  ZTF-g  v2,random,offplane  header-tpv
-ztf_34  B  236.4962  56.3467  0.5622  2000  2000  ztf  file=ztf_20180509262326_000794_zr_c10_o_q2_sciimg.fits;size=2000;seeing=2.02  ZTF-r  v2,random,offplane  header-tpv
-ztf_35  B  28.9226  22.2550  0.4217  1500  1500  ztf  file=ztf_20251130121840_000554_zr_c15_o_q2_sciimg.fits;size=1500;seeing=2.12  ZTF-r  v2,random,offplane  header-tpv
-ztf_36  B  198.8887  -1.2438  0.5622  2000  2000  ztf  file=ztf_20230712192049_000424_zi_c11_o_q1_sciimg.fits;size=2000;seeing=1.73  ZTF-i  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_37  B  142.1268  68.0141  0.5622  2000  2000  ztf  file=ztf_20240212327072_000841_zr_c07_o_q3_sciimg.fits;size=2000;seeing=1.83  ZTF-r  v2,random,offplane  header-tpv
-ztf_38  B  70.7136  -23.9407  0.8433  3000  3000  ztf  file=ztf_20220929428137_001296_zi_c02_o_q3_sciimg.fits;size=3000;seeing=1.88  ZTF-i  v2,random,offplane  header-tpv
-ztf_39  B  134.6127  28.5846  0.5622  2000  2000  ztf  file=ztf_20250222299468_000618_zi_c15_o_q3_sciimg.fits;size=2000;seeing=1.77  ZTF-i  v2,random,offplane  header-tpv
-ztf_40  B  183.8378  -3.1527  0.7028  2500  2500  ztf  file=ztf_20220301357824_000422_zi_c07_o_q2_sciimg.fits;size=2500;seeing=3.30  ZTF-i  v2,random,offplane  header-tpv
-ztf_41  B  314.9147  -5.0722  0.7028  2500  2500  ztf  file=ztf_20230901233715_000440_zi_c01_o_q2_sciimg.fits;size=2500;seeing=1.68  ZTF-i  v2,random,offplane  header-tpv
-ztf_42  B  28.9657  53.6027  0.5622  2000  2000  ztf  file=ztf_20180817445231_000775_zr_c06_o_q3_sciimg.fits;size=2000;seeing=1.63  ZTF-r  v2,random,plane  header-tpv
-ztf_43  B  115.6771  -26.6173  0.4217  1500  1500  ztf  file=ztf_20241206439236_000260_zr_c01_o_q1_sciimg.fits;size=1500;seeing=2.17  ZTF-r  v2,random,plane  header-tpv
-ztf_44  B  242.4111  25.6218  0.5622  2000  2000  ztf  file=ztf_20240615208750_000632_zi_c06_o_q1_sciimg.fits;size=2000;seeing=1.53  ZTF-i  v2,random,offplane  header-tpv
-ztf_45  B  287.7514  41.9489  0.5622  2000  2000  ztf  file=ztf_20230814339711_000727_zg_c10_o_q2_sciimg.fits;size=2000;seeing=2.03  ZTF-g  v2,random,offplane  header-tpv
-ztf_46  B  65.2155  15.6413  0.5622  2000  2000  ztf  file=ztf_20181101353750_000559_zr_c03_o_q3_sciimg.fits;size=2000;seeing=1.95  ZTF-r  v2,random,offplane  header-tpv
-ztf_47  B  59.0550  9.3243  0.8433  3000  3000  ztf  file=ztf_20201212220775_000507_zr_c02_o_q1_sciimg.fits;size=3000;seeing=2.12  ZTF-r  v2,random,offplane  header-tpv
-ztf_48  B  88.9154  18.4446  0.5622  2000  2000  ztf  file=ztf_20260222207998_000562_zi_c06_o_q2_sciimg.fits;size=2000;seeing=1.97  ZTF-i  v2,random,plane  header-tpv
-ztf_49  B  70.3089  29.2272  0.8433  3000  3000  ztf  file=ztf_20201117326887_001654_zi_c06_o_q2_sciimg.fits;size=3000;seeing=1.54  ZTF-i  v2,random,offplane  header-tpv
-# dropped (IRSA returns 404 for the product): ztf_50  B  134.6609  24.7772  0.5622  2000  2000  ztf  file=ztf_20240212319977_000618_zr_c07_o_q3_sciimg.fits;size=2000;seeing=1.90  ZTF-r  v2,random,offplane  header-tpv
+ztf_01  B  240.6466  13.1505  0.5622  2000  2000  ztf  product=ztf_20240601273681_000533_zg_c12_o_q1_sciimg.fits;size=2000;seeing=1.91  ZTF-g  v2,random,offplane  header-tpv
+ztf_02  B  253.3716  6.9945  0.8433  3000  3000  ztf  product=ztf_20210116578843_000483_zr_c15_o_q4_sciimg.fits;size=3000;seeing=2.50  ZTF-r  v2,random,offplane  header-tpv
+ztf_03  B  303.1556  -11.2243  0.5622  2000  2000  ztf  product=ztf_20251108086354_000387_zr_c06_o_q4_sciimg.fits;size=2000;seeing=1.46  ZTF-r  v2,random,offplane  header-tpv
+ztf_04  B  210.4593  2.1280  0.4217  1500  1500  ztf  product=ztf_20230424285301_000477_zi_c04_o_q1_sciimg.fits;size=1500;seeing=1.88  ZTF-i  v2,random,offplane  header-tpv
+ztf_05  B  81.9728  50.8060  0.7028  2500  2500  ztf  product=ztf_20190908508507_001782_zg_c07_o_q1_sciimg.fits;size=2500;seeing=3.04  ZTF-g  v2,random,plane  header-tpv
+ztf_06  B  242.9187  -19.5452  0.5622  2000  2000  ztf  product=ztf_20190627300509_000328_zr_c02_o_q1_sciimg.fits;size=2000;seeing=1.74  ZTF-r  v2,random,offplane  header-tpv
+ztf_07  B  217.6945  25.8138  0.5622  2000  2000  ztf  product=ztf_20190421303565_001625_zi_c13_o_q1_sciimg.fits;size=2000;seeing=2.65  ZTF-i  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_08  B  281.4687  39.0860  0.5622  2000  2000  ztf  product=ztf_20190922278449_000726_zi_c05_o_q3_sciimg.fits;size=2000;seeing=1.90  ZTF-i  v2,random,offplane  header-tpv
+ztf_09  B  154.1970  80.1776  0.8433  3000  3000  ztf  product=ztf_20241208345185_000872_zg_c01_o_q3_sciimg.fits;size=3000;seeing=3.05  ZTF-g  v2,random,offplane  header-tpv
+ztf_10  B  302.9874  62.6142  0.8433  3000  3000  ztf  product=ztf_20190906246516_000828_zr_c10_o_q4_sciimg.fits;size=3000;seeing=1.35  ZTF-r  v2,random,offplane  header-tpv
+ztf_11  B  5.9555  23.6703  0.5622  2000  2000  ztf  product=ztf_20200723457894_000601_zr_c04_o_q1_sciimg.fits;size=2000;seeing=1.64  ZTF-r  v2,random,offplane  header-tpv
+ztf_12  B  101.3649  32.8108  0.4217  1500  1500  ztf  product=ztf_20191113449248_000661_zr_c07_o_q1_sciimg.fits;size=1500;seeing=1.32  ZTF-r  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_13  B  150.5838  -14.5792  0.5622  2000  2000  ztf  product=ztf_20240201328542_000315_zr_c14_o_q3_sciimg.fits;size=2000;seeing=2.18  ZTF-r  v2,random,offplane  header-tpv
+ztf_14  B  136.2938  51.0469  0.7028  2500  2500  ztf  product=ztf_20231102488877_000750_zi_c15_o_q2_sciimg.fits;size=2500;seeing=2.14  ZTF-i  v2,random,offplane  header-tpv
+ztf_15  B  181.4895  -22.7968  0.7028  2500  2500  ztf  product=ztf_20250223398681_000270_zg_c12_o_q2_sciimg.fits;size=2500;seeing=2.55  ZTF-g  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_16  B  114.4343  -15.6322  0.8433  3000  3000  ztf  product=ztf_20231103503032_000310_zg_c11_o_q1_sciimg.fits;size=3000;seeing=2.57  ZTF-g  v2,random,plane  header-tpv
+ztf_17  B  126.1495  -26.6558  0.8433  3000  3000  ztf  product=ztf_20260314272697_000262_zi_c03_o_q1_sciimg.fits;size=3000;seeing=1.72  ZTF-i  v2,random,plane  header-tpv
+ztf_18  B  111.5607  80.9964  0.8433  3000  3000  ztf  product=ztf_20201129307141_001884_zi_c09_o_q1_sciimg.fits;size=3000;seeing=1.91  ZTF-i  v2,random,offplane  header-tpv
+ztf_19  B  179.2674  -10.3502  0.5622  2000  2000  ztf  product=ztf_20240521293518_000370_zr_c08_o_q1_sciimg.fits;size=2000;seeing=2.31  ZTF-r  v2,random,offplane  header-tpv
+ztf_20  B  254.2873  -25.5785  0.8433  3000  3000  ztf  product=ztf_20220828165116_000280_zg_c08_o_q3_sciimg.fits;size=3000;seeing=1.99  ZTF-g  v2,random,offplane  header-tpv
+ztf_21  B  318.9456  30.0381  0.5622  2000  2000  ztf  product=ztf_20241216137454_000689_zr_c04_o_q4_sciimg.fits;size=2000;seeing=2.06  ZTF-r  v2,random,offplane  header-tpv
+ztf_22  B  325.8891  22.8212  0.4217  1500  1500  ztf  product=ztf_20260309547431_000643_zr_c01_o_q3_sciimg.fits;size=1500;seeing=2.48  ZTF-r  v2,random,offplane  header-tpv
+ztf_23  B  180.6244  39.1145  0.5622  2000  2000  ztf  product=ztf_20200415323958_000715_zi_c08_o_q4_sciimg.fits;size=2000;seeing=1.63  ZTF-i  v2,random,offplane  header-tpv
+ztf_24  B  213.5380  22.8313  0.5622  2000  2000  ztf  product=ztf_20210613236725_000628_zr_c01_o_q3_sciimg.fits;size=2000;seeing=2.12  ZTF-r  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_25  B  345.5025  35.5585  0.7028  2500  2500  ztf  product=ztf_20230720408461_001733_zr_c07_o_q3_sciimg.fits;size=2500;seeing=1.52  ZTF-r  v2,random,offplane  header-tpv
+ztf_26  B  172.9225  70.6128  0.5622  2000  2000  ztf  product=ztf_20181110548785_000843_zr_c12_o_q1_sciimg.fits;size=2000;seeing=1.91  ZTF-r  v2,random,offplane  header-tpv
+ztf_27  B  201.0407  51.0051  0.5622  2000  2000  ztf  product=ztf_20210729183692_000757_zi_c16_o_q1_sciimg.fits;size=2000;seeing=1.69  ZTF-i  v2,random,offplane  header-tpv
+ztf_28  B  167.7928  -17.5223  0.4217  1500  1500  ztf  product=ztf_20240407254583_000318_zr_c08_o_q2_sciimg.fits;size=1500;seeing=1.62  ZTF-r  v2,random,offplane  header-tpv
+ztf_29  B  5.8685  -13.9565  0.5622  2000  2000  ztf  product=ztf_20201129187396_001337_zr_c06_o_q2_sciimg.fits;size=2000;seeing=2.02  ZTF-r  v2,random,offplane  header-tpv
+ztf_30  B  352.5518  37.4336  0.4217  1500  1500  ztf  product=ztf_20190828425509_001734_zg_c12_o_q4_sciimg.fits;size=1500;seeing=1.64  ZTF-g  v2,random,offplane  header-tpv
+ztf_31  B  213.1703  -6.5503  0.7028  2500  2500  ztf  product=ztf_20190514272245_000374_zr_c13_o_q1_sciimg.fits;size=2500;seeing=1.98  ZTF-r  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_32  B  60.8649  -5.7020  0.5622  2000  2000  ztf  product=ztf_20231025393623_001398_zr_c12_o_q3_sciimg.fits;size=2000;seeing=2.10  ZTF-r  v2,random,offplane  header-tpv
+ztf_33  B  297.8667  -0.4364  0.7028  2500  2500  ztf  product=ztf_20220711354225_001483_zg_c06_o_q4_sciimg.fits;size=2500;seeing=1.71  ZTF-g  v2,random,offplane  header-tpv
+ztf_34  B  236.4962  56.3467  0.5622  2000  2000  ztf  product=ztf_20180509262326_000794_zr_c10_o_q2_sciimg.fits;size=2000;seeing=2.02  ZTF-r  v2,random,offplane  header-tpv
+ztf_35  B  28.9226  22.2550  0.4217  1500  1500  ztf  product=ztf_20251130121840_000554_zr_c15_o_q2_sciimg.fits;size=1500;seeing=2.12  ZTF-r  v2,random,offplane  header-tpv
+ztf_36  B  198.8887  -1.2438  0.5622  2000  2000  ztf  product=ztf_20230712192049_000424_zi_c11_o_q1_sciimg.fits;size=2000;seeing=1.73  ZTF-i  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_37  B  142.1268  68.0141  0.5622  2000  2000  ztf  product=ztf_20240212327072_000841_zr_c07_o_q3_sciimg.fits;size=2000;seeing=1.83  ZTF-r  v2,random,offplane  header-tpv
+ztf_38  B  70.7136  -23.9407  0.8433  3000  3000  ztf  product=ztf_20220929428137_001296_zi_c02_o_q3_sciimg.fits;size=3000;seeing=1.88  ZTF-i  v2,random,offplane  header-tpv
+ztf_39  B  134.6127  28.5846  0.5622  2000  2000  ztf  product=ztf_20250222299468_000618_zi_c15_o_q3_sciimg.fits;size=2000;seeing=1.77  ZTF-i  v2,random,offplane  header-tpv
+ztf_40  B  183.8378  -3.1527  0.7028  2500  2500  ztf  product=ztf_20220301357824_000422_zi_c07_o_q2_sciimg.fits;size=2500;seeing=3.30  ZTF-i  v2,random,offplane  header-tpv
+ztf_41  B  314.9147  -5.0722  0.7028  2500  2500  ztf  product=ztf_20230901233715_000440_zi_c01_o_q2_sciimg.fits;size=2500;seeing=1.68  ZTF-i  v2,random,offplane  header-tpv
+ztf_42  B  28.9657  53.6027  0.5622  2000  2000  ztf  product=ztf_20180817445231_000775_zr_c06_o_q3_sciimg.fits;size=2000;seeing=1.63  ZTF-r  v2,random,plane  header-tpv
+ztf_43  B  115.6771  -26.6173  0.4217  1500  1500  ztf  product=ztf_20241206439236_000260_zr_c01_o_q1_sciimg.fits;size=1500;seeing=2.17  ZTF-r  v2,random,plane  header-tpv
+ztf_44  B  242.4111  25.6218  0.5622  2000  2000  ztf  product=ztf_20240615208750_000632_zi_c06_o_q1_sciimg.fits;size=2000;seeing=1.53  ZTF-i  v2,random,offplane  header-tpv
+ztf_45  B  287.7514  41.9489  0.5622  2000  2000  ztf  product=ztf_20230814339711_000727_zg_c10_o_q2_sciimg.fits;size=2000;seeing=2.03  ZTF-g  v2,random,offplane  header-tpv
+ztf_46  B  65.2155  15.6413  0.5622  2000  2000  ztf  product=ztf_20181101353750_000559_zr_c03_o_q3_sciimg.fits;size=2000;seeing=1.95  ZTF-r  v2,random,offplane  header-tpv
+ztf_47  B  59.0550  9.3243  0.8433  3000  3000  ztf  product=ztf_20201212220775_000507_zr_c02_o_q1_sciimg.fits;size=3000;seeing=2.12  ZTF-r  v2,random,offplane  header-tpv
+ztf_48  B  88.9154  18.4446  0.5622  2000  2000  ztf  product=ztf_20260222207998_000562_zi_c06_o_q2_sciimg.fits;size=2000;seeing=1.97  ZTF-i  v2,random,plane  header-tpv
+ztf_49  B  70.3089  29.2272  0.8433  3000  3000  ztf  product=ztf_20201117326887_001654_zi_c06_o_q2_sciimg.fits;size=3000;seeing=1.54  ZTF-i  v2,random,offplane  header-tpv
+# dropped (IRSA returns 404 for the product): ztf_50  B  134.6609  24.7772  0.5622  2000  2000  ztf  product=ztf_20240212319977_000618_zr_c07_o_q3_sciimg.fits;size=2000;seeing=1.90  ZTF-r  v2,random,offplane  header-tpv
 #
 # --- v2: WISE L1b single exposures, native pixels, SIN-SIP WCS (tier B) ------------------
 wise_01  B  357.1131  89.1130  0.776  1016  1016  wise  frame=02685a231;band=1  WISE-L1b-W1  v2,random  header-sip

@@ -399,6 +399,13 @@ class Wcs:
                         a[(p, q)] = float(h[f"A_{p}_{q}"])
                     if f"B_{p}_{q}" in h:
                         b[(p, q)] = float(h[f"B_{p}_{q}"])
+            # The SIP convention has no constant term (CRPIX carries it). WISE L1b
+            # frames nevertheless write A_0_0 ~ 0.72 px; applying it puts every solved
+            # WISE frame 0.64 px off in the same *pixel* direction whatever the
+            # frame's orientation on the sky, while ignoring it leaves ~0.1 px - so the
+            # constant is treated as the non-standard artefact it is.
+            a.pop((0, 0), None)
+            b.pop((0, 0), None)
             if a or b:
                 sip = (a, b)
 

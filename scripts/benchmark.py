@@ -23,8 +23,8 @@ takes precedence over the rest, which combine with AND. --auto-db omits -D so ar
 picks the database from the field size. --astap also solves every image with ASTAP (-D
 from --db-name) and prints a head-to-head. Use --jobs 1 for meaningful timings.
 
-A reported solve whose worst corner error exceeds --max-corner-err arcsec counts as a
-false positive. When the truth has SIP or TPV distortion, the linear plate model arcsec
+A reported solve whose worst corner error exceeds --max-corner-err arcsec (or
+--max-corner-px pixels, whichever is larger) counts as a false positive. When the truth has SIP or TPV distortion, the linear plate model arcsec
 fits cannot reach the corners exactly; the threshold is then raised by the worst corner
 error of the best possible linear fit (the "linear floor", reported per image).
 
@@ -237,7 +237,9 @@ def run_one(entry, args):
     if truth.distorted:
         _, floor = fitslite.best_linear(truth, naxis1, naxis2)
         res["lin_floor"] = round(floor, 3)
-    limit = args.max_corner_err + floor
+    # An absolute 5" means a quarter pixel at TESS's 21"/px: never less than
+    # --max-corner-px pixels, so coarse images are not held to a sub-pixel standard.
+    limit = max(args.max_corner_err, args.max_corner_px * ps_deg * 3600.0) + floor
     res["limit"] = limit
 
     # Hint: truth centre, optionally pushed off by N field widths, plus any per-entry
@@ -426,6 +428,9 @@ def main():
                     help="pass --threads to arcsec (0 = one per core)")
     ap.add_argument("--astap", default=None,
                     help="path to astap_cli; when given, solve each image with both and compare")
+    ap.add_argument("--max-corner-px", type=float, default=1.0,
+                    help="the false-positive corner threshold is at least this many "
+                         "pixels (matters only above 5\"/px)")
     ap.add_argument("--max-corner-err", type=float, default=5.0,
                     help="corner error (arcsec) above which a reported solve is "
                          "counted as a FALSE POSITIVE, not a success")
@@ -495,13 +500,14 @@ def main():
             r = fut.result()
             results.append(r)
             if (r.get("astap_status") == "WRONG" and r["lin_floor"] is not None
-                    and r["astap_centre"] <= max(args.max_corner_err, 10.0)):
+                    and r["astap_centre"] <= max(args.max_corner_err, 10.0, 2.0 * r["pixscale_as"])):
                 r["astap_status"] = "INEXACT"
             if r["status"] == "OK" and r["err_corner"] > r.get("limit", args.max_corner_err):
                 # Distorted truth, right place, corners beyond what a linear plate can
                 # reach even allowing for the best linear fit: not a false positive,
                 # not a success either.
-                if r["lin_floor"] is not None and r["err_centre"] <= max(args.max_corner_err, 10.0):
+                if r["lin_floor"] is not None and \
+                        r["err_centre"] <= max(args.max_corner_err, 10.0, 2.0 * r["pixscale_as"]):
                     r["status"] = "INEXACT"
                 else:
                     r["status"] = "WRONG"
@@ -539,7 +545,8 @@ def main():
         with open(args.csv, "w") as f:
             f.write(",".join(cols) + "\n")
             for r in results:
-                f.write(",".join("" if r.get(c) is None else str(r.get(c, "")) for c in cols) + "\n")
+                vals = ("" if r.get(c) is None else str(r.get(c, "")) for c in cols)
+                f.write(",".join(f'"{v}"' if "," in v else v for v in vals) + "\n")
         print(f"\nCSV: {args.csv}")
 
     def summarise(tier_filter, label):

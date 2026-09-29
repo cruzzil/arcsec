@@ -502,7 +502,7 @@ def sec_ztf(rng, n=50):
         tag = "plane" if abs(b) < 10 else "offplane"
         rows.append([f"ztf_{k:02d}", "B", f"{float(cra):.4f}", f"{float(cdec):.4f}",
                      f"{size * 1.012 / 3600:.4f}", str(size), str(size), "ztf",
-                     f"file={fn};size={size};seeing={float(seeing):.2f}", f"ZTF-{fc[1]}",
+                     f"product={fn};size={size};seeing={float(seeing):.2f}", f"ZTF-{fc[1]}",
                      f"v2,random,{tag}", "header-tpv"])
     return rows
 

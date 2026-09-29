@@ -311,7 +311,7 @@ def f_sdss(e, base):
 
 def f_ztf(e, base):
     o = e["opts"]
-    fn = o["file"]
+    fn = o["product"]
     m = re.match(r"ztf_(\d{4})(\d{4})(\d{6})_(\d{6})_(z[gri])_c(\d\d)_([a-z])_q(\d)_sciimg\.fits", fn)
     if not m:
         raise ValueError(f"bad ZTF file name {fn}")
