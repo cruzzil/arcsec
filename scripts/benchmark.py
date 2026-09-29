@@ -71,12 +71,30 @@ def read_header(path, max_blocks=200):
 
 
 class Wcs:
-    """A TAN WCS: CRPIX/CRVAL plus a 2x2 CD matrix in degrees per pixel."""
+    """A TAN WCS: CRPIX/CRVAL plus a 2x2 CD matrix in degrees per pixel, and
+    optionally SIP pixel-to-sky polynomials ({(p, q): coefficient} for A and B)."""
 
-    def __init__(self, crpix1, crpix2, crval1, crval2, cd):
+    def __init__(self, crpix1, crpix2, crval1, crval2, cd, sip=None):
         self.crpix1, self.crpix2 = crpix1, crpix2
         self.crval1, self.crval2 = crval1, crval2
         self.cd = cd  # [[cd1_1, cd1_2], [cd2_1, cd2_2]]
+        self.sip = sip  # None, or (A, B)
+
+    @staticmethod
+    def sip_from_header(h):
+        """The A and B polynomials of a '-SIP' header, or None.
+
+        Only used for solutions (--sip runs): truth headers are read as plain TAN,
+        as they always have been, so the standing numbers do not move."""
+        if not str(h.get("CTYPE1", "")).endswith("-SIP"):
+            return None
+        polys = []
+        for axis in ("A", "B"):
+            order = int(h.get(f"{axis}_ORDER", 0))
+            polys.append({(p, q): h[f"{axis}_{p}_{q}"]
+                          for p in range(order + 1) for q in range(order + 1 - p)
+                          if f"{axis}_{p}_{q}" in h})
+        return tuple(polys)
 
     @classmethod
     def from_header(cls, h):
@@ -116,6 +134,10 @@ class Wcs:
         """1-based FITS pixel coords -> (ra_deg, dec_deg) via the TAN deprojection."""
         u = x - self.crpix1
         v = y - self.crpix2
+        if self.sip:
+            a, b = self.sip
+            u, v = (u + sum(c * u ** p * v ** q for (p, q), c in a.items()),
+                    v + sum(c * u ** p * v ** q for (p, q), c in b.items()))
         xi = math.radians(self.cd[0][0] * u + self.cd[0][1] * v)
         eta = math.radians(self.cd[1][0] * u + self.cd[1][1] * v)
 
@@ -297,6 +319,7 @@ def run_one(entry, args):
         cmd += ["-s", str(args.stars)]
     if args.threads is not None:
         cmd += ["--threads", str(args.threads)]
+    cmd += args.extra_arg
 
     t0 = time.time()
     try:
@@ -324,6 +347,7 @@ def run_one(entry, args):
     if sol is None:
         res["status"] = "BAD_WCS"
         return with_astap(res)
+    sol.sip = Wcs.sip_from_header(sol_h)
 
     # Compare at the centre and the four corners.
     pts = [((naxis1 + 1) / 2.0, (naxis2 + 1) / 2.0),
@@ -406,6 +430,8 @@ def main():
     ap.add_argument("--max-corner-err", type=float, default=5.0,
                     help="corner error (arcsec) above which a reported solve is "
                          "counted as a FALSE POSITIVE, not a success")
+    ap.add_argument("--extra-arg", action="append", default=[],
+                    help="pass this argument to arcsec as well (repeatable), e.g. --extra-arg=--sip")
     ap.add_argument("--tier", action="append", default=[])
     ap.add_argument("--id", action="append", default=[])
     args = ap.parse_args()
