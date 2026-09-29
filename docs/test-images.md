@@ -4,18 +4,28 @@ A standing set of FITS images with trustworthy ground truth, used to measure arc
 solve rate, positional accuracy and false-positive rate across a realistic range of field
 sizes, star densities and image quality.
 
-Companion to [plate-solving.md](plate-solving.md). Fetch everything with:
+Companion to [plate-solving.md](plate-solving.md). There are two manifests:
+
+* **v1** — the original 103 images ([`scripts/test-images.tsv`](../scripts/test-images.tsv),
+  §3.1–3.5, results in §6). Kept unchanged so historical numbers stay comparable.
+* **the expanded corpus** — 635 entries from ten archives and two synthetic families
+  ([`scripts/corpus.tsv`](../scripts/corpus.tsv), §2.8–2.10 and §3.6, results in §7). It
+  contains v1 as the subset `v1`.
 
 ```bash
-scripts/fetch-test-images.sh                  # all tiers → resources/testset/
-scripts/fetch-test-images.sh --tier A         # just the synthetic-truth tier
-scripts/fetch-test-images.sh --list           # show the manifest without downloading
+# v1, as before
+scripts/fetch-test-images.sh                  # all tiers → resources/testset/ (~2.2 GB)
 scripts/benchmark.py --auto-db                # solve and score everything (§6.8)
+
+# expanded corpus
+scripts/fetch-corpus.py                       # → resources/corpus/ (~6.5 GB new, v1 hard-linked)
+scripts/fetch-corpus.py --stats               # coverage tables, no download
+scripts/benchmark.py --corpus --auto-db       # per-tier, per-source and per-FOV breakdowns
+scripts/benchmark.py --corpus --auto-db --set v1   # the historical subset only
 ```
 
-The manifest lives at [`scripts/test-images.tsv`](../scripts/test-images.tsv). Images are
-**not** committed — `resources/` is gitignored — the manifest plus the fetch script are the
-reproducible artefact.
+Images are **not** committed — `resources/` is gitignored — the manifests plus the fetch
+scripts are the reproducible artefact.
 
 ---
 
@@ -27,8 +37,9 @@ The corpus is stratified into four tiers.
 | Tier | Ground truth | Truth accuracy | What it exercises |
 |---|---|---|---|
 | **A — Synthetic cutouts** | We *request* the centre, FOV and projection, so the true WCS is known exactly | exact (< 1 mas) | Correctness of the core solver across FOV and star density |
-| **B — Survey cutouts** | The archive's own pipeline WCS in the header | 0.02–0.3″ | Real PSFs, real noise, real artefacts; sub-arcsecond accuracy |
-| **C — Real observing frames** | A reference solution from ASTAP and/or astrometry.net, cross-checked | ~0.5–1″ | Gradients, trailing, Bayer mosaics, hot pixels, clouds (none in the manifest yet) |
+| **B — Survey pixels** | The archive's own pipeline WCS in the header (TAN, TAN-SIP, SIN-SIP or TPV) | 0.02–0.3″ (TESS ~1″) | Real PSFs, real noise, real artefacts, real distortion; sub-arcsecond accuracy |
+| **C — Real observing frames** | The observatory pipeline's astrometric solution (LCO BANZAI, fitted to Gaia) | ~0.2–0.3″ | Individual reduced exposures from 0.4 m–2 m telescopes: seeing, tracking, nebulosity, sparse fields |
+| **S — Simulated camera artefacts** | A tier-A/B parent's truth carried exactly through each transformation (§2.10) | as the parent | Vignetting, gradients, hot pixels, Bayer mosaics, trailing, defocus, clouds, lens distortion, flips, sample formats |
 | **D — Negative / stress** | Known to be unsolvable, or known-hard | n/a | **False-positive rate** and graceful failure |
 
 Tier D is the one most benchmark suites omit and the one that matters most for us: a solver
@@ -194,19 +205,87 @@ manifest at present.
   telescopes, pre-calibrated FITS; free tier requires an account).
   These are the right stress test for gradients, star bloat and imperfect tracking, but
   they arrive **without** a WCS, so the ground truth must be a reference solve.
-* **Practical note**: for any tier-C image, generate the reference with *two* independent
+* **Practical note**: for any tier-C image *without* a pipeline WCS, generate the reference with *two* independent
   solvers (`astap-cli` and `solve-field`) and only admit the image to the corpus if they
   agree to better than 2″. Disagreement means the truth is not trustworthy, not that one
   solver is wrong.
 
-### 2.8 Rejected sources, and why
+### 2.8 Sources added for the expanded corpus
 
-* **ESO Science Archive / Phase 3** — excellent data, but products are large multi-extension
-  mosaics and the query interface is not a simple parameterised GET. Not worth the
-  complexity for our purposes.
-* **astropy / photutils example data** — small, convenient, but only a handful of images
-  and several lack a usable WCS or enough stars.
-* **AAVSO VPhot, Astrometrica samples** — access requires accounts.
+Every source below was probed on 2026-09-29 with a small fetch whose header was inspected
+before anything was designed around it. `scripts/fetch-corpus.py` implements each one.
+
+| Source (fetcher) | Access | Pixels | Truth WCS | Tier | Notes |
+|---|---|---|---|---|---|
+| **CDS hips2fits**, 22 more HiPS surveys (`hips2fits`) | GET, no key | resampled to our TAN grid | exact (requested) | A | DSS2 r/b/IR, 2MASS J/H/K, PS1 g/r/i/z, SkyMapper DR4 g/r/i, DES DR2 r/i, Legacy DR10 r/z, unWISE/allWISE W1, ZTF DR7 g/r, IPHAS r, VHS J/K and UKIDSS-LAS K (WFAU HiPS), DENIS I, GALEX NUV, **TESS 2-yr (13″/px)** and **SHASSA continuum (26″/px)** for 3°–50° fields |
+| **SkyView** (`skyview`) | GET, no key | resampled | requested grid | B (as v1) | DSS1 R/B, DSS2 R/B/IR, 2MASS J/H/K, WISE 3.4/4.6, GALEX NUV; `RADESYS = FK5` |
+| **Legacy Surveys DR10** (`legacysurvey`) | GET, no key | coadd, resampled on request | header TAN | B | 0.26–1.0″/px, g/r/i/z |
+| **Pan-STARRS1** (`panstarrs`) | two GETs | skycell stack, `output_size` rebinning | header TAN, legacy `PCiiijjj` | B | the cutout must stay inside one ~0.4° skycell; larger random cutouts come back NaN-padded (five dropped) |
+| **SDSS DR17 frames** (`sdss`) | GET, bz2 | native, full frames | header TAN | B | random fields from a SkyServer SQL query (`quality = 3`) |
+| **ZTF science images** (`ztf`) | IRSA IBE search + cutout | **native**, 1.01″/px | header **TPV** | B | 1500–3000 px cutouts of single exposures; seeing 1.3″–4.5″; galactic plane included |
+| **WISE L1b single exposures** (`wise`) | IRSA IBE | **native**, 2.75″/px, 1016² | header **SIN-SIP** | B | poles included; W1 and W2 |
+| **SkyMapper DR4 images** (`skymapper`) | SIAP + cutout | **native**, 0.5″/px, 16-bit | header **TPV** | B | cutouts capped at 0.17° by the service — right at d80's 0.15° floor |
+| **TESS full-frame images** (`tess`) | AWS open data (`stpubdata`) | **native**, 21″/px | header **TAN-SIP**, strong distortion | B | 384–2048 px crops (2.2°–12°) of calibrated FFIs; the only native wide-field camera data in the corpus |
+| **Las Cumbres Observatory** (`lco`) | archive API (anonymous, public frames) | **native** reduced exposures, fpacked | BANZAI pipeline TAN (astrometry.net vs Gaia) | C | 0.4 m + SBIG STL-6303 / QHY600, 1 m Sinistro, 2 m Spectral; frames with `WCSERR ≠ 0` rejected |
+
+Verified headers worth knowing about:
+
+* **ZTF** cutouts arrive gzip-compressed with `CTYPE = 'RA---TPV'` and 30 `PVi_j`
+  coefficients. The TPV polynomial moves stars by up to ~0.2″ across a 0.56° cutout.
+* **WISE L1b** frames use `CTYPE = 'RA---SIN-SIP'` — a *SIN* projection, which the old
+  harness could not read. The SIP terms move the corners by 5.5″.
+* **TESS** FFIs have an empty primary HDU; the image and its `TAN-SIP` WCS are in HDU 1,
+  whose `A_2_0` of 2×10⁻⁵ displaces the corners of a full CCD by ~20 px (7′). One FFI
+  (sector 69) carried no celestial WCS at all and was dropped. The fetcher crops the
+  science area to a single-HDU float32 file and shifts `CRPIX`, which leaves SIP exact.
+* **LCO** frames are RICE-compressed `BINTABLE`s (`ZIMAGE = T`); arcsec reads them through
+  CFITSIO, the harness maps `ZNAXISn` back to `NAXISn`. The pipeline's `WCSERR` flag is
+  checked, and three frames with a failed fit were dropped.
+* **SkyMapper** cutouts are 16-bit with `CRPIX2 = -962` — another off-image reference
+  pixel.
+
+### 2.9 Investigated and not used
+
+| Candidate | Why not |
+|---|---|
+| **nova.astrometry.net user uploads** — the obvious source of real amateur frames with solved WCS | `robots.txt` disallows all agents (and names AI crawlers specifically), image pages sit behind an "are you human" gate, and the per-image Creative Commons choice is only on those pages. Not scraped. |
+| **Palomar Transient Factory** (IRSA) | Works, but headers carry both SIP and `PVi_j` terms under a `TAN-SIP` CTYPE, so the truth is ambiguous; 33 MB and ~100 s per frame. ZTF covers the same instrument class. |
+| **Mellinger all-sky mosaic** (HiPS) | "Copyright Axel Mellinger. All rights reserved." Would have been the best 20°–60° source; SHASSA used instead. |
+| **Kepler/K2 FFIs** | whole-focal-plane multi-extension files of hundreds of MB; TESS fills the role. |
+| **UKIDSS/VISTA native frames** (WSA/VSA) | form-driven multi-extension products; the WFAU HiPS are used instead (tier A). |
+| **DASCH / StarGlass plate scans** | large plates and an API that returned 404s during the probe; revisit for very wide fields. |
+| **HST/MAST** | as §2.6: fields far below the catalogues' floor. |
+| **Practice datasets** (Light Vortex, AstroBackyard, Telescope Live) | no redistribution licence stated, or an account required; no WCS. |
+| **ESO archive, photutils data, AAVSO VPhot, Astrometrica samples** | as in v1: complex products, too few images, or accounts. |
+| **LCO raw (`e00`) frames** | public and genuinely raw (bias, hot pixels, no flat), but truth would have to be carried over from the reduced frame; deferred. |
+
+No licence-clear, scriptable source of real *amateur* frames with a trustworthy WCS was
+found. LCO's 0.4 m telescopes (SBIG STL-6303 and QHY600 cameras) are the closest real
+hardware in the corpus; tier S fills the rest synthetically, clearly labelled.
+
+### 2.10 Tier S — simulated camera artefacts
+
+`scripts/corpus_synth.py` (standard library only, seeded, deterministic) applies a recipe
+to a *parent*: 16 camera-shaped tier-A cutouts (`cam_*`, 1200–2400 px, 0.6°–9°). Every
+operation carries the truth exactly: geometric operations transform the CD matrix and
+CRPIX with the pixels, trailing moves CRPIX by the photocentre shift, and radial
+distortion `r' = r(1 + K r²)` about CRPIX is written as the exact SIP terms
+`A_3_0 = A_1_2 = B_2_1 = B_0_3 = K`. The truth goes to a `<id>.truth` sidecar and the
+image header carries no WCS, like a raw camera frame (`keepwcs` keeps it, for one case).
+
+| Family | Operations | Count |
+|---|---|---|
+| amateur | vignetting, sky gradient, noise, hot pixels and columns, `u16` + `BZERO`; and one "worst case" stacking distortion, gradient, clouds, trailing, noise, hot pixels and a Bayer mosaic | 2 |
+| lens distortion | barrel / pincushion, 4–25 px at the corner | 10 |
+| colour camera | RGGB / GBRG Bayer mosaic (`BAYERPAT` set) | 5 |
+| tracking, focus | trailing 6–12 px, three-box-blur defocus | 6 |
+| sky | clouds (smooth random transmission + scattered light), saturation clipping, satellite trails, amp glow | 11 |
+| orientation | `flipx`, `flipy`, `rot90`, `rot270`, `transpose` | 16 |
+| formats | `u8`, `i32`, `f64`, `u16` gzip, XISF, WCS kept in header, 2×2 binning | 15 |
+
+Tier D gains generated controls from the same module: pure noise, flat gradients,
+random Gaussian "stars" (100–1000 of them — star-like, no real asterisms), and 64/128-px
+block shuffles of real fields.
 
 ---
 
@@ -296,6 +375,100 @@ closest, and they are tier A and solve (worst corner error 4.5″ on the 15° fi
   regime where a linear-only fit shows its limits.
 * If available, a real camera-lens frame from tier C with visible barrel distortion.
 
+### 3.6 The expanded corpus (v2)
+
+v1 is a careful set of ladders around a handful of fields; it cannot say whether a
+result generalises. v2 adds 532 entries chosen to cover the space rather than to
+illustrate it, with random fields doing most of the work so that nobody — including the
+solver's authors — picked them. The selection is recorded in
+[`scripts/corpus-select.py`](../scripts/corpus-select.py) (seeded; archive queries are
+cached) and its output, [`scripts/corpus.tsv`](../scripts/corpus.tsv), is the artefact.
+
+| Group | Entries | How chosen |
+|---|---|---|
+| `rnd_*` random HiPS cutouts | 80 | uniform on the sphere; FOV log-uniform 0.2°–2.2°; survey drawn from those whose MOC encloses the field; 40 % rotated; 3:2 and 4:3 aspect ratios |
+| `wide_*` | 27 | TESS HiPS 3°–24°, SHASSA continuum 15°–50°, DSS2 4°–12° deliberately under-sampled (`coarse`) |
+| `obj_*` named fields | 36 | bright stars (Betelgeuse, Canopus, Polaris …), nebulae (Rosette, M16, Heart, Veil), galaxies (M33, M51, Cen A, LMC, SMC), clusters (47 Tuc, M11, M7), dark clouds (B68, Coalsack), Sgr A* in K |
+| `surv_s_*` survey ladder | 11 | one southern field through 11 surveys |
+| `sv2_*`, `ls2_*`, `ps1v2_*`, `sdss2_*`, `ztf_*`, `wise_*`, `smss_*`, `tess_*` | 221 | random positions within each archive's footprint (§2.8) |
+| `lco_*` | 42 | random public reduced science frames 2016–2024, one per target and camera |
+| `cam_*` parents + `s_*` tier S | 16 + 65 | §2.10 |
+| negative and stress controls | 34 | §3.7 |
+
+Entries that failed permanently on the first fetch (outside a footprint, a 404, a bad
+pipeline WCS) stay in the manifest as commented rows with the reason, so the selection
+remains auditable. 21 were dropped that way.
+
+**Coverage** (all 635 entries; FOV and pixel scale measured from the delivered truth,
+position from the image centre):
+
+| FOV (long side) | A | B | C | S | D | total |
+|---|---|---|---|---|---|---|
+| < 0.15° | 1 | 5 |  |  | 9 | 15 |
+| 0.15–0.3° | 16 | 92 | 5 |  | 6 | 119 |
+| 0.3–0.6° | 33 | 55 | 37 |  | 5 | 130 |
+| 0.6–1.2° | 90 | 57 |  | 30 | 9 | 186 |
+| 1.2–2.5° | 60 | 12 |  | 16 | 6 | 94 |
+| 2.5–6° | 8 | 28 |  | 7 | 1 | 44 |
+| 6–20° | 18 | 6 |  | 12 | 3 | 39 |
+| > 20° | 8 |  |  |  |  | 8 |
+
+| Pixel scale | A | B | C | S | D | total |
+|---|---|---|---|---|---|---|
+| < 0.5″ |  | 80 | 17 |  | 14 | 111 |
+| 0.5–1″ | 13 | 21 | 23 |  | 2 | 59 |
+| 1–2″ | 161 | 81 | 2 | 35 | 16 | 295 |
+| 2–4″ | 28 | 31 |  | 10 | 3 | 72 |
+| 4–10″ | 5 |  |  | 1 | 1 | 7 |
+| 10–30″ | 21 | 42 |  | 19 | 3 | 85 |
+| > 30″ | 6 |  |  |  |  | 6 |
+
+| Declination | −90…−60 | −60…−30 | −30…0 | 0…+30 | +30…+60 | +60…+90 |
+|---|---|---|---|---|---|---|
+| entries | 64 | 109 | 146 | 173 | 118 | 25 |
+
+| Galactic latitude | \|b\| < 5° | 5°–15° | 15°–40° | > 40° |
+|---|---|---|---|---|
+| entries | 59 | 94 | 238 | 244 |
+
+| Sample type | entries |
+|---|---|
+| 32-bit float | 376 (+ 42 fpacked float, LCO) |
+| 16-bit signed (DSS, SkyMapper) | 128 |
+| 16-bit unsigned via `BZERO = 32768` | 60 (+ 1 gzip, 3 XISF) |
+| 64-bit float / 32-bit int / 8-bit | 13 / 9 / 3 |
+
+| Orientation | entries |
+|---|---|
+| mirrored parity (det CD > 0) | 125 — ZTF, TESS, half of LCO, flipped tier S |
+| rotated ≥ 45° from north-up | 205 |
+
+| Truth | entries |
+|---|---|
+| exact (requested grid, tier A) | 243 |
+| resampled grid (SkyView, Legacy Surveys) | 77 |
+| survey header, linear TAN | 53 |
+| survey header with SIP | 67 |
+| survey header with TPV | 58 |
+| observatory pipeline (LCO) | 42 |
+| derived exactly from a parent (tier S) | 65 |
+| none (negative controls) | 30 |
+
+Distinct datasets (survey × band, or camera): 66 real ones from ten archives, plus the
+synthetic families. Median image size 3.8 Mpixel; the corpus occupies 6.4 GB beyond v1
+(8.2 GB including the hard-linked v1 files).
+
+### 3.7 Negative and stress controls in v2
+
+| Entries | What | Expected |
+|---|---|---|
+| `neg_noise_*` (4), `neg_flat_*` (2) | generated noise / smooth gradient, 0.5°–8° hint | no solution |
+| `neg_fake_*` (6) | 100–1000 random Gaussian stars, 0.3°–10° hint | no solution |
+| `neg_shuffle_*` (6) | real fields with 64- or 128-px blocks permuted | no solution |
+| `neg_hint_*` (8) | real, solvable ZTF / Legacy / SDSS fields, hint 30°–60° away, `-r 10` | no solution |
+| `neg_m17_core`, `neg_eta_car_core`, `neg_m31_ps1`, `neg_orion_2massk` | 0.04° crops of extended objects | no solution |
+| `stress_fov_*` (4) | real fields told the wrong FOV (×2, ×0.5, ×1.5, ×0.67) | `expect=any`: a correct solve is fine, a wrong one is a false positive |
+
 ---
 
 ## 4. Metrics
@@ -334,6 +507,28 @@ rotation and distortion error from pointing error, and is the number that will m
   therefore cannot validate us below ~0.3″; only tier A can.
 * Comparing `CRVAL` directly is wrong when the two solutions use different reference
   pixels. Always compare **sky positions of the same pixel coordinates**, as above.
+
+### 4.2 Rules added for the expanded corpus
+
+* **Distorted truth.** A linear plate cannot follow SIP or TPV distortion to the
+  corners. For such images `benchmark.py` fits the best linear TAN plate to the truth
+  (least squares over a 9 × 9 grid, tangent point at the centre) and reports its worst
+  corner error as the **linear floor**; the false-positive threshold becomes
+  `threshold + floor`. A solve that is still beyond that but whose centre is right
+  (within 10″ or 2 px) is **INEXACT**: the field is identified, the plate is not good
+  enough at the edges. INEXACT is neither a success nor a false positive and is counted
+  separately. Linear floors in the corpus: ZTF ≈ 0.2″, SkyMapper ≈ 0.1″, WISE 5.5″,
+  tier-S lenses 7″–140″, TESS 25″–1000″.
+* **Coarse pixels.** 5″ is a quarter of a TESS pixel. The threshold is now
+  `max(5″, 1 px)` (`--max-corner-px`); it changes nothing below 5″/px, so v1 results are
+  unaffected.
+* **Catalogue coverage.** A no-solve whose field (image height, which is what `--fov`
+  carries) lies outside every installed database's range is reported as *nocat* rather
+  than silently counted as a solver failure. With d80 + g05 + w08 installed that is
+  only fields under 0.15°.
+* **Per-entry overrides** (`extra` column): `file=` reuses another entry's image,
+  `hint_dra` / `hint_ddec` move the hint, `fov_scale` lies about the FOV, `radius`
+  overrides `-r`, `expect=any` marks a stress case.
 
 ---
 
@@ -378,6 +573,43 @@ the delivered header for every tier.
 
 The manifest holds 103 entries: 64 tier A, 34 tier B, 5 tier D. By source: 69 hips2fits,
 11 Legacy Survey, 10 SkyView, 8 SDSS, 5 Pan-STARRS.
+
+### 5.2 The expanded corpus
+
+`scripts/corpus.tsv` extends the v1 columns with three more; `benchmark.py` accepts
+either file (the extra columns are optional):
+
+```
+id        tier ra        dec      fov   width height source  extra                                    dataset   sets              truth
+ztf_01    B    240.6466  13.1505  0.56  2000  2000   ztf     product=ztf_2024..._sciimg.fits;size=2000  ZTF-g     v2,random,midlat  header-tpv
+s_ps1_a_lens S 207.8766  24.6735  1     2400  1600   synth   parent=cam_ps1_a;ops=distort:3.9e-09,...   synth-PS1-r v2,synth,distort derived
+neg_hint_3 D   0         0        0     0     0      alias   file=sdss2_08;hint_dra=-52.5;radius=10      alias     v2,negative       none
+```
+
+For archive-defined geometry (ZTF, WISE, TESS, LCO, SDSS) the position and size columns
+are nominal; truth always comes from the delivered file.
+
+| Tool | Does |
+|---|---|
+| `scripts/fetch-corpus.py` | fetch / build everything; `--list`, `--stats`, `--tier`, `--source`, `--set`, `--dataset`, `--id`, `--force`, `--verify`, `--jobs` (≤ 4), `--reuse-dir` (hard-links v1 images already in `resources/testset`) |
+| `scripts/benchmark.py --corpus` | as before, plus `--set`, `--source`, `--dataset`, `--by tier,source,dataset,fov,set` |
+| `scripts/corpus_synth.py` | the tier-S / generated tier-D recipes (imported by the fetcher) |
+| `scripts/fitslite.py` | stdlib FITS reading/writing and TAN/SIN/SIP/TPV WCS, shared by the three above |
+| `scripts/corpus-select.py` | how the v2 fields were chosen (provenance; re-running queries live archives) |
+
+The fetcher is deliberately gentle: at most four requests in flight and two per host,
+0.5–1 s between requests to one host, a descriptive User-Agent, exponential backoff
+honouring `Retry-After`, `.part` files renamed only after validation, and nothing
+re-fetched that is already present. Every file is checked (FITS structure, a WCS the
+harness can read, the centre where the manifest says, under 25 % blank pixels, and the
+archive's own md5 where one is published — LCO, and the AWS ETag for TESS); a
+`SHA256SUMS` of what was kept is written next to the images for `--verify`. Cutout
+services stamp dates into headers, so a re-fetch is not byte-identical: the sums are a
+local integrity check, not a global one.
+
+A full fetch took 77 minutes on a home connection (465 files; the hips2fits queue
+dominates, because it is limited to two concurrent requests), plus a minute of CPU
+for tier S.
 
 ---
 
@@ -664,18 +896,206 @@ scripts/benchmark.py --auto-db --astap ~/astap_cli --radius 3 --jobs 1   # for t
 `target/release/arcsec` (`--arcsec`). Without `--auto-db` it passes `-D d80`
 (`--db-name`), and `stress_wide15` (15°) then fails: 89/103 rather than 90.
 
-## 7. Licensing and attribution
+## 7. Results — expanded corpus (635 entries)
 
-All tier A/B sources are public-domain or freely redistributable *data*, but the corpus is
-deliberately not committed: `resources/` is gitignored and the manifest is the artefact.
-If any of this is ever published, credit as the providers ask:
+Measured 2026-09-30 with the 0.1.2 release binary, `--auto-db` (d80 0.15°–6°, g05
+3°–20°, w08 20°–80° installed), true centre as the hint, `-r 5`, 8 jobs:
 
-| Source | Attribution |
-|---|---|
-| HiPS2FITS | CDS, Strasbourg; plus the underlying survey (e.g. DSS2 — STScI/AURA) |
-| SkyView | "The SkyView virtual observatory", NASA/GSFC HEASARC |
-| Legacy Surveys | DESI Legacy Imaging Surveys — NOIRLab/DOE/NSF, DR10 |
-| Pan-STARRS1 | PS1 Surveys — University of Hawaii IfA / STScI |
-| SDSS | SDSS-IV/DR17 acknowledgement text |
-| HST / MAST | STScI; observation programme ID |
-| Tier C amateur data | as specified by the individual publisher |
+```bash
+scripts/benchmark.py --corpus --auto-db --by tier,source,dataset,fov,set --csv run.csv
+scripts/benchmark.py --corpus --auto-db --offset-hint 0.3
+scripts/benchmark.py --corpus --auto-db --astap ~/astap_cli
+```
+
+A full arcsec run takes 2.5 minutes on 24 cores. These are measurements on a benchmark
+built by the same project, from images chosen for coverage rather than typical use; they
+are not a statement about how often arcsec solves a user's frames, and the ASTAP column
+in §7.5 is a reference point, not a ranking.
+
+### 7.1 Overall
+
+| | n | correct | false positives | inexact | no solve |
+|---|---|---|---|---|---|
+| Tier A — synthetic cutouts | 234 | 192 (82 %) | 1 | – | 41 |
+| Tier B — survey pixels | 255 | 196 (77 %) | 2 | 5 | 52 (2 below any catalogue) |
+| Tier C — LCO frames | 42 | 37 (88 %) | 0 | – | 5 |
+| Tier S — simulated camera artefacts | 65 | 50 (77 %) | 2 | 6 | 7 |
+| **A + B + C + S** | **596** | **475 (80 %)** | **5** | **11** | **105** |
+| Tier D — must-fail controls | 35 | – | **0** | – | 35 correctly refused |
+| Tier D — wrong-FOV stress (`expect=any`) | 4 | 3 solved correctly | 0 | – | 1 |
+| v1 subset | 98 + 5 | 90 | 0 | – | 8 (unchanged from §6) |
+
+Accuracy of the correct solves (median centre / corner): A 0.53″ / 0.81″, B 0.15″ / 0.33″,
+C 0.24″ / 0.62″, S 0.62″ / 1.25″. Median time 0.2–0.5 s per image.
+
+**By field of view** (long side):
+
+| FOV | n | correct | FP | inexact |
+|---|---|---|---|---|
+| < 0.15° | 6 | 4 | 0 | 0 |
+| 0.15–0.3° | 113 | 103 (91 %) | 0 | 0 |
+| 0.3–0.6° | 126 | 116 (92 %) | 0 | 0 |
+| 0.6–1.2° | 180 | 156 (87 %) | 0 | 6 |
+| 1.2–2.5° | 88 | 62 (70 %) | 0 | 2 |
+| 2.5–6° | 43 | 9 (21 %) | 1 | 2 |
+| 6–20° | 36 | 23 (64 %) | 4 | 1 |
+| > 20° | 8 | 5 | 0 | 0 |
+
+**By source:**
+
+| Source | n | correct | FP | inexact | centre / corner (median) |
+|---|---|---|---|---|---|
+| hips2fits (22 surveys) | 234 | 192 (82 %) | 1 | 0 | 0.53″ / 0.81″ |
+| ZTF | 43 | **43** | 0 | 0 | 0.09″ / 0.39″ |
+| SDSS | 33 | **33** | 0 | 0 | 0.20″ / 0.33″ |
+| Pan-STARRS1 | 20 | **20** | 0 | 0 | 0.20″ / 0.32″ |
+| SkyView | 37 | 35 | 0 | 0 | 0.55″ / 0.68″ |
+| Legacy Surveys | 40 | 37 | 0 | 0 | 0.05″ / 0.10″ |
+| LCO (tier C) | 42 | 37 | 0 | 0 | 0.24″ / 0.62″ |
+| WISE L1b | 25 | 16 | 0 | 4 | 0.31″ / 8.6″ (5.5″ linear floor) |
+| SkyMapper native, 0.17° | 15 | 8 | 0 | 0 | 0.07″ / 0.23″ |
+| TESS FFI crops | 42 | **4** | 2 | 1 | 6.6″ / 66″ |
+| tier S | 65 | 50 | 2 | 6 | 0.62″ / 1.25″ |
+
+Among the tier-A HiPS: TESS 2-yr 10/16 (3°–24°), SHASSA 4/8 (15°–50°), coarse DSS 3/6,
+named objects 29/36, random galactic-plane fields 17/23.
+
+**Tier S by family:** Bayer mosaics 5/5, trailing 3/3, saturation 2/2, satellites and
+junk 5/5, binning 3/3, clouds 3/4, formats (u8, i32, f64, gzip, XISF, header WCS) 10/12,
+orientation 13/16, defocus 2/3, amateur 1/2 (+1 inexact), lens distortion 3/10 (5 inexact,
+1 false positive). Every format and orientation miss has a parent that also fails
+(`cam_dss_c`, `cam_ztf_a`) or is a coarse TESS-HiPS parent, so none is a format bug.
+
+### 7.2 With the hint 0.3 fields off (`--offset-hint 0.3`)
+
+| | correct | FP | inexact |
+|---|---|---|---|
+| A | 183 (−9) | 4 (+3) | 0 |
+| B | 169 (−27) | 3 (+1) | 24 (+19) |
+| C | 39 (+2) | 0 | 0 |
+| S | 38 (−12) | 2 | 9 (+3) |
+| v1 subset | 86 (−4, as in §6.7) | 0 | 0 |
+| tier D | – | 0 | – |
+
+The losses concentrate where the image carries distortion: WISE drops from 16 correct to
+1 (19 inexact — fitted from an off-centre spiral position, the linear plate follows the
+SIN-SIP distortion differently), TESS, wide TESS-HiPS fields and tier-S lenses. The new
+tier-A false positives are small (5.6″ `rnd_057`, 8.5″ `rnd_074`, both galactic-plane
+fields) plus coarse wide fields.
+
+### 7.3 False positives, all of them (true-centre hint)
+
+| Entry | FOV | Corner error | What it is |
+|---|---|---|---|
+| `wide_shassa_01` | 15° at 26″/px | 30.9″ (1.2 px) | a correct field just over the one-pixel threshold |
+| `tess_25`, `tess_32` | 12° TESS FFI crops | 2200–2450″, centre 100–180″ | right area, but one linear plate across 1000″ of distortion: genuinely wrong at the edges |
+| `s_tess_b_pincush` | 9°, 137″ linear floor | 279″ | the same, synthetic |
+| `s_tess_c_flipx` | 4° at 12″/px | 12.2″ (1.02 px) | at the threshold |
+
+None in tiers C or D, and none below 2.5°. The dangerous ones are the three wide
+*distorted* cases: once the fit residuals show structure, a linear plate should be
+refused — or a distortion model fitted — rather than reported as a solve.
+
+### 7.4 Failure categories that point at solver work
+
+1. **Native wide-field camera data: TESS FFIs 4/42.** 21″/px, a PSF of 1–2 pixels, and
+   25″–1000″ of SIP distortion. The solver *finds* the field — on `tess_05` (2.2°) the
+   first spiral position reports 614 matching quad references — and then accepts no
+   solution. The same sky through the TESS HiPS (resampled, undistorted) solves 10/16.
+   Candidates: verification radii (6 → 3 → 2 px) smaller than the distortion, and the
+   handling of undersampled stars (`Minimum star size: 1.5″`, HFD). This is the closest
+   thing in the corpus to a camera-lens frame, and the clearest case for
+   [plate-solving.md §12.4](plate-solving.md#124-fit-sip-distortion-and-honour---sip).
+2. **Lens distortion (tier S): 3/10 correct, 5 inexact, 1 false positive.** arcsec's
+   corners come out *worse than the best linear plate* (for example 28″ against a 16.5″
+   floor): the star-level refit keeps only matches within 2 px, so the edges, where the
+   distortion is largest, drop out and the plate is fitted to the centre. WISE shows the
+   same pattern.
+3. **2.5°–6° is the weakest band (9/43).** It is where d80 hands over to g05 and pixel
+   scales pass 10″/px; most entries are TESS (FFI or HiPS) or coarse DSS.
+4. **Real-telescope misses (LCO 37/42).** M43 (bright nebula), two frames with FWHM 6–7″
+   (seeing or defocus), a sparse *z*-band field, and a 10′ 2 m frame (below d80's floor).
+   ASTAP solves four of the five (§7.5), so they are worth a direct look.
+5. **Narrow native frames at the catalogue floor.** SkyMapper at 0.17° solves 8/15;
+   ASTAP solves 14/15 of the same images.
+6. **Crowded and nebulous fields**, as in v1: named nebulae (Rosette, Heart, M16, Orion's
+   belt, Coalsack, B68) fail; random galactic-plane fields solve 17/23.
+
+### 7.5 ASTAP on the same images (reference only)
+
+`astap_cli` CLI-2026.07.30 with `-D d80` only (so no catalogue above 6°), the same hints
+and the same scoring. ASTAP was run with the harness's defaults and no per-image tuning;
+its low counts on Legacy Surveys (0/40) and SDSS (5/33) repeat v1's pattern and probably
+reflect settings (downsampling, star count) as much as ability. Read this as "where the
+two differ", not as a ranking.
+
+| | n | arcsec | ASTAP |
+|---|---|---|---|
+| correct, fields ≤ 6° | 552 | 447 | 300 |
+| false positives (A/B/C/S) | 596 | 5 | 2 |
+| tier-D false positives | 35 | 0 | 0 |
+| median centre / corner error, the 278 both solve | | 0.27″ / 0.55″ | 0.26″ / 0.70″ |
+
+ASTAP solves 24 images arcsec does not: 6 SkyMapper 0.17° cutouts, 4 of the 5 LCO misses,
+8 random tier-A fields (mostly galactic plane; PS1, ZTF, 2MASS, SkyMapper), `obj_rosette`,
+`obj_orion_belt`, v1's `type_m31` and `type_m44`, and two tier-S images of `cam_ztf_a`.
+Those 24 are the most direct pointers to what arcsec's detection or matching still misses.
+
+### 7.6 Ground-truth checks
+
+* **Cross-solver agreement.** On the 287 images both solvers answer, the two agree with
+  each other much better than either agrees with a *resampled* truth: hips2fits 0.11″
+  between solvers against 0.37″ to truth, SkyView 0.08″ against 0.48″, LCO 0.03″ against
+  0.24″ (ZTF: 0.02″ against 0.09″). So tier A's "exact" truth is exact for the *grid*,
+  but the stars in it carry the underlying survey's plate solution (DSS ~0.3–0.5″), and
+  the LCO pipeline WCS is good to ~0.25″. Claims below those levels need survey headers
+  such as ZTF's.
+* **No survey header was found wrong** in the §6.6 sense (both solvers agreeing with each
+  other everywhere but not with the truth). The one image flagged, `s_dss_a_pincush`, is
+  a synthetic distortion case where both linear solvers fit the same compromise.
+* **WISE's `A_0_0` — an open question.** WISE L1b headers carry SIP constant terms
+  (`A_0_0` ≈ 0.72 px, `B_0_0` ≈ −0.08 px), which the SIP convention does not define.
+  Applied, every solved WISE frame came out 0.64 px off in the same *pixel* direction
+  whatever its orientation on the sky; ignored, ~0.1 px — so the harness ignores them.
+  But on the one WISE frame ASTAP solves (`wise_13`), ASTAP agrees with the *applied*
+  convention (1.8″ from arcsec). The WISE Explanatory Supplement (§IV.4.d) says the
+  per-frame SIP terms absorb a differential-aberration fit, which does not settle it.
+  Until it is settled, treat WISE centre errors as uncertain at the 2″ level.
+* **Fetch-time checks** dropped three LCO frames whose pipeline flagged its own fit
+  (`WCSERR ≠ 0`) and one TESS FFI with no celestial WCS.
+
+## 8. Licensing and attribution
+
+The corpus is deliberately not committed: `resources/` is gitignored and the manifests
+are the artefact — each user downloads the images from the providers for their own use.
+The data are public, but several providers attach conditions, recorded here. If any of
+this is ever published or redistributed, credit as the providers ask and check each
+one's current terms first.
+
+| Source | Terms as found (2026-09) | Attribution |
+|---|---|---|
+| CDS hips2fits / MocServer | free service | CDS, Strasbourg; plus the underlying survey |
+| DSS (DSS1, DSS2) | STScI/AURA; the plates are copyright Caltech / ROE / AAO — use for research and education with acknowledgement | the standard DSS acknowledgement |
+| 2MASS, WISE / allWISE / unWISE, ZTF via IRSA | public | UMass & IPAC/Caltech (2MASS); JPL/UCLA (WISE); ZTF (NSF, Caltech) |
+| Pan-STARRS1, GALEX, TESS via MAST / AWS open data | public | PS1 Surveys; GALEX; the TESS mission acknowledgement |
+| SDSS DR17 | public | SDSS-IV acknowledgement |
+| Legacy Surveys DR10, DES DR2, DECaPS | public | the DESI Legacy Imaging Surveys / DES acknowledgements (NOIRLab, DOE, NSF) |
+| SkyMapper DR4 | public release | SkyMapper acknowledgement (ANU) |
+| VISTA VHS, UKIDSS LAS (WFAU HiPS) | public ESO / WFAU releases | VHS / UKIDSS acknowledgements |
+| DENIS, IPHAS | public | survey acknowledgements |
+| SHASSA | "by courtesy of Swarthmore College"; NSF-funded | the SHASSA acknowledgement page |
+| TESS 2-yr HiPS | NASA/MIT/TESS and Ethan Kruse (USRA) | as stated |
+| SkyView | NASA/GSFC HEASARC | "The SkyView virtual observatory" |
+| Las Cumbres Observatory | public archive frames (after the proprietary period), anonymous API | "This work makes use of observations from the Las Cumbres Observatory global telescope network." |
+| HST / MAST | STScI | observation programme ID |
+| Tier S / generated tier D | derived locally from the above | as the parent |
+
+Two policy notes for whoever maintains this:
+
+* Several archives' `robots.txt` disallow crawlers on the very endpoints their
+  documentation tells scripts to use (SkyView `cgi`, PS1 `cgi-bin`, `data.sdss.org`, and
+  the LCO archive API). The corpus treats a documented, rate-limited API call as
+  permitted and a crawl as not, and fetches nothing that is not listed in the manifest.
+  **nova.astrometry.net is the exception**: its robots file names AI crawlers and its
+  pages sit behind a human check, so it was not used at all.
+* The Mellinger mosaic ("all rights reserved") was excluded on licence grounds.

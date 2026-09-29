@@ -11,6 +11,15 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- Benchmark tooling only (no change to the solver or its command line): an expanded
+  635-image benchmark corpus (`scripts/corpus.tsv`, fetched by `scripts/fetch-corpus.py`)
+  drawn from ten public archives plus simulated camera artefacts and more negative
+  controls, and `scripts/benchmark.py --corpus` with per-tier, per-source and per-FOV
+  breakdowns and SIP/TPV/SIN-aware truth. The original 103 images remain the `v1`
+  subset. See `docs/test-images.md`.
+
 ## [0.1.2] - 2026-09-28
 
 ### Fixed
