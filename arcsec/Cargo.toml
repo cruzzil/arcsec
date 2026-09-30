@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 documentation = "https://github.com/cruzzil/arcsec/tree/main/docs"
 readme = "../README.md"
 keywords = ["astronomy", "astrometry", "plate-solving", "fits", "wcs"]

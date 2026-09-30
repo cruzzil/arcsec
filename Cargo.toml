@@ -16,6 +16,7 @@ edition = "2024"
 rust-version = "1.96"
 license = "MIT"
 repository = "https://github.com/cruzzil/arcsec"
+homepage = "https://cruzzil.github.io/arcsec/"
 
 # Prefer core:: and alloc:: over std:: wherever the item lives there. Nothing here is
 # no_std, but the distinction documents which parts of the code actually depend on the

@@ -10,6 +10,9 @@
 An astrometric plate solver written in Rust. Give it an astronomical image and it
 works out where the telescope was pointing, writing a WCS solution.
 
+**Website: [cruzzil.github.io/arcsec](https://cruzzil.github.io/arcsec/)** — downloads,
+setting up N.I.N.A., and [which catalogue you need](https://cruzzil.github.io/arcsec/which-catalogue/).
+
 ```bash
 arcsec -f image.fits
 ```
