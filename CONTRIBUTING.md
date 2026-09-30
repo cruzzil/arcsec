@@ -115,6 +115,25 @@ matching or the WCS fit.
   single-threaded.
 - Image data is row-major `f32`, indexed `data[y * width + x]`.
 
+## Website
+
+The project website lives in `site/`: an
+[Astro](https://astro.build/) and [Starlight](https://starlight.astro.build/) project
+with its own `package.json`, needing Node.js 22.12 or newer.
+
+```bash
+cd site
+npm ci
+npm run dev        # http://localhost:4321/arcsec/
+npm run build && npm run check-links
+```
+
+The Website workflow (`.github/workflows/site.yml`) builds every pull request that
+touches `site/`, and deploys to GitHub Pages on a push to `main` and after each release.
+The site describes the CLI, so a change to options, exit codes, output files or the
+catalogue list needs a matching change there: [site/README.md](site/README.md) lists
+what to keep in step.
+
 ## Pull requests
 
 - Keep each pull request to one change, and explain why as well as what. For a change

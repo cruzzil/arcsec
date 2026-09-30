@@ -1,0 +1,93 @@
+---
+title: arcsec
+description: Free plate solving for astrophotographers. arcsec works out where your telescope is pointing from the stars in your image, and works in N.I.N.A. in place of ASTAP. Windows, macOS and Linux.
+template: splash
+editUrl: false
+hero:
+  title: arcsec
+  tagline: Finds where your telescope is pointing. arcsec reads the stars in your image and works out exactly which part of the sky it shows, so your imaging software can centre your target.
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import ThreeSteps from '../../components/ThreeSteps.astro';
+import DownloadTable from '../../components/DownloadTable.astro';
+
+<CardGrid>
+	<LinkCard title="Download and install" description="Windows, macOS and Linux. Step by step." href="getting-started/" />
+	<LinkCard title="Use with N.I.N.A." description="Set arcsec up as N.I.N.A.'s plate solver." href="nina/" />
+	<LinkCard title="Which catalogue do I need?" description="Enter your telescope and camera; get the catalogue and the command to fetch it." href="which-catalogue/" />
+	<LinkCard title="Catalogue guide" description="Every catalogue, where they are stored, and sharing them with ASTAP." href="catalogues/" />
+	<LinkCard title="FAQ" description="Common questions, from blind solving to file formats." href="faq/" />
+	<LinkCard title="Command line" description="Every option, output file and exit code." href="reference/cli/" />
+</CardGrid>
+
+## What is plate solving?
+
+Plate solving is how imaging software finds out exactly where a photo was taken on
+the sky: it matches the pattern of stars in the image against a star catalogue.
+Software such as N.I.N.A. uses the answer to centre a target after a slew, to return
+to the same framing on another night, and to correct the mount's idea of where it is
+pointing.
+
+arcsec is the program that does the matching. It runs on your own computer, needs no
+internet connection to solve, and is free.
+
+## Get started in three steps
+
+<ThreeSteps />
+
+## Why arcsec
+
+<CardGrid>
+	<Card title="Works with N.I.N.A." icon="approve-check">
+		arcsec is a drop-in replacement for ASTAP's plate solver: it takes the same
+		options and writes the same result files. In N.I.N.A., choose ASTAP as the
+		solver and point it at arcsec. Nothing else changes.
+	</Card>
+	<Card title="Uses the catalogues you have" icon="database">
+		arcsec reads ASTAP's star catalogues as they are, so an existing ASTAP folder
+		works straight away. Starting fresh? One command picks the right catalogue for
+		your field and fetches it.
+	</Card>
+	<Card title="Works offline" icon="laptop">
+		Solving happens entirely on your computer. arcsec needs the internet only to
+		download a catalogue, and sends nothing anywhere.
+	</Card>
+	<Card title="Free and open source" icon="heart">
+		MIT licensed. No account, no subscription, no telemetry. The source is on
+		[GitHub](https://github.com/cruzzil/arcsec).
+	</Card>
+	<Card title="Windows, macOS and Linux" icon="desktop">
+		One small program for each, with nothing else to install.
+	</Card>
+	<Card title="Telescopes to all-sky lenses" icon="star">
+		Fields from about 0.15° to 80° across. Reads FITS from any capture program,
+		PixInsight's XISF and ASDF, compressed or not.
+	</Card>
+</CardGrid>
+
+## Download
+
+<DownloadTable />
+
+Unzip the archive and keep `arcsec` (`arcsec.exe` on Windows) in a folder of your
+choice. [Download and install](getting-started/) walks through it for each system.
+For other platforms, checksums and building from source, see
+[For developers](developers/).
+
+## Built on ASTAP
+
+arcsec would not exist without [ASTAP](https://www.hnsky.org/astap.htm) by Han Kleijn,
+and owes it two things in particular:
+
+- **The method.** ASTAP's way of recognising stars, describing each group of four by
+  the ratios of the distances between them, which stay the same however the image is
+  rotated, scaled or flipped, is the idea arcsec is built on. Kleijn describes it
+  openly in
+  [ASTAP star pattern recognition algorithm and astrometric (plate) solving](https://www.hnsky.org/astap_astrometric_solving.htm).
+- **The catalogues.** arcsec reads ASTAP's star catalogue files, so the same
+  catalogues serve both programs.
+
+ASTAP is licensed under the Mozilla Public License 2.0. arcsec is an independent
+program and contains no ASTAP code. ASTAP does much more than plate solving: if you
+use its viewer, stacking or photometry, keep it.

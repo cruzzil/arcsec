@@ -1,0 +1,183 @@
+---
+// Replaces Starlight's hero on splash pages (only the home page has one): the title
+// and tagline come from the page's `hero` frontmatter, and the actions are fixed - an
+// OS-detecting download button, the N.I.N.A. guide and GitHub.
+import { LinkButton } from '@astrojs/starlight/components';
+import SkyImage from './SkyImage.astro';
+import { getLatestRelease, REPO_URL } from '../lib/release';
+import { human } from '../lib/catalogues';
+import { url } from '../lib/url';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline } = data.hero ?? {};
+
+const release = await getLatestRelease();
+const assets = release.assets.map((a) => ({
+	os: a.os,
+	arch: a.arch,
+	label: a.label,
+	href: a.url,
+	size: human(a.size),
+}));
+// Without JavaScript, or on a platform with no build, the button goes to the full list.
+const listHref = url('#download');
+---
+
+<div class="hero">
+	<div class="copy">
+		<h1 id="_top" data-page-title set:html={title} />
+		{tagline && <p class="tagline" set:html={tagline} />}
+		<div class="actions">
+			<LinkButton
+				href={release.ok ? listHref : release.pageUrl}
+				variant="primary"
+				icon="download"
+				iconPlacement="start"
+				id="download-button"
+				data-assets={JSON.stringify(assets)}
+				data-version={release.version ?? ''}
+			>
+				<span id="download-label">Download{release.version ? ` v${release.version}` : ''}</span>
+			</LinkButton>
+			<LinkButton href={url('nina/')} variant="secondary">Use with N.I.N.A.</LinkButton>
+			<LinkButton href={REPO_URL} variant="minimal" icon="github" iconPlacement="start">GitHub</LinkButton>
+		</div>
+		<p class="download-meta" id="download-meta">
+			Free and open source, for Windows, macOS and Linux. <a href={listHref}>All downloads</a>
+		</p>
+	</div>
+	<div class="image">
+		<SkyImage />
+	</div>
+</div>
+
+<script>
+	type Os = 'windows' | 'macos' | 'linux';
+	type Arch = 'x64' | 'arm64';
+	interface DlAsset {
+		os: Os;
+		arch: Arch;
+		label: string;
+		href: string;
+		size: string;
+	}
+	interface UaData {
+		platform?: string;
+		getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string }>;
+	}
+
+	async function detect(): Promise<{ os?: Os; arch?: Arch }> {
+		const ua = navigator.userAgent;
+		const uad = (navigator as Navigator & { userAgentData?: UaData }).userAgentData;
+		const platform = uad?.platform || navigator.platform || '';
+		let os: Os | undefined;
+		if (/Android|iPhone|iPad|iPod/i.test(ua)) os = undefined; // no desktop binary fits
+		else if (/Win/i.test(platform) || /Windows/.test(ua)) os = 'windows';
+		else if (/Mac/i.test(platform) || /Macintosh|Mac OS X/.test(ua)) os = 'macos';
+		else if (/Linux|X11|CrOS/i.test(`${platform} ${ua}`)) os = 'linux';
+
+		let arch: Arch | undefined;
+		if (os === 'linux') {
+			try {
+				const hints = await uad?.getHighEntropyValues?.(['architecture']);
+				if (hints?.architecture === 'arm') arch = 'arm64';
+				else if (hints?.architecture === 'x86') arch = 'x64';
+			} catch {
+				// Not offered; fall through to the user agent string.
+			}
+			arch ??= /aarch64|arm64|armv8/i.test(`${ua} ${navigator.platform}`) ? 'arm64' : 'x64';
+		}
+		// One build each: Windows x86-64 (which Windows on Arm also runs) and macOS arm64.
+		if (os === 'windows') arch = 'x64';
+		if (os === 'macos') arch = 'arm64';
+		return { os, arch };
+	}
+
+	async function init() {
+		const button = document.getElementById('download-button') as HTMLAnchorElement | null;
+		const label = document.getElementById('download-label');
+		const meta = document.getElementById('download-meta');
+		if (!button || !label || !meta) return;
+		const assets: DlAsset[] = JSON.parse(button.dataset.assets || '[]');
+		const version = button.dataset.version;
+		const { os, arch } = await detect();
+		const asset = assets.find((a) => a.os === os && a.arch === arch);
+		if (!asset) return;
+
+		const osName = { windows: 'Windows', macos: 'macOS', linux: 'Linux' }[asset.os];
+		button.href = asset.href;
+		label.textContent = `Download for ${osName}`;
+		const list = meta.querySelector('a');
+		meta.textContent = `Free and open source. Version ${version} for ${asset.label}, ${asset.size}. `;
+		if (list) {
+			list.textContent = 'Other systems';
+			meta.append(list);
+		}
+	}
+
+	init();
+</script>
+
+<style>
+	.hero {
+		display: grid;
+		grid-template-columns: 100%;
+		align-items: center;
+		gap: 2rem;
+		padding-block: 1rem 2rem;
+	}
+	.copy {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		align-items: center;
+		text-align: center;
+	}
+	h1 {
+		font-size: clamp(var(--sl-text-4xl), calc(0.25rem + 6vw), var(--sl-text-6xl));
+		line-height: var(--sl-line-height-headings);
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--sl-color-white);
+	}
+	.tagline {
+		max-width: 38ch;
+		font-size: clamp(var(--sl-text-base), calc(0.0625rem + 2vw), var(--sl-text-xl));
+		color: var(--sl-color-gray-2);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem 1.25rem;
+		justify-content: center;
+		align-items: center;
+	}
+	.download-meta {
+		margin: 0;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+	}
+	.download-meta a {
+		color: var(--sl-color-text-accent);
+	}
+	.image {
+		width: 100%;
+		max-width: 40rem;
+		margin-inline: auto;
+	}
+
+	@media (min-width: 50rem) {
+		.hero {
+			grid-template-columns: 1fr 1.15fr;
+			gap: 3rem;
+			padding-block: clamp(2.5rem, calc(1rem + 8vmin), 6rem);
+		}
+		.copy {
+			align-items: flex-start;
+			text-align: start;
+		}
+		.actions {
+			justify-content: flex-start;
+		}
+	}
+</style>

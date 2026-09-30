@@ -1,0 +1,36 @@
+---
+title: Which catalogue do I need?
+description: Enter your focal length and camera to get your pixel scale, field of view, and the star catalogue arcsec needs, with the command to install it.
+---
+
+import CataloguePicker from '../../components/CataloguePicker.astro';
+
+arcsec needs a star catalogue that suits the size of your field. Enter your telescope
+and camera below to find which one, or enter the field of view directly if you know it.
+
+<CataloguePicker />
+
+## How it chooses
+
+This is the same rule `arcsec catalog recommend` uses, so the two always agree:
+
+- The **pixel scale** is `206.265 × pixel size (µm) × binning ÷ focal length (mm)`
+  arcseconds per pixel, which is how arcsec reads `XPIXSZ`, `XBINNING` and `FOCALLEN`
+  from an image header.
+- The **field of view** is the pixel scale times the sensor size, on each side.
+  Binning does not change it.
+- The catalogue is chosen for the **longer side** of the field, as
+  `arcsec catalog recommend --like image.fits` does when it reads your image.
+- Of the catalogues whose published field range includes that size, it suggests the
+  **smallest download**. A denser catalogue also works, and can help on crowded or
+  faint fields, but there is no need to download 1.2 GB when 102 MB will do.
+
+The photometric catalogues (the V-series) add Johnson-V magnitudes and colour, for
+photometry and colour calibration in software that reads ASTAP's databases. arcsec
+can solve with them too, but the picker recommends a solving catalogue for that.
+The blind index set is only needed to [solve with no position
+hint](../faq/#can-it-solve-with-no-position-at-all), and even then arcsec finishes the
+solve against a solving catalogue, so you need one of those as well.
+
+The [catalogue guide](../catalogues/) lists every catalogue, where they are installed and
+how to share them with ASTAP.

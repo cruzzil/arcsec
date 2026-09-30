@@ -1,0 +1,150 @@
+---
+title: Use with N.I.N.A.
+description: Set arcsec up as N.I.N.A.'s ASTAP plate solver, reuse ASTAP's star databases, and troubleshoot a failed solve.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+[N.I.N.A.](https://nighttime-imaging.eu/) runs ASTAP as a command-line program and
+reads the `.ini` file it writes. arcsec accepts the same command line and writes the
+same file, so N.I.N.A. can use it in ASTAP's place with no change on N.I.N.A.'s side.
+
+<Aside>
+N.I.N.A. is the only imaging program arcsec has been tested with. Other programs that
+drive ASTAP's command-line solver may work too; that is untested, and
+[reports are welcome](https://github.com/cruzzil/arcsec/issues).
+</Aside>
+
+## Setting up
+
+<Steps>
+
+1. **Install arcsec.** Download the Windows `.zip` from the
+   [latest release](https://github.com/cruzzil/arcsec/releases/latest), extract it and
+   put `arcsec.exe` in a permanent folder, for example `C:\Program Files\arcsec\`.
+   [Getting started](../getting-started/) has the details.
+
+2. **Install a star catalogue** for your field of view. N.I.N.A. does not tell the
+   solver where the catalogues are, so arcsec uses its own catalogue folder. Use
+   [Which catalogue do I need?](../which-catalogue/), or in PowerShell:
+
+   ```powershell
+   arcsec catalog recommend --fov 1.2     # your field height in degrees
+   arcsec catalog install d50             # what it recommended
+   ```
+
+   If ASTAP is already installed with its databases, you can
+   [use those instead](#reusing-astaps-star-databases) and skip the download.
+
+3. **Point N.I.N.A. at arcsec.** Under **Options > Plate Solving**, choose **ASTAP** as
+   the plate solver, and as the blind solver too if you like. Set **ASTAP location** to
+   the full path of `arcsec.exe`, for example:
+
+   ```
+   C:\Program Files\arcsec\arcsec.exe
+   ```
+
+   Type or paste the path into the field. N.I.N.A.'s file browser for this setting only
+   shows files named `astap.exe`, so it cannot select `arcsec.exe`. After
+   `cargo install`, the path is `C:\Users\<you>\.cargo\bin\arcsec.exe`.
+
+4. **Solve.** Plate solve from N.I.N.A. as usual. It reports arcsec's results as it
+   would ASTAP's.
+
+</Steps>
+
+## Reusing ASTAP's star databases
+
+arcsec reads ASTAP's database files directly, so one copy can serve both programs.
+Tell arcsec where they are by setting the `ARCSEC_CATALOG_DIR` environment variable to
+ASTAP's folder, which is `C:\Program Files\astap` for a default install:
+
+```powershell
+setx ARCSEC_CATALOG_DIR "C:\Program Files\astap"
+```
+
+A program reads its environment when it starts, so restart N.I.N.A. afterwards. Check
+that arcsec sees the databases with:
+
+```powershell
+arcsec catalog list
+```
+
+The solver never modifies these files. The catalogue manager does act on the folder,
+though: `arcsec catalog remove` there would delete ASTAP's files too. It lists what it
+will delete and asks first.
+
+## What N.I.N.A. passes
+
+N.I.N.A. builds the command line from its own settings, using ASTAP's options:
+
+| N.I.N.A. setting or value | Option | arcsec's reading |
+|---|---|---|
+| The image to solve | `-f` | FITS, XISF or ASDF, recognised from the contents |
+| Field of view, from focal length and pixel size | `-fov` | Image **height** in degrees, as ASTAP defines it |
+| Where the telescope is pointing | `-ra`, `-spd` | RA in hours; south pole distance (90 + Dec) in degrees |
+| Search radius | `-r` | Degrees around that position |
+| Downsample factor | `-z` | Binning before solving; `0` means automatic |
+| Maximum number of stars | `-s` | Stars used for matching |
+
+The field of view N.I.N.A. sends comes from the focal length and pixel size in its
+equipment settings, so if solves fail, check those first.
+
+When arcsec finishes, N.I.N.A. reads `<image>.ini` next to the image: `PLTSOLVD=T` with
+the solution on success, `PLTSOLVD=F` on failure. arcsec writes this file on failure
+too, as ASTAP does.
+
+## Troubleshooting
+
+### See exactly what N.I.N.A. ran
+
+With N.I.N.A.'s log level set to Debug, its log records the full command line it runs
+for each solve. The `.ini` file arcsec writes also records it, on the `CMDLINE=` line,
+whether the solve succeeded or not. Paste that command into PowerShell and add
+`--progress` to watch each step:
+
+```powershell
+& "C:\Program Files\arcsec\arcsec.exe" -f "C:\...\image.fits" -fov 1.2 -z 0 -r 30 --progress
+```
+
+The exit code tells you why a solve failed: run `$LASTEXITCODE` straight afterwards and
+look it up in the [exit code table](../reference/cli/#exit-codes). `2` means too few
+stars were detected, `32` that no star database was found.
+
+### "No output file found"
+
+N.I.N.A. found no `.ini` file after running the solver. arcsec writes one for every
+solve it attempts, failed or not, so this usually means it never got that far:
+
+- **The path is wrong.** Check **ASTAP location** points at `arcsec.exe` itself,
+  including the `.exe`, and that the file is there.
+- **The image could not be read** (exit code 16). Run the command from the log by hand
+  to see the error.
+- **It does not start at all.** Run `arcsec --version` from PowerShell to confirm the
+  program runs on this PC.
+
+### N.I.N.A. will not run it with automatic downsampling
+
+N.I.N.A. checks the version stamped into the ASTAP executable, and refuses to run one
+without a version with its default automatic downsampling. The release `.zip` always
+carries the version stamp. A copy built with `cargo install` only has it if the
+Windows SDK's resource compiler was available at build time. Use the release build, or
+set N.I.N.A.'s downsample factor to a fixed value.
+
+### "Star database not found" (exit code 32)
+
+arcsec found no star database in its catalogue folder. Run `arcsec catalog list` to
+see which folder it is using and what is installed there. If you set
+`ARCSEC_CATALOG_DIR`, restart N.I.N.A. so it picks up the change.
+
+### It fails on images that should solve
+
+- Check the focal length and pixel size in N.I.N.A.'s equipment settings. A wrong
+  field of view is the most common cause of a failed solve.
+- Check the catalogue covers your field: see [Which catalogue do I need?](../which-catalogue/).
+- Very crowded Milky Way fields and frames dominated by one bright object, such as a
+  large nebula or a bright star, are the hardest cases for arcsec.
+
+If a solve still fails, please
+[open an issue](https://github.com/cruzzil/arcsec/issues) with the command line, the
+`.ini` file and, if you can share it, the image.

@@ -1,0 +1,145 @@
+---
+title: Catalogue guide
+description: Which star catalogue suits which field, how to install and remove them, where they are stored on each platform, and how to share them with ASTAP.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import CatalogueTable from '../../../components/CatalogueTable.astro';
+
+arcsec cannot solve anything without a star catalogue. Getting one is a single
+command, and everything is installed into one folder that the solver already reads,
+so afterwards you can run `arcsec -f image.fits` with no `-d` and no `-D`.
+
+## Which catalogue do I need?
+
+It depends on your field of view. The [Which catalogue do I need?](../which-catalogue/) page works it
+out from your focal length and camera, or ask arcsec, giving either the field size in
+degrees or an image to read it from:
+
+```sh
+arcsec catalog recommend --fov 1.5                 # field size in degrees
+arcsec catalog recommend --like image.fits         # read FOCALLEN and XPIXSZ from the header
+arcsec catalog recommend --fov 1.5 --photometry    # include a photometric catalogue
+```
+
+It suggests the **smallest** download that covers your field. The full set:
+
+<CatalogueTable />
+
+The solving catalogues are ASTAP's star databases, built from Gaia DR3; the blind
+index sets are Astrometry.net's. `arcsec catalog list` prints the same table, and
+shows which are installed.
+
+Rules of thumb:
+
+- **Solving:** one D-series catalogue is enough for a telescope. Add `g05` if you also
+  shoot with a camera lens, and `w08` if you shoot all-sky. They are small.
+- **Photometry:** the V-series add Johnson-V magnitudes and colour, for photometry
+  and colour calibration. `v05` unless you need the depth of `v50`. arcsec can solve
+  with them too, but recommends a solving catalogue for that.
+- **Blind solving** (`-i`): only if you cannot supply an approximate position. With a
+  mount that reports where it is pointing, you do not need these at all. The index
+  only finds the rough position; the solve is then finished against a solving
+  catalogue, so you need one of those as well.
+
+## Installing and removing
+
+```sh
+arcsec catalog install d50                 # shows the size and asks first
+arcsec catalog install d50 v05 g05 --yes   # several at once, no prompt
+arcsec catalog list                        # every catalogue, and what is installed
+arcsec catalog verify                      # check for missing or truncated files
+arcsec catalog remove d80                  # free the space again
+arcsec catalog path                        # print the catalogue folder
+```
+
+`install` and `remove` both list what they will do and ask first; `--yes` (or `-y`)
+skips the question. `--keep-archive` keeps the downloaded `.zip` or `.deb` after
+unpacking.
+
+Installs are **resumable**: interrupt one and run the same command again, and the
+download continues from where it stopped, provided the server supports it. Files are
+written under a temporary name and only moved into place once complete, so a
+half-finished download never looks like an installed catalogue. Downloading and
+unpacking are built in; no other tools are needed.
+
+## Where they are stored
+
+| Platform | Default folder |
+|---|---|
+| Linux | `$XDG_DATA_HOME/arcsec/catalogs`, else `~/.local/share/arcsec/catalogs` |
+| macOS | `~/Library/Application Support/arcsec/catalogs` |
+| Windows | `%LOCALAPPDATA%\arcsec\catalogs` |
+
+If none of those can be resolved, `~/.arcsec/catalogs` is used. `arcsec catalog path`
+prints the folder in effect.
+
+To use another folder, for example on a larger disk, set the `ARCSEC_CATALOG_DIR`
+environment variable, or pass `--dir` to a single `catalog` command:
+
+```sh
+export ARCSEC_CATALOG_DIR=/mnt/data/star_databases              # Linux and macOS
+```
+
+```powershell
+setx ARCSEC_CATALOG_DIR "D:\star_databases"                      # Windows
+```
+
+The solver reads this folder automatically as long as a star database is installed
+there; otherwise it falls back to the current working directory, as ASTAP does. `-d`
+is only needed to point somewhere else for one run, and `-D` only to force a
+particular database. Otherwise arcsec picks the densest installed database whose field
+range covers the image.
+
+Astrometry.net index files install into the same folder, as `index-*.fits`. The
+solver only uses them when asked, so blind solving means passing that folder (or one
+index file) to `-i`:
+
+```sh
+arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+```
+
+## If you already have ASTAP
+
+Point arcsec at ASTAP's databases and skip the download:
+
+```sh
+export ARCSEC_CATALOG_DIR=~/star_database    # or wherever ASTAP keeps them
+arcsec catalog list                          # confirms what it found
+```
+
+On Windows, ASTAP's default folder is `C:\Program Files\astap`; the
+[N.I.N.A. guide](../nina/#reusing-astaps-star-databases) shows how to set the variable.
+
+arcsec reads ASTAP's files directly and the solver never modifies them, so the two
+programs can share a folder.
+
+<Aside type="caution">
+The catalogue manager does act on a shared folder: `arcsec catalog remove d80` deletes
+ASTAP's D80 files too, and `install` replaces files of the same name. Both list what
+they will do and ask first.
+</Aside>
+
+## File formats
+
+The ASTAP databases come in three layouts, which arcsec reads transparently. You do
+not need to care, but `catalog verify` checks each database's file count against its
+layout:
+
+| Layout | Sky grid | Used by |
+|---|---|---|
+| `.1476` | 1476 tiles in 36 rings of equal declination | D80, D50, D20, D05, V50 |
+| `.290` | 290 tiles in 18 rings of equal area | G05, V05 |
+| `.001` | one all-sky file | W08 |
+
+Which database uses which layout cannot be predicted from its name: `v05` is `.290`
+even though it covers the same fields as the `.1476` D-series. Both `catalog` and the
+solver look for whichever is present. The
+[format notes](https://github.com/cruzzil/arcsec/blob/main/docs/plate-solving.md#91b-the-three-astap-database-formats)
+have the details.
+
+## Building your own
+
+Not possible yet. Generating a catalogue from Gaia, or a pre-computed pattern index, is
+[designed](https://github.com/cruzzil/arcsec/blob/main/docs/offline-index.md) but not
+implemented. Until then, `arcsec catalog install` is the supported route.

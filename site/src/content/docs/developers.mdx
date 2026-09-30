@@ -1,0 +1,73 @@
+---
+title: For developers
+description: Building arcsec from source, verifying downloads, the arcsec-core library, and how to contribute.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import DownloadTable from '../../components/DownloadTable.astro';
+
+arcsec is written in Rust and is open source under the MIT licence. This page covers
+what you need beyond the [ready-made downloads](../getting-started/).
+
+## Install with cargo
+
+With [Rust](https://rustup.rs/) 1.96 or newer, this builds and installs arcsec on any
+platform Rust supports, including Intel Macs:
+
+```sh
+cargo install arcsec
+```
+
+The program lands in `~/.cargo/bin` (on Windows, `%USERPROFILE%\.cargo\bin`).
+
+Building needs a C compiler (`cc` on Linux and macOS, the MSVC build tools on
+Windows) for one dependency, [`ring`](https://crates.io/crates/ring), which provides
+the HTTPS that `arcsec catalog install` downloads over. Nothing else: FITS support is
+built in, so no system CFITSIO library is needed.
+
+<Aside type="caution" title="A cargo build and N.I.N.A.">
+N.I.N.A. checks the version stamped into the `.exe` before running it. A build made
+with `cargo install` only carries that stamp if the Windows SDK's resource compiler is
+installed; without it, N.I.N.A. refuses to run arcsec with automatic downsampling. The
+release `.zip` always has it.
+</Aside>
+
+## Build from source
+
+```sh
+git clone https://github.com/cruzzil/arcsec
+cd arcsec
+cargo build --release          # binary at target/release/arcsec
+```
+
+## Verify a download
+
+Each release archive has a SHA-256 checksum file, and `SHA256SUMS` lists them all:
+
+<DownloadTable checksums />
+
+- **Linux:** `sha256sum -c <file>.sha256`
+- **macOS:** `shasum -a 256 -c <file>.sha256`
+- **Windows:** run `Get-FileHash <file>` in PowerShell and compare the hash with the
+  `.sha256` file's contents.
+
+Each archive also carries a signed build attestation from the GitHub Actions run that
+built it, which the [GitHub CLI](https://cli.github.com/) checks:
+
+```sh
+gh attestation verify <file> -R cruzzil/arcsec
+```
+
+## The arcsec-core library
+
+The solving code is published separately as
+[`arcsec-core`](https://crates.io/crates/arcsec-core), for use from other Rust programs.
+Its API documentation is on [docs.rs](https://docs.rs/arcsec-core).
+
+## How it works, and contributing
+
+- [How plate solving works, and precisely what arcsec does](https://github.com/cruzzil/arcsec/blob/main/docs/plate-solving.md)
+- [The test image corpus and results](https://github.com/cruzzil/arcsec/blob/main/docs/test-images.md)
+- [Contributing: building, testing and releasing](https://github.com/cruzzil/arcsec/blob/main/CONTRIBUTING.md)
+- [Changelog](https://github.com/cruzzil/arcsec/blob/main/CHANGELOG.md)
+- [Source code on GitHub](https://github.com/cruzzil/arcsec)

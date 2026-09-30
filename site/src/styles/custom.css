@@ -1,0 +1,39 @@
+/* Starlight's default theme with a night-sky teal accent and slightly bluer greys. */
+
+/* Dark theme (Starlight's default). */
+:root {
+	--sl-color-accent-low: hsl(192, 62%, 15%);
+	--sl-color-accent: hsl(188, 72%, 44%);
+	--sl-color-accent-high: hsl(186, 78%, 82%);
+
+	--sl-color-white: hsl(0, 0%, 100%);
+	--sl-color-gray-1: hsl(215, 30%, 94%);
+	--sl-color-gray-2: hsl(215, 14%, 78%);
+	--sl-color-gray-3: hsl(215, 10%, 60%);
+	--sl-color-gray-4: hsl(215, 12%, 38%);
+	--sl-color-gray-5: hsl(217, 20%, 22%);
+	--sl-color-gray-6: hsl(218, 30%, 13%);
+	--sl-color-black: hsl(220, 38%, 8%);
+}
+
+/* Light theme. */
+:root[data-theme='light'] {
+	--sl-color-accent-low: hsl(188, 70%, 90%);
+	--sl-color-accent: hsl(191, 88%, 28%);
+	--sl-color-accent-high: hsl(194, 80%, 17%);
+
+	--sl-color-white: hsl(220, 38%, 10%);
+	--sl-color-gray-1: hsl(218, 30%, 16%);
+	--sl-color-gray-2: hsl(217, 20%, 26%);
+	--sl-color-gray-3: hsl(215, 12%, 42%);
+	--sl-color-gray-4: hsl(215, 10%, 62%);
+	--sl-color-gray-5: hsl(215, 14%, 80%);
+	--sl-color-gray-6: hsl(215, 30%, 94%);
+	--sl-color-gray-7: hsl(215, 40%, 97%);
+	--sl-color-black: hsl(0, 0%, 100%);
+}
+
+/* Tables of flags and codes read better without wrapping the first column. */
+.sl-markdown-content td:first-child code {
+	white-space: nowrap;
+}

@@ -1,0 +1,465 @@
+---
+// Interactive catalogue picker. The rule lives in src/lib/catalogues.ts, a copy of
+// `arcsec catalog recommend`; this component only gathers the inputs and shows the
+// answer. Without JavaScript the form is inert and the <noscript> text explains how
+// to get the same answer from the command line.
+---
+
+<div class="picker not-content" id="picker">
+	<form class="inputs" autocomplete="off" onsubmit="return false">
+		<fieldset class="mode">
+			<legend>Start from</legend>
+			<label><input type="radio" name="mode" value="optics" checked /> Telescope and camera</label>
+			<label><input type="radio" name="mode" value="fov" /> Field of view</label>
+		</fieldset>
+
+		<div class="fields" data-mode="optics">
+			<label>
+				<span>Focal length</span>
+				<span class="unit-input"><input name="focal" type="number" inputmode="decimal" min="1" step="any" value="800" required /><span class="unit">mm</span></span>
+				<small>Include any reducer or barlow.</small>
+			</label>
+			<label>
+				<span>Pixel size</span>
+				<span class="unit-input"><input name="pixel" type="number" inputmode="decimal" min="0.1" step="any" value="3.76" required /><span class="unit">µm</span></span>
+				<small>Unbinned, from the camera's data sheet.</small>
+			</label>
+			<label>
+				<span>Sensor width</span>
+				<span class="unit-input"><input name="width" type="number" inputmode="numeric" min="1" step="1" value="6248" required /><span class="unit">px</span></span>
+			</label>
+			<label>
+				<span>Sensor height</span>
+				<span class="unit-input"><input name="height" type="number" inputmode="numeric" min="1" step="1" value="4176" required /><span class="unit">px</span></span>
+			</label>
+			<label>
+				<span>Binning</span>
+				<select name="binning">
+					<option value="1" selected>1×1</option>
+					<option value="2">2×2</option>
+					<option value="3">3×3</option>
+					<option value="4">4×4</option>
+				</select>
+				<small>Changes the pixel scale, not the field.</small>
+			</label>
+		</div>
+
+		<div class="fields" data-mode="fov" hidden>
+			<label>
+				<span>Field of view, longer side</span>
+				<span class="unit-input"><input name="fov" type="number" inputmode="decimal" min="0.01" step="any" value="1.5" required /><span class="unit">°</span></span>
+				<small>What you would give <code>arcsec catalog recommend --fov</code>.</small>
+			</label>
+		</div>
+
+		<label class="check">
+			<input type="checkbox" name="photometry" />
+			<span>I also want a photometric catalogue, for colour calibration</span>
+		</label>
+	</form>
+
+	<div class="results" aria-live="polite">
+		<noscript>
+			<p>
+				The picker needs JavaScript. Without it, work out your field of view as below and run
+				<code>arcsec catalog recommend --fov &lt;degrees&gt;</code>, which gives the same answer.
+			</p>
+		</noscript>
+		<dl class="geometry" data-out="geometry" hidden>
+			<div>
+				<dt>Pixel scale</dt>
+				<dd data-out="scale"></dd>
+			</div>
+			<div>
+				<dt>Field of view</dt>
+				<dd data-out="field"></dd>
+			</div>
+		</dl>
+		<p class="binning-note" data-out="binning" hidden></p>
+
+		<div class="rec" data-out="rec" hidden>
+			<div class="row solving">
+				<p class="kind">Solving</p>
+				<div data-out="solving"></div>
+			</div>
+			<div class="row" data-out="photometry-row" hidden>
+				<p class="kind">Photometry</p>
+				<div data-out="photometry"></div>
+			</div>
+			<div class="row">
+				<p class="kind">Blind <span>(optional)</span></p>
+				<div data-out="blind"></div>
+			</div>
+		</div>
+
+		<div class="command" data-out="command-box" hidden>
+			<p class="kind">Install with</p>
+			<div class="cmd">
+				<code data-out="command"></code>
+				<button type="button" data-copy>Copy</button>
+			</div>
+			<p class="check-cli">
+				Same answer from the command line: <code data-out="recommend"></code>
+			</p>
+		</div>
+	</div>
+</div>
+
+<script>
+	import { CATALOGUES, fieldOfView, fovRange, human, pixelScale, recommend, type Catalogue } from '../lib/catalogues';
+
+	const root = document.getElementById('picker');
+	if (root) setup(root);
+
+	function setup(root: HTMLElement) {
+		const form = root.querySelector('form')!;
+		const out = (name: string) => root.querySelector<HTMLElement>(`[data-out="${name}"]`)!;
+		const num = (name: string) => {
+			const el = form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
+			const v = Number(el.value);
+			return Number.isFinite(v) && v > 0 ? v : NaN;
+		};
+		const fmtDeg = (d: number) =>
+			d < 1 ? `${d.toFixed(2)}° (${(d * 60).toFixed(1)}′)` : `${d.toFixed(2)}°`;
+
+		function describe(c: Catalogue | undefined, what: string, fov: number): string {
+			if (!c) {
+				if (what === 'solving') {
+					return fov < 0.15
+						? `<p class="none">No catalogue is built for a field this small. The densest, <code>d80</code>, is published for fields of 0.15° and wider. arcsec will still try the nearest installed database, with less chance of success.</p>`
+						: `<p class="none">No catalogue is built for a field this large. The widest, <code>w08</code>, is published for fields up to 80°. arcsec will still try the nearest installed database, with less chance of success.</p>`;
+				}
+				if (what === 'photometry') {
+					return `<p class="none">No photometric catalogue covers this field. <code>v05</code> and <code>v50</code> cover 0.2°–6°.</p>`;
+				}
+				return `<p class="none">No index set covers this field.</p>`;
+			}
+			return `<p><code class="id">${c.id}</code> <span class="size">${human(c.bytes)}</span> <span class="range">${fovRange(c)}</span></p><p class="desc">${c.desc}</p>`;
+		}
+
+		function alternatives(chosen: Catalogue | undefined, fov: number): string {
+			if (!chosen) return '';
+			const others = CATALOGUES.filter(
+				(c) => c.purpose === 'solving' && c !== chosen && fov >= c.fov[0] && fov <= c.fov[1],
+			);
+			if (!others.length) return '';
+			return `<p class="alt">Also covers this field, as a larger download: ${others
+				.map((c) => `<code>${c.id}</code> (${human(c.bytes)})`)
+				.join(', ')}. Denser catalogues can help with crowded or very faint fields; <code>d50</code> is the usual choice for a telescope.</p>`;
+		}
+
+		function update() {
+			const mode = (form.elements.namedItem('mode') as RadioNodeList).value;
+			for (const f of root.querySelectorAll<HTMLElement>('.fields')) f.hidden = f.dataset.mode !== mode;
+
+			let fovLong: number;
+			if (mode === 'optics') {
+				const focal = num('focal');
+				const pixel = num('pixel');
+				const w = num('width');
+				const h = num('height');
+				const bin = num('binning') || 1;
+				if ([focal, pixel, w, h].some(Number.isNaN)) return hide();
+				const scale = pixelScale(focal, pixel, bin);
+				const fov = fieldOfView(focal, pixel, w, h);
+				fovLong = Math.max(fov.width, fov.height);
+				out('scale').textContent = `${scale.toFixed(2)}″ per pixel${bin > 1 ? ` (binned ${bin}×${bin})` : ''}`;
+				out('field').textContent = `${fmtDeg(fov.width)} × ${fmtDeg(fov.height)}`;
+				out('geometry').hidden = false;
+				// main.rs choose_binning: finer than 1″/px is binned back to about 1″/px, up to 16×.
+				const auto = scale < 1 ? Math.min(16, Math.max(1, Math.round(1 / scale))) : 1;
+				const note = out('binning');
+				note.hidden = auto <= 1;
+				note.textContent =
+					auto > 1
+						? `At this scale arcsec bins the image ${auto}×${auto} before solving, unless told otherwise with -z. N.I.N.A. passes -z from its downsample setting.`
+						: '';
+			} else {
+				fovLong = num('fov');
+				out('geometry').hidden = true;
+				out('binning').hidden = true;
+				if (Number.isNaN(fovLong)) return hide();
+			}
+
+			// Choose from the value the command line would be given, so the two agree.
+			const fov = Number(fovLong.toFixed(3));
+			const photo = (form.elements.namedItem('photometry') as HTMLInputElement).checked;
+			const rec = recommend(fov, photo);
+
+			out('solving').innerHTML = describe(rec.solving, 'solving', fov) + alternatives(rec.solving, fov);
+			out('photometry-row').hidden = !photo;
+			out('photometry').innerHTML = photo ? describe(rec.photometry, 'photometry', fov) : '';
+			out('blind').innerHTML = rec.blind
+				? `${describe(rec.blind, 'blind', fov)}<p class="alt">Only needed to solve with no position hint, and used alongside a solving catalogue, not instead of one.</p>`
+				: describe(undefined, 'blind', fov);
+			out('rec').hidden = false;
+
+			out('command-box').hidden = !rec.install;
+			out('command').textContent = rec.install ?? '';
+			out('recommend').textContent = `arcsec catalog recommend --fov ${fov}${photo ? ' --photometry' : ''}`;
+		}
+
+		function hide() {
+			out('geometry').hidden = true;
+			out('rec').hidden = true;
+			out('command-box').hidden = true;
+		}
+
+		form.addEventListener('input', update);
+		form.addEventListener('change', update);
+		root.querySelector<HTMLButtonElement>('[data-copy]')?.addEventListener('click', async (e) => {
+			const btn = e.currentTarget as HTMLButtonElement;
+			try {
+				await navigator.clipboard.writeText(out('command').textContent ?? '');
+				btn.textContent = 'Copied';
+			} catch {
+				btn.textContent = 'Copy failed';
+			}
+			setTimeout(() => (btn.textContent = 'Copy'), 1500);
+		});
+		update();
+	}
+</script>
+
+<style>
+	.picker {
+		display: grid;
+		gap: 1.5rem;
+		margin-block: 1.5rem;
+		padding: 1.25rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 0.5rem;
+		background: var(--sl-color-gray-6);
+	}
+	@media (min-width: 60rem) {
+		.picker {
+			grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+			align-items: start;
+		}
+	}
+	fieldset {
+		border: 0;
+		padding: 0;
+		margin: 0 0 1rem;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1.25rem;
+	}
+	legend {
+		font-weight: 600;
+		color: var(--sl-color-white);
+		margin-bottom: 0.5rem;
+		padding: 0;
+	}
+	.mode label,
+	.check {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		cursor: pointer;
+	}
+	.fields {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+		gap: 1rem;
+	}
+	.fields[hidden] {
+		display: none;
+	}
+	.fields label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.fields label > span:first-child {
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+	.unit-input {
+		display: flex;
+		align-items: stretch;
+	}
+	input[type='number'],
+	select {
+		width: 100%;
+		min-width: 0;
+		font: inherit;
+		font-size: var(--sl-text-base);
+		color: var(--sl-color-white);
+		background: var(--sl-color-black);
+		border: 1px solid var(--sl-color-gray-4);
+		border-radius: 0.25rem;
+		padding: 0.4rem 0.55rem;
+	}
+	.unit-input input {
+		border-start-end-radius: 0;
+		border-end-end-radius: 0;
+	}
+	.unit {
+		display: flex;
+		align-items: center;
+		padding-inline: 0.55rem;
+		border: 1px solid var(--sl-color-gray-4);
+		border-inline-start: 0;
+		border-start-end-radius: 0.25rem;
+		border-end-end-radius: 0.25rem;
+		color: var(--sl-color-gray-3);
+		background: var(--sl-color-gray-6);
+	}
+	input:focus-visible,
+	select:focus-visible,
+	button:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 1px;
+	}
+	small {
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-xs);
+	}
+	.check {
+		margin-top: 1.25rem;
+		font-size: var(--sl-text-sm);
+		align-items: flex-start;
+	}
+	.check input {
+		margin-top: 0.3rem;
+	}
+	.results {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		min-width: 0;
+	}
+	.geometry {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+		gap: 0.75rem;
+		margin: 0;
+	}
+	.geometry[hidden],
+	[hidden] {
+		display: none !important;
+	}
+	.geometry div {
+		padding: 0.6rem 0.8rem;
+		border-radius: 0.35rem;
+		background: var(--sl-color-black);
+	}
+	dt {
+		font-size: var(--sl-text-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--sl-color-gray-3);
+	}
+	dd {
+		margin: 0.2rem 0 0;
+		font-size: var(--sl-text-lg);
+		font-weight: 600;
+		color: var(--sl-color-white);
+		font-variant-numeric: tabular-nums;
+	}
+	.binning-note {
+		margin: 0;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.rec {
+		display: flex;
+		flex-direction: column;
+		border-radius: 0.35rem;
+		background: var(--sl-color-black);
+	}
+	.row {
+		display: grid;
+		grid-template-columns: 7rem minmax(0, 1fr);
+		gap: 0.75rem;
+		padding: 0.75rem 0.9rem;
+	}
+	.row + .row {
+		border-top: 1px solid var(--sl-color-gray-5);
+	}
+	.kind {
+		margin: 0;
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+	.kind span {
+		display: block;
+		font-weight: 400;
+		font-size: var(--sl-text-xs);
+		color: var(--sl-color-gray-3);
+	}
+	.rec :global(p) {
+		margin: 0;
+	}
+	.rec :global(.id) {
+		font-size: var(--sl-text-lg);
+		font-weight: 700;
+		color: var(--sl-color-text-accent);
+	}
+	.rec :global(.size),
+	.rec :global(.range) {
+		margin-inline-start: 0.5rem;
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-sm);
+	}
+	.rec :global(.desc),
+	.rec :global(.alt),
+	.rec :global(.none) {
+		margin-top: 0.25rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.rec :global(.alt) {
+		color: var(--sl-color-gray-3);
+	}
+	@media (max-width: 30rem) {
+		.row {
+			grid-template-columns: 1fr;
+			gap: 0.35rem;
+		}
+	}
+	.command .kind {
+		margin-bottom: 0.4rem;
+	}
+	.cmd {
+		display: flex;
+		gap: 0.5rem;
+		align-items: stretch;
+	}
+	.cmd code {
+		flex: 1;
+		min-width: 0;
+		overflow-x: auto;
+		white-space: nowrap;
+		padding: 0.6rem 0.8rem;
+		border-radius: 0.35rem;
+		background: var(--sl-color-black);
+		color: var(--sl-color-white);
+		font-size: var(--sl-text-sm);
+	}
+	button {
+		font: inherit;
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+		padding: 0.4rem 0.9rem;
+		border: 0;
+		border-radius: 0.35rem;
+		cursor: pointer;
+		color: var(--sl-color-black);
+		background: var(--sl-color-accent);
+	}
+	button:hover {
+		background: var(--sl-color-accent-high);
+	}
+	.check-cli {
+		margin: 0.6rem 0 0;
+		font-size: var(--sl-text-xs);
+		color: var(--sl-color-gray-3);
+	}
+	.check-cli code {
+		overflow-wrap: anywhere;
+	}
+</style>

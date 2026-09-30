@@ -1,0 +1,192 @@
+---
+title: Command line
+description: Every arcsec option, ASTAP's single-dash spellings, exit codes, output files and the catalog subcommands.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+```sh
+arcsec -f <image> [options]
+arcsec catalog <command> [options]
+```
+
+arcsec mirrors the command line of ASTAP's `astap_cli`: the same options, the same
+report on stdout, the same output files and the same exit codes. `arcsec --help` lists
+everything below.
+
+## Solving options
+
+| Option | Meaning | Default |
+|---|---|---|
+| `-f <file>` | Image to solve: FITS, XISF or ASDF, recognised from the file's contents | required |
+| `-r <deg>` | Radius of the area to search around the start position, in degrees | `180` (whole sky) |
+| `--fov <deg>` | Field **height** in degrees; `0` or absent to take it from the header | from header |
+| `--ra <hours>` | Right ascension of the search centre, in **hours** | from header |
+| `--spd <deg>` | South pole distance of the search centre (90 + Dec), in degrees | from header |
+| `-s <n>` | Maximum number of stars to use | `500` |
+| `-t <tol>` | Quad matching tolerance | `0.007` |
+| `-m <arcsec>` | Minimum star size (HFD), in arcseconds | `1.5` |
+| `-z <factor>` | Downsample (bin) the image by this factor before solving; `0` or absent for automatic | automatic |
+| `-d <dir>` | Star database folder | the catalogue folder if it holds a database, else the current folder |
+| `-D <name>` | Star database to use: `d80`, `d50`, `d20`, `d05`, `v50`, `v05`, `g05`, `w08` | chosen by field size |
+| `-o <base>` | Base path for the output files | the image path without its extension |
+| `-i`, `--index <path>` | Astrometry.net index file, or a folder of `index-*.fits` files, for [blind solving](#blind-solving) | off |
+| `--threads <n>` | Maximum worker threads; `0` for one per core. `1` runs single-threaded | `0` |
+| `--method <m>` | Matching method: `quads`, or the experimental `tetra` (three-star triangles) | `quads` |
+| `--speed <mode>` | Search mode: `auto`, or `slow`, which reads twice the field at every search position for more overlap | `auto` |
+| `--sip [y\|n]` | Add third-order SIP distortion terms to the `.wcs` file (and the header with `--update`) when the field shows significant distortion | off |
+| `--check [y\|n]` | Even out a raw one-shot-colour (Bayer) image before solving; for unbinned raw colour frames only | off |
+| `--wcs` | Accepted for compatibility; the `.wcs` file is always written | |
+| `--update` | Write the solution into the input FITS file's header | off |
+| `--log` | Write the solver log to `<base>.log` | off |
+| `--progress` | Log every step to stderr | off |
+| `-h`, `--help` | Print help | |
+| `-V`, `--version` | Print the version | |
+
+### ASTAP spellings
+
+ASTAP writes its multi-letter options with a single dash, and arcsec accepts those
+spellings too, so an `astap_cli` command line works unchanged:
+
+`-fov`, `-ra`, `-spd`, `-check`, `-sip`, `-speed`, `-wcs`, `-log`, `-update`,
+`-progress`, `-analyse`, `-extract`, `-extract2`
+
+`-fov 1.2` and `--fov 1.2` mean the same. Options not in that list, such as
+`--threads`, `--method` and `--index`, are arcsec's own and take two dashes.
+
+### Star analysis and export
+
+These follow ASTAP's output exactly, so tools that call `astap_cli` for star
+measurements (focus and filter-offset utilities, for example) can use arcsec instead.
+
+| Option | What it does |
+|---|---|
+| `--analyse <snr>` | Measure without solving: prints `HFD_MEDIAN=` and `STARS=`, writes no `.ini` or `.wcs` and needs no catalogue. `0` means an SNR of 30 |
+| `--extract <snr>` | As `--analyse`, and writes every star to `<image>.csv` (`x,y,hfd,snr,flux,ra[0..360],dec[0..360]`; RA/Dec only if the header already holds a WCS). As in ASTAP the CSV goes next to the image whatever `-o` says |
+| `--extract2 <snr>` | Solve (with SIP), then write the same CSV with every star's RA and Dec, whether or not the solve succeeded |
+
+Where arcsec differs from ASTAP, deliberately: `--extract` alone prints the real median
+HFD (ASTAP prints 21.5), a bare `--check` turns the filter on (as ASTAP's help says it
+should), and SIP terms are added only when the distortion is statistically significant.
+
+### Position and scale from the header
+
+Without `--ra`/`--spd`, arcsec takes the start position from the image's `RA` and `DEC`
+keywords (in degrees), falling back to `CRVAL1`/`CRVAL2`. Without `--fov`, it works out
+the pixel scale from `FOCALLEN` (mm), `XPIXSZ` (µm) and `XBINNING`. If neither is
+available it assumes 1″ per pixel, which is rarely right, so give `--fov`. XISF files
+carry the same keywords; ASDF files are read from their metadata tree.
+
+### Automatic binning
+
+When the image is sampled finer than 1″ per pixel and `-z` is absent or `0`, arcsec
+bins it back to about 1″ per pixel before solving, up to 16×. The solution is always
+reported in the original image's pixels.
+
+### Blind solving
+
+With `-i`, arcsec first estimates the position from Astrometry.net index files, with
+no hint at all, and then refines it against a star database as usual, so a star
+database must be installed too. `-i` takes one index file or a folder; arcsec picks the
+index files whose scale suits the field.
+
+```sh
+arcsec catalog install anet-4100
+arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+```
+
+Blind solving works best on wider fields. The `anet-4100` set covers fields of about
+0.7° and wider; for narrower fields, the `anet-5200` set is an 8.8 GB download.
+
+## Output files
+
+On a successful solve arcsec writes, next to the image or at `-o <base>`:
+
+- **`<base>.wcs`**: the solution as a FITS header (`CRVAL`, `CRPIX`, `CD`, `CDELT` and
+  `CROTA`), as ASTAP and Astrometry.net write it.
+- **`<base>.ini`**: ASTAP's summary, which imaging software such as N.I.N.A. reads:
+
+  ```ini
+  PLTSOLVD=T
+  CRPIX1=1.4505000000000E3
+  CRPIX2=1.4505000000000E3
+  CRVAL1=51.399930729
+  CRVAL2=49.850092402
+  CDELT1=-3.4481840519016E-4
+  CDELT2=3.4484393775396E-4
+  CROTA1=-0.0092
+  CROTA2=-0.0092
+  CD1_1=-3.4481840477539E-4
+  CD1_2=1.6912616906569E-8
+  CD2_1=-5.5529976585669E-8
+  CD2_2=3.4484393328298E-4
+  CMDLINE=arcsec -f image.fits
+  NSTARS=500
+  NQUADS=217
+  RMS=0.9949
+  ```
+
+When a solve fails, `<base>.ini` is still written, holding only `PLTSOLVD=F` and the
+command line, as ASTAP does; software that waits for the `.ini` relies on it. It is
+not written when arcsec stops before trying to solve: an unreadable image (exit
+code 16) or a mistake on the command line.
+
+With **`--update`**, arcsec also writes the solution into the image's own FITS header,
+in place. This is FITS only; for XISF and ASDF input it prints a warning and writes the
+`.wcs` and `.ini` files as usual. With **`--log`**, it writes the step-by-step log that
+`--progress` prints to `<base>.log`.
+
+The report on stdout follows ASTAP's layout, ending with the solved centre:
+
+```
+Solution found: 3: 25  36.0 +49d 51  0
+Solved in 0.4 sec. Δ was 0.0".  Mount Δα=-0.2",  Δδ=0.3".  Used stars down to magnitude: 14.5
+```
+
+## Exit codes
+
+The same as ASTAP's:
+
+| Code | Meaning |
+|---|---|
+| `0` | Solved |
+| `1` | No solution. Also a command-line usage error, or an ASTAP option arcsec does not implement |
+| `2` | Not enough stars detected |
+| `16` | Image file error: missing, unreadable or not a recognised format |
+| `32` | Star database or index files not found |
+| `33` | Star database read error |
+
+<Aside>
+A usage error exits with 1, not the 2 most command-line parsers use, because 2 means
+"not enough stars" to software that reads ASTAP's exit codes.
+</Aside>
+
+## Catalogue commands
+
+`arcsec catalog` installs and manages star catalogues. See the
+[catalogue guide](../../catalogues/) for which to choose.
+
+| Command | What it does |
+|---|---|
+| `arcsec catalog list` | Show every catalogue and whether it is installed |
+| `arcsec catalog path` | Print the catalogue folder |
+| `arcsec catalog recommend --fov <deg>` | Suggest catalogues for a field size |
+| `arcsec catalog recommend --like <image>` | Suggest catalogues, reading the field size from an image header |
+| `arcsec catalog install <name>...` | Download and unpack catalogues, e.g. `d50 v05 g05` |
+| `arcsec catalog remove <name>...` | Delete installed catalogue files |
+| `arcsec catalog verify` | Check installed catalogues for missing or truncated files |
+
+Options:
+
+| Option | Applies to | Meaning |
+|---|---|---|
+| `--dir <dir>` | all | Catalogue folder. Default: `ARCSEC_CATALOG_DIR`, else the [per-platform folder](../../catalogues/#where-they-are-stored) |
+| `--photometry` | `recommend` | Also suggest a photometric catalogue |
+| `-y`, `--yes` | `install`, `remove` | Do not ask for confirmation |
+| `--keep-archive` | `install` | Keep the downloaded archive after unpacking |
+
+## Environment
+
+| Variable | Meaning |
+|---|---|
+| `ARCSEC_CATALOG_DIR` | The catalogue folder, for both `arcsec catalog` and the solver |

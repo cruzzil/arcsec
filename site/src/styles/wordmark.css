@@ -1,0 +1,15 @@
+/* The "wordmark" logo option (see LOGO in astro.config.mjs): no image, just the name,
+   set heavier and followed by the arcsecond sign in the accent colour. */
+.site-title {
+	font-weight: 800;
+	letter-spacing: -0.03em;
+	color: var(--sl-color-white);
+}
+.site-title span::after {
+	content: '″';
+	margin-inline-start: 0.06em;
+	font-size: 1.15em;
+	line-height: 0;
+	font-weight: 800;
+	color: var(--sl-color-text-accent);
+}
