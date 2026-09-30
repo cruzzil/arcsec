@@ -194,6 +194,21 @@ pub fn read_xisf_ra_dec(path: &Path) -> Option<(f64, f64)> {
     )
 }
 
+/// A TAN WCS from the file's FITS keywords, if it carries one.
+pub fn read_xisf_header_wcs(path: &Path) -> Option<arcsec_core::wcs::TanWcs> {
+    let (file, idx) = open_primary(path).ok()?;
+    let images = file.images();
+    let img = &images[idx];
+    image_io::tan_wcs_from(|name| keyword(img, name))
+}
+
+/// Colour channels of the primary image.
+pub fn read_xisf_channels(path: &Path) -> usize {
+    open_primary(path).map_or(1, |(file, idx)| {
+        file.images()[idx].channels().max(1) as usize
+    })
+}
+
 /// Plate scale in arcsec/pixel from the file's FITS keywords.
 pub fn read_xisf_pixel_scale(path: &Path) -> Option<f64> {
     let (file, idx) = open_primary(path).ok()?;

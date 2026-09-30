@@ -70,10 +70,12 @@ jobs:
           cargo llvm-cov run --no-report -- --sip -f tiny.fits || true
           cargo llvm-cov run --no-report -- --analyse 10 -f tiny.fits || true
           cargo llvm-cov run --no-report -- --speed slow -f tiny.fits || true
+          cargo llvm-cov run --no-report -- --extract 10 -f tiny.fits || true
+          cargo llvm-cov run --no-report -- --extract2 10 --check y -f tiny.fits -d /nonexistent/catalogs -D d50 || true
           cargo llvm-cov run --no-report -- -f tiny.fits --ra 5.5 --spd 120 --fov 1.5 || true
           cargo llvm-cov run --no-report -- || true
 
-          rm -f tiny.fits not-an-image.dat
+          rm -f tiny.fits tiny.csv tiny.ini not-an-image.dat
           cargo llvm-cov report --lcov --output-path lcov.info
 
       # Dependabot-triggered runs do not receive repository secrets - GitHub keeps
