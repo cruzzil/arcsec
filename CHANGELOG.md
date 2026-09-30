@@ -11,6 +11,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-01
+
 ### Added
 
 Every ASTAP command-line option is now implemented; none is refused any more. Output
@@ -41,10 +43,13 @@ follows `astap_cli`'s, checked against it.
   controls, and `scripts/benchmark.py --corpus` with per-tier, per-source and per-FOV
   breakdowns and SIP/TPV/SIN-aware truth. The original 103 images remain the `v1`
   subset. See `docs/test-images.md`.
+- A project website, [cruzzil.github.io/arcsec](https://cruzzil.github.io/arcsec/):
+  downloads, setting up N.I.N.A., a "which catalogue do I need?" picker, the catalogue
+  guide, the command-line reference and an FAQ. It is now the crates' homepage.
 
 ### Changed
 
-- `arcsec-core`: `SolveParams` has a new `speed` field and `WcsSolution` new
+- **Breaking for `arcsec-core` users:** `SolveParams` has a new `speed` field and `WcsSolution` new
   `matched_stars` and `sip` fields, so code that builds them with struct literals needs
   to set them (`SearchSpeed::Auto`, `Vec::new()`, `None`).
 - `--sip`, `--check` and `--speed` take ASTAP's optional values (`-sip n`, `-check y`,
@@ -164,7 +169,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cruzzil/arcsec/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/cruzzil/arcsec/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cruzzil/arcsec/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cruzzil/arcsec/releases/tag/v0.1.0
