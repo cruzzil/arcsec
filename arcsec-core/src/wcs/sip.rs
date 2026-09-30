@@ -298,10 +298,10 @@ pub fn fit_sip(wcs: &WcsSolution, width: usize, height: usize) -> Option<Sip> {
 ///
 /// A cubic is pinned down only where it has stars; beyond them it extrapolates,
 /// and a fit to stars covering half the frame can move the empty half's corners by
-/// tens of pixels while fitting its own stars perfectly. ASTAP needs no such test
-/// because its catalogue read always covers the frame; arcsec's verified pairs can
-/// fall short of it (a field that straddles a catalogue tile boundary is matched
-/// only on one side), and a linear solution is better than a wrong cubic.
+/// tens of pixels while fitting its own stars perfectly. The verified pairs can
+/// fall short of the frame where the image has no stars to match (a masked or
+/// empty region, or a sparse field), and a linear solution is better than a wrong
+/// cubic.
 fn covers_the_frame(stars: &[crate::types::MatchedStar], width: usize, height: usize) -> bool {
     let mut cells = [0usize; COVERAGE_GRID * COVERAGE_GRID];
     let cell = |v: f64, size: usize| {

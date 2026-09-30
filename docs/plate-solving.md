@@ -815,10 +815,11 @@ declination ranges to better than 0.001°, and `dec_boundaries_are_equal_area` a
 One consequence matters for correctness: the 1476 reader finds its areas by sampling
 the field's **four corners**, which is only valid when the field fits inside one
 declination ring — hence its hard cap at 5.14°. A 20° field spans many rings and many
-RA cells, so the 290 path enumerates every overlapping area instead, and shares
-`max_stars` across them before cutting by magnitude. Filling the budget area by area
-would take every star from the southern edge of a 60° field and none from the north,
-because areas are visited in declination order.
+RA cells, so the 290 path enumerates every overlapping area instead. Both then read
+their areas together, one magnitude step at a time, and keep the field's brightest
+`max_stars` stars (§11.11). Filling the budget area by area would take every star from
+the southern edge of a 60° field and none from the north, because areas are visited in
+declination order.
 
 `.001` is a different thing again: a `u32` star count followed by
 `{f32 magnitude × 10, f32 RA radians, f32 Dec radians}` triples, brightest first, no
@@ -1422,22 +1423,45 @@ blind stage still runs at most `BLIND_MAX_INDEXES = 2` index files concurrently.
 
 ---
 
-### 11.11 The 1476 catalogue read starves every tile but the first
+### 11.11 The 1476 catalogue read starves every tile but the first — FIXED 2026-10-01
 
-`read_catalog_stars_1476` reads the (up to four) database tiles a field overlaps one after
-another, each up to the whole star budget, and stops once the budget is full. The first
-tile usually fills it, so a field that straddles a tile boundary gets catalogue stars on
-one side only. ASTAP shares the budget between the tiles by the fraction of the field
-each covers (`frac1..frac4` from `find_areas`); `find_areas_1476` computes those
-fractions too, and the reader ignores them.
+`read_catalog_stars_1476` read the (up to four) database tiles a field overlaps one after
+another, each up to the whole star budget, and stopped once the budget was full. The first
+tile usually filled it, so a field that straddles a tile boundary got catalogue stars on
+one side only. The `.290` reader had the opposite fault: it gave every tile a fixed share,
+`(max_stars / n_tiles).max(16) * 2`, so a tile covering most of a G05 field was
+under-sampled and the tiles clipping its edges filled the budget with fainter stars.
 
-It rarely stops a solve, since half a field of stars is plenty to match, but the fit then
-rests on half the frame and extrapolates to the other. Found while testing `--sip`: in 26
-of the 90 corpus solves the verified stars leave at least one cell of a 3×3 grid over the
-frame empty (`ps1_big_c`: the top two fifths; `decp80`, `type_ngc7000`: the right half
-or more). `fit_sip` refuses to fit a cubic to such a set for that reason. The fix is to
-read each tile up to `max_stars × frac`, as ASTAP does, then merge by magnitude; it
-changes the default solve, so it needs its own benchmark run.
+It rarely stopped a solve outright, since half a field of stars is plenty to match, but
+the fit then rested on half the frame and extrapolated to the other. Found while testing
+`--sip`: in 26 of the 90 v1 solves the verified stars left at least one cell of a 3×3
+grid over the frame empty (`decp80`, `type_ngc7000`: the right half or more). `fit_sip`
+refuses to fit a cubic to such a set for that reason.
+
+**Fix.** Both layouts now go through one reader, `read_brightest`, which returns the
+brightest `max_stars` stars inside the field window whatever the tile layout. Every tile
+the field overlaps is memory-mapped, and since each tile is stored brightest first in
+groups of one magnitude step (0.1 mag), the tiles are read *in step*: the brightest unread
+group of every tile, then the next, until the window holds `max_stars` stars; the union
+is then sorted by magnitude and cut. Each tile is read only as deep as the field's own
+magnitude limit, so it costs no more than the single-tile read did — a full-spiral
+no-solve run got about 10% faster, because stopping at the field's limit reads fewer
+records than filling the budget from one tile. A field inside one tile gets exactly the
+stars it got before.
+
+ASTAP instead shares the budget in proportion to each tile's share of the field
+(`frac1..frac4` from `find_areas`). That gives the field's brightest stars only where the
+sky is uniformly dense; reading by magnitude gives them everywhere, including across the
+steep density gradients of the galactic plane. `find_areas_1476` still computes the
+fractions; nothing uses them now.
+
+After the fix 7 of the 92 v1 solves leave a grid cell empty, against 26 of 90 before. The
+remaining seven are not catalogue-read gaps: in `ps1_big_c`, for example, the whole
+window holds 297 catalogue stars, fewer than the budget, so every one is read and the
+empty cells are empty in the image. On the expanded corpus the fix is worth +29 correct
+with the true centre as hint and +30 with the hint 0.3 fields off, with fewer false
+positives in both (5 → 4 and 9 → 4); [test-images.md §7](test-images.md#7-results--expanded-corpus-635-entries)
+has the breakdown, and §7.7 the images that changed.
 
 ## 12. Improvement roadmap
 
@@ -1511,8 +1535,8 @@ verified stars (typically 100–300). One round of 3σ clipping precedes the fin
 Unlike ASTAP, the fit is kept only if it is warranted:
 
 * the matched stars must reach every cell of a 3×3 grid over the frame, since a cubic
-  extrapolates wildly beyond its stars (§11.11 leaves a third of corpus solves short of
-  this);
+  extrapolates wildly beyond its stars (before the §11.11 fix a third of the v1 solves
+  fell short of this; now 7 of 92 do);
 * the 14 extra terms must pass an F-test against a linear fit (F ≥ 4);
 * no corner may move by more than 5% of the half-diagonal.
 
@@ -1645,7 +1669,7 @@ remaining win may be small compared with §12.7.
 The accuracy and robustness claims above only mean something against a fixed corpus. See
 **[test-images.md](test-images.md)** for the benchmark set: where the FITS images with
 trustworthy ground truth come from, what the corpus spans (field size, star density, image
-quality), the metrics and pass criteria, and the measured results — currently 90 of 103
+quality), the metrics and pass criteria, and the measured results — currently 92 of 103
 correct with 0 false positives, against ASTAP's 47.
 
 ---
