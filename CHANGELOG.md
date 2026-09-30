@@ -50,6 +50,15 @@ follows `astap_cli`'s, checked against it.
 - `--sip`, `--check` and `--speed` take ASTAP's optional values (`-sip n`, `-check y`,
   `-speed slow`); anything else is a usage error.
 
+### Fixed
+
+- ASTAP compatibility: the `Start position:` and `Solution found:` lines on stdout now
+  match `astap_cli` byte for byte. Every field is two digits wide and the start position
+  has ASTAP's comma: `Start position: 04: 20  00.0, +35d 00  00` where arcsec printed
+  `4: 20  0.0 +35d 00  0`. N.I.N.A. reads only the `.ini` file, so it never saw the
+  difference, but a script that parses stdout could. One deliberate difference remains:
+  an RA that rounds up to 24h prints as `00:` where ASTAP prints `24:`.
+
 ## [0.1.2] - 2026-09-28
 
 ### Fixed
