@@ -11,6 +11,39 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+Every ASTAP command-line option is now implemented; none is refused any more. Output
+follows `astap_cli`'s, checked against it.
+
+- `--analyse <snr_min>`: measure without solving. Prints `HFD_MEDIAN=` and `STARS=`,
+  writes no `.ini` or `.wcs`, needs no catalogue. On Windows the exit code also carries
+  the result, `round(HFD × 100) × 1 000 000 + stars`, as ASTAP's does.
+- `--extract <snr_min>`: as `--analyse`, and writes every star to `<image>.csv`
+  (`x,y,hfd,snr,flux,ra[0..360],dec[0..360]`; RA/Dec when the header already holds a WCS).
+  As in ASTAP the CSV goes next to the image whatever `-o` says.
+- `--extract2 <snr_min>`: solve, then write the same CSV with every star's RA and Dec,
+  whether or not the solve succeeded.
+- `--sip`: third-order SIP distortion terms (`A_p_q`, `B_p_q`, `AP_p_q`, `BP_p_q`,
+  `CTYPE RA---TAN-SIP`) in the `.wcs` file and with `--update`, in ASTAP's layout. Unlike
+  ASTAP they are added only when the distortion is statistically significant and the
+  matched stars cover the frame, since on an undistorted field a cubic only adds noise
+  at the corners; `--sip n` turns it off, as in ASTAP. `--extract2` implies it.
+- `--speed slow`: read a catalogue window twice the field at every search position.
+- `--check y` (or a bare `--check`): even out the Bayer pattern of a raw one-shot-colour
+  frame before solving.
+- Library: `detection::analyse_image`, `wcs::sip` (`fit_sip`, `Sip`, `TanWcs`),
+  `ImageBuffer::check_pattern_filter`, `pipeline::SearchSpeed`, and the verified star
+  pairs of a solve in `WcsSolution::matched_stars`.
+
+### Changed
+
+- `arcsec-core`: `SolveParams` has a new `speed` field and `WcsSolution` new
+  `matched_stars` and `sip` fields, so code that builds them with struct literals needs
+  to set them (`SearchSpeed::Auto`, `Vec::new()`, `None`).
+- `--sip`, `--check` and `--speed` take ASTAP's optional values (`-sip n`, `-check y`,
+  `-speed slow`); anything else is a usage error.
+
 ## [0.1.2] - 2026-09-28
 
 ### Fixed

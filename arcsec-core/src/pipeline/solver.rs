@@ -3,8 +3,8 @@
 use core::f64::consts::PI;
 use std::path::PathBuf;
 
-use crate::catalog::CatalogStar;
 use crate::catalog::read_catalog_stars;
+use crate::catalog::{CatalogLayout, CatalogStar};
 use crate::detection::get_background;
 use crate::detection::stars::find_stars_with_background;
 use crate::error::{ArcsecError, Result};
@@ -15,7 +15,7 @@ use crate::quads::{
     extract_star_pairs, extract_triangle_pairs, filter_by_scale, filter_triangles_by_scale,
     find_matches_sorted, find_triangle_matches, vote_filter,
 };
-use crate::types::{PairedPositions, PlateConstants, Star, StarList, WcsSolution};
+use crate::types::{MatchedStar, PairedPositions, PlateConstants, Star, StarList, WcsSolution};
 use crate::wcs::output::derive_wcs;
 
 use super::spiral::SpiralSearch;
@@ -28,6 +28,20 @@ pub enum SolveMethod {
     Quads,
     /// TETRA 2-ratio triangle matching with bijective filter.
     Tetra,
+}
+
+/// How much sky the spiral search reads around each position (ASTAP's `-speed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchSpeed {
+    /// Size the catalogue window by the image's star count: twice the field for an
+    /// image with fewer than 35 stars, falling to the field itself above 140.
+    #[default]
+    Auto,
+    /// Always read a window twice the field, so neighbouring spiral positions
+    /// overlap and a field that straddles two of them is still seen whole. Four
+    /// times the catalogue stars per position, so slower; it helps images with
+    /// many stars that the auto window only just misses.
+    Slow,
 }
 
 /// Parameters for [`solve_image`].
@@ -56,6 +70,8 @@ pub struct SolveParams {
     pub binning: usize,
     /// Pattern-matching algorithm for the catalog spiral.
     pub method: SolveMethod,
+    /// Catalogue window per spiral position.
+    pub speed: SearchSpeed,
     /// Worker threads for the spiral search. 0 = one per available core.
     ///
     /// Spiral positions are independent, so they are evaluated a batch at a time
@@ -149,9 +165,24 @@ const VERIFY_RADII: [f64; 3] = [6.0, 3.0, 2.0];
 /// a 1.56-degree rotation error, which is 154" at the field corners.
 const MIN_VERIFY_SPREAD: f64 = 0.20;
 
-/// One verification pass: the re-fitted plate, the number of matched stars, the
-/// per-star RMS in arcsec, and the spatial spread of the matches.
-type VerifyPass = (PlateConstants, usize, f64, f64);
+/// A verified plate: the re-fitted plate constants, the per-star RMS in arcsec,
+/// and the star pairs the fit was made from.
+struct Verified {
+    plate: PlateConstants,
+    rms: f64,
+    /// Detected star positions, pixels of the solved (binned) image, 0-based.
+    img_pos: Vec<(f64, f64)>,
+    /// The catalogue star each was paired with, in standard coordinates (arcsec)
+    /// about the plane the plate maps into.
+    cat_pos: Vec<(f64, f64)>,
+}
+
+impl Verified {
+    /// Number of individually matched stars.
+    fn n(&self) -> usize {
+        self.img_pos.len()
+    }
+}
 
 /// Project the catalogue onto the image with a candidate plate solution, match
 /// individual stars, and re-fit on those matches.
@@ -162,7 +193,7 @@ type VerifyPass = (PlateConstants, usize, f64, f64);
 /// into pixel space, pair each with the nearest detected star, re-fit on the pairs,
 /// and repeat with a shrinking radius.
 ///
-/// Returns `(refined_plate, n_matched_stars, rms_arcsec)`, or `None` if the plate is
+/// Returns the refined plate with its matched pairs, or `None` if the plate is
 /// degenerate, too few stars agree, or the matches are too clustered.
 fn verify_and_refit(
     img_stars: &StarList,
@@ -170,7 +201,7 @@ fn verify_and_refit(
     plate: &PlateConstants,
     img_w: usize,
     img_h: usize,
-) -> Option<(PlateConstants, usize, f64)> {
+) -> Option<Verified> {
     if img_stars.is_empty() || cat_stars.is_empty() {
         return None;
     }
@@ -198,7 +229,8 @@ fn verify_and_refit(
     }
 
     let mut current = plate.clone();
-    let mut best: Option<VerifyPass> = None;
+    // The last pass that fitted, with the spread of its matches.
+    let mut best: Option<(Verified, f64)> = None;
 
     for &radius in &VERIFY_RADII {
         let det = current.a * current.e - current.b * current.d;
@@ -289,12 +321,20 @@ fn verify_and_refit(
             rms
         );
 
-        best = Some((refined.clone(), img_pos.len(), rms, spread));
-        current = refined;
+        current = refined.clone();
+        best = Some((
+            Verified {
+                plate: refined,
+                rms,
+                img_pos,
+                cat_pos,
+            },
+            spread,
+        ));
     }
 
-    best.filter(|&(_, n, _, spread)| n >= MIN_VERIFIED_STARS && spread >= MIN_VERIFY_SPREAD)
-        .map(|(p, n, r, _)| (p, n, r))
+    best.filter(|(v, spread)| v.n() >= MIN_VERIFIED_STARS && *spread >= MIN_VERIFY_SPREAD)
+        .map(|(v, _)| v)
 }
 
 /// Everything a spiral position needs that does not change between positions.
@@ -317,9 +357,7 @@ struct PositionOutcome {
     ra_db: f64,
     dec_db: f64,
     sep_deg: f64,
-    plate: PlateConstants,
-    n_verified: usize,
-    rms: f64,
+    verified: Verified,
     n_matched: usize,
     n_raw: usize,
     mag_limit: f64,
@@ -472,7 +510,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         return failed;
     };
 
-    let Some((plate, n_verified, rms)) = verify_and_refit(
+    let Some(verified) = verify_and_refit(
         ctx.stars,
         &cat_star_list,
         &plate,
@@ -482,10 +520,13 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         log::info!("Verification failed at this position; continuing search.");
         return failed;
     };
-    log::info!("Verified {n_verified} stars against the catalogue, residual {rms:.2}\"");
+    log::info!(
+        "Verified {} stars against the catalogue, residual {:.2}\"",
+        verified.n(),
+        verified.rms
+    );
 
-    let (plate, ra_db, dec_db, n_verified, rms) =
-        recentre(ctx, &cat_raw, plate, ra_db, dec_db, n_verified, rms);
+    let (verified, ra_db, dec_db) = recentre(ctx, &cat_raw, verified, ra_db, dec_db);
 
     PositionTry {
         sep_deg: Some(sep_deg),
@@ -494,9 +535,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             ra_db,
             dec_db,
             sep_deg,
-            plate,
-            n_verified,
-            rms,
+            verified,
             n_matched,
             n_raw,
             mag_limit,
@@ -523,19 +562,18 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
 fn recentre(
     ctx: &SpiralCtx<'_>,
     cat_raw: &[CatalogStar],
-    mut plate: PlateConstants,
+    mut verified: Verified,
     mut ra_db: f64,
     mut dec_db: f64,
-    mut n_verified: usize,
-    mut rms: f64,
-) -> (PlateConstants, f64, f64, usize, f64) {
+) -> (Verified, f64, f64) {
     let (w, h) = (ctx.img.width as f64, ctx.img.height as f64);
     let (cx, cy) = ((w - 1.0) * 0.5, (h - 1.0) * 0.5);
     let apply =
         |p: &PlateConstants, x: f64, y: f64| (p.a * x + p.b * y + p.c, p.d * x + p.e * y + p.f);
 
     for _ in 0..2 {
-        let (xs, ys) = apply(&plate, cx, cy);
+        let plate = &verified.plate;
+        let (xs, ys) = apply(plate, cx, cy);
         // Already centred to well under a milliarcsecond: nothing to gain.
         if xs.hypot(ys) < 1e-3 {
             break;
@@ -587,16 +625,19 @@ fn recentre(
             break;
         };
         let cat = StarList(cat);
-        let Some((p, n, r)) =
-            verify_and_refit(ctx.stars, &cat, &guess, ctx.img.width, ctx.img.height)
+        let Some(v) = verify_and_refit(ctx.stars, &cat, &guess, ctx.img.width, ctx.img.height)
         else {
             log::info!("Re-centring on the image centre did not verify; keeping the fit.");
             break;
         };
-        log::info!("Re-centred on the image centre: verified {n} stars, residual {r:.2}\"");
-        (plate, ra_db, dec_db, n_verified, rms) = (p, ra0, dec0, n, r);
+        log::info!(
+            "Re-centred on the image centre: verified {} stars, residual {:.2}\"",
+            v.n(),
+            v.rms
+        );
+        (verified, ra_db, dec_db) = (v, ra0, dec0);
     }
-    (plate, ra_db, dec_db, n_verified, rms)
+    (verified, ra_db, dec_db)
 }
 
 /// Solve the WCS for an image against an ASTAP star database.
@@ -703,12 +744,21 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
 
     let min_quads: usize = 3 + nrstars_image / 140;
 
-    let oversize: f64 = if nrstars_image < 35 {
-        2.0
-    } else if nrstars_image > 140 {
-        1.0
-    } else {
-        2.0 * (35.0 / nrstars_image as f64).sqrt()
+    let oversize: f64 = match params.speed {
+        SearchSpeed::Auto if nrstars_image < 35 => 2.0,
+        SearchSpeed::Auto if nrstars_image > 140 => 1.0,
+        SearchSpeed::Auto => 2.0 * (35.0 / nrstars_image as f64).sqrt(),
+        // As ASTAP, never more than one database tile: a larger window could reach
+        // past the neighbouring tile, which the tile lookup does not cover.
+        SearchSpeed::Slow => {
+            let max_fov_deg = match crate::catalog::detect_layout(&params.db_path, &params.db_name)
+            {
+                CatalogLayout::Areas1476 => 5.142_857_143_f64,
+                CatalogLayout::Areas290 => 9.53,
+                CatalogLayout::AllSky001 => 180.0,
+            };
+            2.0_f64.min(max_fov_deg.to_radians() / params.fov).max(1.0)
+        }
     };
 
     // Use the full catalog depth regardless of how many image stars we trimmed.
@@ -819,7 +869,25 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
             params.quad_tolerance,
         );
 
-        let mut wcs = derive_wcs(o.ra_db, o.dec_db, &o.plate, img.width, img.height);
+        let v = o.verified;
+        let mut wcs = derive_wcs(o.ra_db, o.dec_db, &v.plate, img.width, img.height);
+        // The verified pairs, on the original image's pixel grid: a binned pixel
+        // centre at 0-based `x` is at `(x + 0.5) * b + 0.5` in unbinned FITS pixels.
+        let b = params.binning.max(1) as f64;
+        wcs.matched_stars = v
+            .img_pos
+            .iter()
+            .zip(&v.cat_pos)
+            .map(|(&(x, y), &(sx, sy))| {
+                let (ra, dec) = standard_equatorial(o.ra_db, o.dec_db, sx, sy, 1.0);
+                MatchedStar {
+                    x: (x + 0.5) * b + 0.5,
+                    y: (y + 0.5) * b + 0.5,
+                    ra,
+                    dec,
+                }
+            })
+            .collect();
         if params.binning > 1 {
             let b = params.binning as f64;
             wcs.crpix1 = (wcs.crpix1 - 0.5) * b + 0.5;
@@ -831,10 +899,10 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
             wcs.cdelt1 /= b;
             wcs.cdelt2 /= b;
         }
-        wcs.residual_rms = o.rms;
-        wcs.stars_matched = o.n_verified;
+        wcs.residual_rms = v.rms;
+        wcs.stars_matched = v.n();
         wcs.raw_matches = o.n_raw;
-        wcs.plate = o.plate;
+        wcs.plate = v.plate;
         wcs.mag_limit = o.mag_limit;
         wcs.search_dist_deg = o.sep_deg;
         wcs.step_distances = step_distances;
@@ -1013,6 +1081,7 @@ mod tests {
             binning: 1,
             method: SolveMethod::Quads,
             threads: 1,
+            speed: SearchSpeed::Auto,
         };
         assert!(matches!(
             solve_image(&img, &params),
@@ -1143,12 +1212,17 @@ mod tests {
         rough.c += 2.0 * truth.a;
         rough.f += 2.0 * truth.e;
         rough.b += 0.01;
-        let (refined, n, rms) =
-            verify_and_refit(&StarList(img_stars), &StarList(cat_stars), &rough, 400, 300)
-                .expect("a correct plate must verify");
-        assert_eq!(n, 60);
-        assert!(rms < 1e-6, "rms {rms}");
-        assert!(plate_close(&refined, &truth, 1e-6), "{refined:?}");
+        let v = verify_and_refit(&StarList(img_stars), &StarList(cat_stars), &rough, 400, 300)
+            .expect("a correct plate must verify");
+        assert_eq!(v.n(), 60);
+        assert_eq!(v.cat_pos.len(), 60);
+        assert!(v.rms < 1e-6, "rms {}", v.rms);
+        assert!(plate_close(&v.plate, &truth, 1e-6), "{:?}", v.plate);
+        // Each pair is a star and its own catalogue entry.
+        for (&(x, y), &(cx, cy)) in v.img_pos.iter().zip(&v.cat_pos) {
+            let (px, py) = apply(&truth, (x, y));
+            assert!((px - cx).hypot(py - cy) < 1e-6);
+        }
     }
 
     #[test]
@@ -1268,6 +1342,7 @@ mod tests {
             binning: 1,
             method: SolveMethod::Quads,
             threads: 1,
+            speed: SearchSpeed::Auto,
         }
     }
 
@@ -1288,11 +1363,34 @@ mod tests {
             wcs.residual_rms
         );
         assert!(wcs.raw_matches > 0);
+        assert_matches_agree(wcs, 0.3, 1.0);
         assert!(wcs.mag_limit > 10.0 && wcs.mag_limit <= 14.5);
         assert!(
             wcs.cdelt1 < 0.0 && wcs.cdelt2 > 0.0,
             "CDELT sign convention"
         );
+    }
+
+    /// The verified pairs agree with the solution: RMS under `rms_px` pixels, and
+    /// none further off than the final verification radius (`binning` pixels each).
+    fn assert_matches_agree(wcs: &WcsSolution, rms_px: f64, binning: f64) {
+        assert_eq!(wcs.matched_stars.len(), wcs.stars_matched);
+        assert!(wcs.sip.is_none(), "solve_image never fits SIP");
+        let tan = crate::wcs::TanWcs::from(wcs);
+        let mut sq = 0.0;
+        for m in &wcs.matched_stars {
+            let (x, y) = tan.sky_to_pixel(m.ra, m.dec).unwrap();
+            let d = (x - m.x).hypot(y - m.y);
+            assert!(
+                d < VERIFY_RADII[VERIFY_RADII.len() - 1] * binning,
+                "pair at ({:.2},{:.2}) projects to ({x:.2},{y:.2})",
+                m.x,
+                m.y
+            );
+            sq += d * d;
+        }
+        let rms = (sq / wcs.matched_stars.len() as f64).sqrt();
+        assert!(rms < rms_px, "pair rms {rms} px");
     }
 
     #[test]
@@ -1386,6 +1484,16 @@ mod tests {
     }
 
     #[test]
+    fn slow_speed_solves_from_an_offset_hint() {
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        let mut p = params_for(&s, deg(84.3 + 0.6), deg(-5.2 - 0.45));
+        p.speed = SearchSpeed::Slow;
+        let wcs = solve_image(&s.img, &p).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    #[test]
     fn binned_solve_is_reported_on_the_unbinned_pixel_grid() {
         // Render at full resolution, then solve the 2×2-binned frame.
         let truth = TruthWcs::new(deg(10.0), deg(40.0), 2.5, 30.0, false, 720, 600);
@@ -1401,6 +1509,8 @@ mod tests {
         assert!((wcs.cdelt2 * 3600.0 - 2.5).abs() < 0.01, "{}", wcs.cdelt2);
         let err = s.truth.max_error_arcsec(&wcs);
         assert!(err < 2.0, "worst corner error {err:.3}\"");
+        // The pairs are on the unbinned grid too: one binned pixel is two of these.
+        assert_matches_agree(&wcs, 0.6, 2.0);
     }
 
     #[test]
@@ -1479,6 +1589,7 @@ mod tests {
             binning: 1,
             method: SolveMethod::Quads,
             threads: 1,
+            speed: SearchSpeed::Auto,
         };
         match solve_image(&img, &p) {
             Err(ArcsecError::InsufficientStars { found, required: 5 }) => assert!(found < 5),
@@ -1502,6 +1613,7 @@ mod tests {
             binning: 1,
             method: SolveMethod::Quads,
             threads: 1,
+            speed: SearchSpeed::Auto,
         };
         match solve_image(&ImageBuffer::new(64, 64), &p) {
             Err(ArcsecError::CatalogNotFound(path)) => assert_eq!(path, dir.path()),
@@ -1524,6 +1636,7 @@ mod tests {
             binning: 1,
             method: SolveMethod::Quads,
             threads: 1,
+            speed: SearchSpeed::Auto,
         };
         let img = ImageBuffer::new(64, 64);
         for (fov, radius) in [

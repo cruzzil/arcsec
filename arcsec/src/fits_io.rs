@@ -6,6 +6,7 @@ use rsfitsio::aliases::rust_api::*;
 use rsfitsio::fitsio::{LONGLONG, READONLY, READWRITE, fitsfile};
 
 use arcsec_core::types::{ImageBuffer, WcsSolution};
+use arcsec_core::wcs::sip::{SIP_ORDER, SIP_TERMS, Sip};
 
 use crate::image_io;
 
@@ -104,6 +105,30 @@ pub fn read_fits_ra_dec(path: &Path) -> Option<(f64, f64)> {
         f.key_f64(b"CRVAL1\0"),
         f.key_f64(b"CRVAL2\0"),
     )
+}
+
+/// The keywords of a TAN WCS already in the header, for `--extract`.
+pub fn read_fits_header_wcs(path: &Path) -> Option<arcsec_core::wcs::TanWcs> {
+    let mut f = FitsFile::open(path, READONLY).ok()?;
+    image_io::tan_wcs_from(|key| {
+        let k = CString::new(key).ok()?;
+        f.key_f64(k.as_bytes_with_nul())
+    })
+}
+
+/// Colour channels: NAXIS3 of a three-axis image, else 1.
+pub fn read_fits_channels(path: &Path) -> usize {
+    let Ok(mut f) = FitsFile::open(path, READONLY) else {
+        return 1;
+    };
+    match f.key_i64(b"NAXIS\0") {
+        Some(n) if n >= 3 => f
+            .key_i64(b"NAXIS3\0")
+            .and_then(|c| usize::try_from(c).ok())
+            .unwrap_or(1)
+            .max(1),
+        _ => 1,
+    }
 }
 
 /// Read NAXIS1/NAXIS2 from a FITS header without loading the pixel data.
@@ -225,6 +250,90 @@ fn str_card(keyword: &str, value: &str, comment: &str) -> String {
     format!("{:<80}", &card[..80.min(card.len())])
 }
 
+/// Build an integer FITS card: `KEYWORD =                    3 / <comment>` (80 chars).
+fn int_card(keyword: &str, value: i64, comment: &str) -> String {
+    let card = format!("{keyword:<8}= {value:>20} / {comment:<47}");
+    format!("{:<80}", &card[..80.min(card.len())])
+}
+
+/// `A_p_q`-style keyword names, in the order ASTAP writes each block.
+///
+/// ASTAP's order is [`SIP_TERMS`] for A, AP and BP, but B swaps the two linear
+/// terms (`B_0_1` before `B_1_0`). The order carries no meaning; it is kept so a
+/// diff against `astap_cli -sip` output lines up.
+fn sip_block_order(prefix: &str) -> [usize; 10] {
+    if prefix == "B" {
+        [0, 2, 1, 3, 4, 5, 6, 7, 8, 9]
+    } else {
+        core::array::from_fn(|k| k)
+    }
+}
+
+/// The `A_ORDER` ... `BP_3_0` keywords of a SIP solution, as (keyword, value,
+/// comment) triples in ASTAP's order.
+fn sip_keywords(sip: &Sip) -> Vec<(String, SipValue, &'static str)> {
+    let mut out = Vec::with_capacity(44);
+    for (prefix, coeffs, comment) in [
+        ("A", &sip.a, "Polynomial order, axis 1. Pixel to Sky"),
+        ("B", &sip.b, "Polynomial order, axis 2. Pixel to sky."),
+        ("AP", &sip.ap, "Inv polynomial order, axis 1. Sky to pixel."),
+        ("BP", &sip.bp, "Inv polynomial order, axis 2. Sky to pixel."),
+    ] {
+        out.push((
+            format!("{prefix}_ORDER"),
+            SipValue::Order(i64::from(SIP_ORDER)),
+            comment,
+        ));
+        for k in sip_block_order(prefix) {
+            let (p, q) = SIP_TERMS[k];
+            out.push((
+                format!("{prefix}_{p}_{q}"),
+                SipValue::Coeff(coeffs[k]),
+                "SIP coefficient",
+            ));
+        }
+    }
+    out
+}
+
+/// A SIP keyword's value: an order is an integer, a coefficient a float.
+#[derive(Clone, Copy)]
+enum SipValue {
+    Order(i64),
+    Coeff(f64),
+}
+
+/// CTYPE1/2 values and comments: plain TAN, or TAN with SIP distortion.
+fn ctypes(sip: bool) -> [(&'static str, &'static str, &'static str); 2] {
+    if sip {
+        [
+            (
+                "CTYPE1",
+                "RA---TAN-SIP",
+                "TAN (gnomic) projection + SIP distortions",
+            ),
+            (
+                "CTYPE2",
+                "DEC--TAN-SIP",
+                "TAN (gnomic) projection + SIP distortions",
+            ),
+        ]
+    } else {
+        [
+            (
+                "CTYPE1",
+                "RA---TAN",
+                "first parameter RA,    projection TANgential",
+            ),
+            (
+                "CTYPE2",
+                "DEC--TAN",
+                "second parameter DEC,  projection TANgential",
+            ),
+        ]
+    }
+}
+
 /// Build a logical FITS card: `KEYWORD =                    T / <comment>` (80 chars).
 fn log_card(keyword: &str, value: bool, comment: &str) -> String {
     let v = if value { "T" } else { "F" };
@@ -242,17 +351,10 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
     let ra_deg = wcs.ra0.to_degrees();
     let dec_deg = wcs.dec0.to_degrees();
 
-    let cards = [
-        str_card(
-            "CTYPE1",
-            "RA---TAN",
-            "first parameter RA,    projection TANgential",
-        ),
-        str_card(
-            "CTYPE2",
-            "DEC--TAN",
-            "second parameter DEC,  projection TANgential",
-        ),
+    let [ct1, ct2] = ctypes(wcs.sip.is_some());
+    let mut cards = vec![
+        str_card(ct1.0, ct1.1, ct1.2),
+        str_card(ct2.0, ct2.1, ct2.2),
         str_card("CUNIT1", "deg     ", "Unit of coordinates"),
         dbl_card("CRPIX1", wcs.crpix1, "X of reference pixel"),
         dbl_card("CRPIX2", wcs.crpix2, "Y of reference pixel"),
@@ -283,8 +385,16 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
             wcs.cd2_2,
             "CD matrix to convert (x,y) to (Ra, Dec)",
         ),
-        log_card("PLTSOLVD", true, SOLVED_BY),
     ];
+    if let Some(sip) = &wcs.sip {
+        for (key, value, comment) in sip_keywords(sip) {
+            cards.push(match value {
+                SipValue::Order(n) => int_card(&key, n, comment),
+                SipValue::Coeff(c) => dbl_card(&key, c, comment),
+            });
+        }
+    }
+    cards.push(log_card("PLTSOLVD", true, SOLVED_BY));
 
     for card in &cards {
         writeln!(f, "{card}")?;
@@ -357,17 +467,10 @@ pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
 
     // CFITSIO routines do nothing once `status` is non-zero, so the first failure
     // is the one reported, and the file is still closed on drop.
+    let [ct1, ct2] = ctypes(wcs.sip.is_some());
     for (key, val, com) in [
-        (
-            "CTYPE1",
-            "RA---TAN",
-            "first parameter RA,    projection TANgential",
-        ),
-        (
-            "CTYPE2",
-            "DEC--TAN",
-            "second parameter DEC,  projection TANgential",
-        ),
+        ct1,
+        ct2,
         ("CUNIT1", "deg", "Unit of coordinates"),
         ("CUNIT2", "deg", "Unit of coordinates"),
     ] {
@@ -411,6 +514,28 @@ pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
             Some(cc(com.as_bytes_with_nul())),
             &mut status,
         );
+    }
+    if let Some(sip) = &wcs.sip {
+        for (key, value, com) in sip_keywords(sip) {
+            let (key, com) = (c(&key), c(com));
+            match value {
+                SipValue::Order(n) => fits_update_key_lng(
+                    fp,
+                    cc(key.as_bytes_with_nul()),
+                    n as LONGLONG,
+                    Some(cc(com.as_bytes_with_nul())),
+                    &mut status,
+                ),
+                SipValue::Coeff(v) => fits_update_key_dbl(
+                    fp,
+                    cc(key.as_bytes_with_nul()),
+                    v,
+                    decim,
+                    Some(cc(com.as_bytes_with_nul())),
+                    &mut status,
+                ),
+            };
+        }
     }
     let (key, com) = (c("PLTSOLVD"), c(SOLVED_BY));
     fits_update_key_log(
@@ -463,6 +588,8 @@ mod tests {
             search_dist_deg: 0.0,
             step_distances: Vec::new(),
             raw_matches: 144,
+            matched_stars: Vec::new(),
+            sip: None,
         }
     }
 
@@ -509,5 +636,109 @@ mod tests {
         let dict = read_like_nina(&path);
         std::fs::remove_file(&path).ok();
         assert_eq!(dict["PLTSOLVD"], "F");
+    }
+
+    /// Coefficient `k` of each block is `base + k`, so every value is distinct.
+    fn sip() -> Sip {
+        let block = |base: f64| core::array::from_fn(|k| (base + k as f64) * 1e-9);
+        Sip {
+            a: block(100.0),
+            b: block(200.0),
+            ap: block(300.0),
+            bp: block(400.0),
+        }
+    }
+
+    #[test]
+    fn wcs_file_carries_sip_in_astap_order() {
+        let path = std::env::temp_dir().join(format!("arcsec_sip_{}.wcs", std::process::id()));
+        let mut wcs = solution();
+        write_wcs_file(&path, &wcs).unwrap();
+        let plain = std::fs::read_to_string(&path).unwrap();
+        assert!(plain.contains("'RA---TAN'") && !plain.contains("A_ORDER"));
+
+        wcs.sip = Some(sip());
+        write_wcs_file(&path, &wcs).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(
+            text.lines().all(|l| l.len() == 80),
+            "every card is 80 characters"
+        );
+        assert!(text.starts_with(
+            "CTYPE1  = 'RA---TAN-SIP'       / TAN (gnomic) projection + SIP distortions"
+        ));
+        assert!(text.contains("\nCTYPE2  = 'DEC--TAN-SIP'"));
+        assert!(
+            text.contains(
+                "\nA_ORDER =                    3 / Polynomial order, axis 1. Pixel to Sky"
+            )
+        );
+        let keys: Vec<&str> = text
+            .lines()
+            .map(|l| l[..8].trim_end())
+            .filter(|k| k.contains('_') && !k.starts_with("CD"))
+            .collect();
+        // As astap_cli -sip writes them.
+        let expected = "A_ORDER A_0_0 A_1_0 A_0_1 A_2_0 A_1_1 A_0_2 A_3_0 A_2_1 A_1_2 A_0_3 \
+                        B_ORDER B_0_0 B_0_1 B_1_0 B_2_0 B_1_1 B_0_2 B_3_0 B_2_1 B_1_2 B_0_3 \
+                        AP_ORDER AP_0_0 AP_1_0 AP_0_1 AP_2_0 AP_1_1 AP_0_2 AP_3_0 AP_2_1 AP_1_2 AP_0_3 \
+                        BP_ORDER BP_0_0 BP_1_0 BP_0_1 BP_2_0 BP_1_1 BP_0_2 BP_3_0 BP_2_1 BP_1_2 BP_0_3";
+        assert_eq!(keys, expected.split_whitespace().collect::<Vec<_>>());
+        // Values land on the right keywords: B_1_0 is the second coefficient of B.
+        let value = |key: &str| -> f64 {
+            let line = text.lines().find(|l| l[..8].trim_end() == key).unwrap();
+            line[10..30].trim().parse().unwrap()
+        };
+        assert_eq!(value("B_1_0"), 201e-9);
+        assert_eq!(value("B_0_1"), 202e-9);
+        assert_eq!(value("AP_0_3"), 309e-9);
+        assert_eq!(value("A_ORDER"), 3.0);
+        // PLTSOLVD still closes the solution, before END.
+        let last: Vec<&str> = text.lines().rev().take(2).collect();
+        assert!(last[0].starts_with("END") && last[1].starts_with("PLTSOLVD"));
+    }
+
+    #[test]
+    fn update_writes_sip_into_the_header() {
+        let path = std::env::temp_dir().join(format!("arcsec_upd_{}.fits", std::process::id()));
+        let cards = [
+            "SIMPLE  =                    T",
+            "BITPIX  =                    8",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    4",
+            "NAXIS2  =                    4",
+            "END",
+        ];
+        let mut bytes: Vec<u8> = cards
+            .iter()
+            .flat_map(|c| format!("{c:<80}").into_bytes())
+            .collect();
+        bytes.resize(2880, b' ');
+        bytes.resize(2 * 2880, 0);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(read_fits_header_wcs(&path).is_none(), "no WCS yet");
+        assert_eq!(read_fits_channels(&path), 1);
+
+        let mut wcs = solution();
+        wcs.sip = Some(sip());
+        update_fits_wcs(&path, &wcs).unwrap();
+        let mut f = FitsFile::open(&path, READONLY).unwrap();
+        assert_eq!(f.key_i64(b"A_ORDER\0"), Some(3));
+        assert_eq!(f.key_i64(b"BP_ORDER\0"), Some(3));
+        let mut close = |key: &[u8], want: f64| {
+            let got = f.key_f64(key).unwrap();
+            assert!((got - want).abs() < 1e-18, "{got} vs {want}");
+        };
+        close(b"A_3_0\0", 106e-9);
+        close(b"B_1_0\0", 201e-9);
+        close(b"BP_0_3\0", 409e-9);
+        drop(f);
+        // What --extract reads back: the linear part.
+        let tan = read_fits_header_wcs(&path).expect("a WCS now");
+        std::fs::remove_file(&path).ok();
+        assert!((tan.crpix1 - 1450.5).abs() < 1e-9);
+        assert!((tan.cd[0][0] - wcs.cd1_1).abs() < 1e-15);
+        assert!(tan.sip.is_none());
     }
 }

@@ -77,6 +77,29 @@ const fn build_round_sqrt_table() -> [u8; ROUND_SQRT_N] {
 /// fails star quality checks (not boxed, single hot pixel, too large).
 #[must_use]
 pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
+    measure::<false>(img, x1, y1).map(|(star, _)| star)
+}
+
+/// As [`measure_star`], but with `astap_cli`'s current test for a star disc, and
+/// also returning the star's flux: the background-subtracted sum over the
+/// measuring aperture, in the image's pixel units.
+///
+/// The one difference in which stars pass is the disc test (a star whose
+/// illuminated pixels fill too little of its aperture is taken for a blend):
+/// `astap_cli` compares against 35% of `(2r - 2)²`, where the solver's detection
+/// uses 35% of `(2r)²`. The solver keeps its stricter test, which the benchmark
+/// corpus is calibrated on; the analysis behind `--analyse` and `--extract`
+/// reports stars, and should report the ones ASTAP does.
+#[must_use]
+#[inline]
+pub fn measure_star_with_flux(img: &ImageBuffer, x1: i32, y1: i32) -> Option<(Star, f64)> {
+    measure::<true>(img, x1, y1)
+}
+
+/// The measurement behind [`measure_star`] and [`measure_star_with_flux`].
+/// `CLI_DISC` selects `astap_cli`'s disc test; see [`measure_star_with_flux`].
+#[inline(always)]
+fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<(Star, f64)> {
     /// Annulus buffer size. The annulus is a fixed size (rs = `ANNULUS_RS`), about
     /// 91 pixels, so it lives on the stack: this runs once per candidate and a
     /// crowded field has tens of thousands of them.
@@ -304,7 +327,12 @@ pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
     if r_aperture >= rs_clamped {
         return None; // star is larger than detection box
     }
-    if r_aperture > 2 && (illuminated as f64) < 0.35 * (r_aperture * 2).pow(2) as f64 {
+    let disc_side = if CLI_DISC {
+        2 * r_aperture - 2
+    } else {
+        2 * r_aperture
+    };
+    if r_aperture > 2 && (illuminated as f64) < 0.35 * disc_side.pow(2) as f64 {
         return None; // not a disk — likely overlapping stars
     }
 
@@ -336,12 +364,15 @@ pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
         return None;
     }
 
-    Some(Star {
-        x: xc,
-        y: yc,
-        snr,
-        hfd,
-    })
+    Some((
+        Star {
+            x: xc,
+            y: yc,
+            snr,
+            hfd,
+        },
+        flux,
+    ))
 }
 
 /// Detect stars in an image using the ASTAP 4-retry strategy.
@@ -858,7 +889,7 @@ fn detect_pass_scan<M: Markers>(
 /// thousands of candidates. A full sort is O(n log n) for a single order
 /// statistic; `select_nth_unstable_by` is O(n), and the two sorts were 18% of
 /// total runtime in a flamegraph of a 1-degree field.
-fn median_f64(v: &mut [f64]) -> f64 {
+pub(crate) fn median_f64(v: &mut [f64]) -> f64 {
     if v.is_empty() {
         return 0.0;
     }

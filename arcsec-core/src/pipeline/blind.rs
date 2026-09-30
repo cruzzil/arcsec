@@ -1163,6 +1163,7 @@ mod tests {
                 binning: 1,
                 method: SolveMethod::Quads,
                 threads: 1,
+                speed: crate::pipeline::SearchSpeed::Auto,
             },
         )
         .expect("catalogue solve");

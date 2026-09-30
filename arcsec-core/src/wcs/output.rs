@@ -59,6 +59,8 @@ pub fn derive_wcs(
         search_dist_deg: 0.0,
         step_distances: Vec::new(),
         raw_matches: 0,
+        matched_stars: Vec::new(),
+        sip: None,
     }
 }
 

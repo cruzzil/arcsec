@@ -24,7 +24,7 @@
 //! ```no_run
 //! use std::path::PathBuf;
 //! use arcsec_core::ImageBuffer;
-//! use arcsec_core::pipeline::{SolveMethod, SolveParams, solve_image};
+//! use arcsec_core::pipeline::{SearchSpeed, SolveMethod, SolveParams, solve_image};
 //!
 //! # fn load_pixels() -> ImageBuffer { ImageBuffer::new(4096, 4096) }
 //! let img: ImageBuffer = load_pixels(); // row-major f32 pixels from your FITS reader
@@ -41,6 +41,7 @@
 //!     binning: 1,
 //!     method: SolveMethod::Quads,
 //!     threads: 0,
+//!     speed: SearchSpeed::Auto,
 //! };
 //! let wcs = solve_image(&img, &params)?;
 //! println!(
@@ -111,5 +112,6 @@ pub use catalog::{AnetIndex, AnetIndexEntry, AnetStar, load_anet_index, peek_ane
 pub use error::{ArcsecError, Result};
 pub use pipeline::{BlindSolveParams, blind_solve};
 pub use types::{
-    ImageBuffer, PairedPositions, PlateConstants, Quad, QuadList, Star, StarList, WcsSolution,
+    ImageBuffer, MatchedStar, PairedPositions, PlateConstants, Quad, QuadList, Star, StarList,
+    WcsSolution,
 };

@@ -322,8 +322,11 @@ rotation errors, which is precisely the class of error a linear fit gets wrong.
 | **Wall time** | per image, warm cache | report median + p95 |
 
 Corner error minus centre error is the useful derived quantity: it isolates scale,
-rotation and distortion error from pointing error, and is the number that will move when
-[§12.4](plate-solving.md#124-fit-sip-distortion-and-honour---sip) (SIP fitting) lands.
+rotation and distortion error from pointing error. It is also why SIP fitting
+([§12.4](plate-solving.md#124-fit-sip-distortion-and-honour---sip---done)) cannot be
+shown to help on this corpus: its images are reprojected and distortion-free, so the best
+a `--sip` run can do is leave every solution linear, which it does. `benchmark.py
+--extra-arg=--sip` scores SIP solutions through their polynomials.
 
 ### 4.1 Reference-frame caveats
 

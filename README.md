@@ -160,18 +160,51 @@ Other useful flags:
 | `--progress` | Log each step to stderr |
 | `--log` | Write the same log to `<base>.log` |
 | `--threads <n>` | Limit worker threads; `--threads 1` is genuinely single-threaded |
+| `--sip` | Add SIP distortion terms to the solution, when the field shows distortion (below) |
+| `--speed slow` | Read twice the field at every search position, for more overlap between them |
+| `--check y` | Even out a raw one-shot-colour (Bayer) frame before solving; unbinned raw OSC only |
 
-`arcsec --help` lists everything. ASTAP options that arcsec does not implement
-(`--sip`, `--check`, `--analyse`, `--extract`, `--extract2`, `--speed slow`) are refused
-with an error rather than silently ignored.
+`arcsec --help` lists everything. ASTAP's single-dash spellings (`-sip`, `-speed slow`,
+`-check y`, `-analyse 30`, ...) work as they do there.
+
+**SIP distortion.** With `--sip`, arcsec fits third-order SIP polynomials (`A_p_q`,
+`B_p_q` and the inverse `AP_p_q`, `BP_p_q`, `CTYPE` `RA---TAN-SIP`) to the individually
+matched stars and writes them to the `.wcs` file and, with `--update`, the FITS header;
+the `.ini` stays linear, as ASTAP's does. Unlike `astap_cli`, which adds a cubic
+whenever it has 20 stars, arcsec keeps one only if the distortion is statistically
+real and the matched stars cover the whole frame. On an undistorted field a cubic fits
+only the centroid noise, and on most images of the (distortion-free) benchmark corpus it
+made the worst corner worse, for `astap_cli -sip` as for an unconditional fit in arcsec.
+On a frame with lens distortion it removes it: a DSS field warped by 8 px of barrel
+distortion at the corners goes from 6.1″ worst-corner error to 1.2″.
+
+### Measuring stars without solving
+
+As `astap_cli`, and with the same output, for focusing and quality scripts:
+
+```bash
+arcsec -f image.fits --analyse 30     # HFD_MEDIAN=4.5 and STARS=733 on stdout
+arcsec -f image.fits --extract 30     # the same, and every star to image.csv
+arcsec -f image.fits --extract2 30    # solve, then image.csv with RA and Dec too
+```
+
+The value is the minimum SNR of a star (`0` means 30). `--analyse` and `--extract` do no
+solve and need no catalogue; they write no `.ini` or `.wcs`. The CSV goes next to the
+image whatever `-o` says, as ASTAP's does, with the header
+`x,y,hfd,snr,flux,ra[0..360],dec[0..360]`: positions in 1-based FITS pixels, HFD in
+pixels, flux in ADU above the background, RA and Dec in degrees (with `--extract`, only
+if the header already holds a CD-matrix WCS). `--extract2` writes it whether or not the
+solve succeeds, and fits SIP as `--sip` does. `-s` bounds the detection passes as it does
+for solving. On Windows `--analyse` reports in its exit code too, as ASTAP does:
+`round(HFD × 100) × 1 000 000 + stars`.
 
 ### Output files
 
 On a successful solve arcsec writes, next to the image (or at `-o <base>`):
 
 - `<base>.wcs` — the solution as a FITS header (`CRVAL`, `CRPIX`, `CD`, `CDELT`,
-  `CROTA`), as ASTAP and Astrometry.net write it. Always written; `--wcs` is accepted
-  for compatibility.
+  `CROTA`, and SIP terms with `--sip`), as ASTAP and Astrometry.net write it. Always
+  written; `--wcs` is accepted for compatibility.
 - `<base>.ini` — ASTAP's summary: `PLTSOLVD`, `CRVAL1/2`, `CDELT1/2`, `CROTA2` and the
   fit statistics.
 
@@ -188,7 +221,7 @@ As ASTAP's:
 | Code | Meaning |
 |---|---|
 | `0` | Solved |
-| `1` | No solution (also: a command-line usage error, or an unimplemented ASTAP option) |
+| `1` | No solution (also: a command-line usage error) |
 | `2` | Not enough stars detected |
 | `16` | Image file error (missing, unreadable or unrecognised) |
 | `32` | Star database or index files not found |
