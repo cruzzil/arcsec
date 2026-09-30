@@ -1053,14 +1053,15 @@ Those 24 are the most direct pointers to what arcsec's detection or matching sti
 * **No survey header was found wrong** in the §6.6 sense (both solvers agreeing with each
   other everywhere but not with the truth). The one image flagged, `s_dss_a_pincush`, is
   a synthetic distortion case where both linear solvers fit the same compromise.
-* **WISE's `A_0_0` — an open question.** WISE L1b headers carry SIP constant terms
+* **WISE's `A_0_0` — ignored, by decision.** WISE L1b headers carry SIP constant terms
   (`A_0_0` ≈ 0.72 px, `B_0_0` ≈ −0.08 px), which the SIP convention does not define.
   Applied, every solved WISE frame came out 0.64 px off in the same *pixel* direction
   whatever its orientation on the sky; ignored, ~0.1 px — so the harness ignores them.
   But on the one WISE frame ASTAP solves (`wise_13`), ASTAP agrees with the *applied*
   convention (1.8″ from arcsec). The WISE Explanatory Supplement (§IV.4.d) says the
   per-frame SIP terms absorb a differential-aberration fit, which does not settle it.
-  Until it is settled, treat WISE centre errors as uncertain at the 2″ level.
+  Decision (2026-09-30): keep ignoring them, and treat WISE centre errors as uncertain
+  at the 2″ level.
 * **Fetch-time checks** dropped three LCO frames whose pipeline flagged its own fit
   (`WCSERR ≠ 0`) and one TESS FFI with no celestial WCS.
 
