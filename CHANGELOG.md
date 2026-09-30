@@ -35,6 +35,12 @@ follows `astap_cli`'s, checked against it.
 - Library: `detection::analyse_image`, `wcs::sip` (`fit_sip`, `Sip`, `TanWcs`),
   `ImageBuffer::check_pattern_filter`, `pipeline::SearchSpeed`, and the verified star
   pairs of a solve in `WcsSolution::matched_stars`.
+- Benchmark tooling only (no change to the solver or its command line): an expanded
+  635-image benchmark corpus (`scripts/corpus.tsv`, fetched by `scripts/fetch-corpus.py`)
+  drawn from ten public archives plus simulated camera artefacts and more negative
+  controls, and `scripts/benchmark.py --corpus` with per-tier, per-source and per-FOV
+  breakdowns and SIP/TPV/SIN-aware truth. The original 103 images remain the `v1`
+  subset. See `docs/test-images.md`.
 
 ### Changed
 

@@ -62,12 +62,28 @@ scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db
 scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db --offset-hint 0.3
 ```
 
-The second run starts each solve 0.3 fields away from the true centre, as a mount's
-reported position would. A perfect hint once hid a rotation error that only showed up
+For a change with wider reach — detection, the fit, anything that might behave
+differently on real cameras, wide fields or unusual formats — run the expanded corpus too
+(635 images from ten archives plus simulated camera artefacts, about 6.5 GB beyond v1;
+the fetch is resumable and takes about an hour and a quarter):
+
+```bash
+scripts/fetch-corpus.py                      # hard-links the v1 images already fetched
+scripts/benchmark.py --corpus --db ~/.local/share/arcsec/catalogs --auto-db
+scripts/benchmark.py --corpus --db ~/.local/share/arcsec/catalogs --auto-db --offset-hint 0.3
+```
+
+It prints breakdowns by tier, source and field size; `--set v1` restricts it to the
+original 103 so numbers stay comparable with earlier results.
+
+The `--offset-hint 0.3` runs start each solve 0.3 fields away from the true centre, as a
+mount's reported position would. A perfect hint once hid a rotation error that only showed up
 off-centre (docs/test-images.md §6.7).
 
 `benchmark.py` scores every solve against the true WCS at the centre and all four
-corners, and counts any solve more than 5″ out at a corner as a false positive. The
+corners, and counts any solve more than 5″ (or one pixel, if larger) out at a corner as a
+false positive; for truths with SIP/TPV distortion it allows for what a linear plate
+cannot reach and reports those cases as INEXACT. The
 current standing, and the results of changes that did not work and are not worth
 repeating, are in [docs/test-images.md](docs/test-images.md). A change that adds a
 false positive is a regression however many new solves it brings.
