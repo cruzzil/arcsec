@@ -23,9 +23,9 @@ arcsec -f image.fits
   codes, and it reads ASTAP's star databases. ASTAP's single-dash spellings (`-fov`,
   `-ra`, `-spd`) work as well as `--fov`, `--ra`, `--spd`. See
   [Using arcsec from N.I.N.A.](#using-arcsec-from-nina)
-- **Solves more images.** On a 103-image benchmark corpus with known answers, it
-  solves 90 of the 98 solvable images correctly with no false positives, against 47
-  for ASTAP given the same hints, in comparable time per image. Details in
+- **Tested against hundreds of images with known answers,** from ten public sky
+  surveys and telescope archives plus simulated camera faults, with every solution
+  checked at the centre and all four corners. Methods and results are in
   [docs/test-images.md](docs/test-images.md).
 - **Reads FITS, XISF (PixInsight) and ASDF (Roman/astropy).** The format is detected
   from the file's contents, not its extension.
