@@ -18,6 +18,7 @@ use std::io::Read;
 use std::path::Path;
 
 use arcsec_core::types::{ImageBuffer, WcsSolution};
+use arcsec_core::wcs::TanWcs;
 
 use crate::{asdf_io, fits_io, xisf_io};
 
@@ -124,6 +125,27 @@ pub fn read_dimensions(path: &Path) -> Option<(u32, u32)> {
     }
 }
 
+/// A TAN WCS already in the file's header (from an earlier solve), if any.
+///
+/// Used by `--extract` for the RA and Dec columns. Like ASTAP, only a CD matrix
+/// counts: a header with CDELT but no CD gives none, and SIP keywords are ignored.
+pub fn read_header_wcs(path: &Path) -> Option<TanWcs> {
+    match detect_format(path).ok()? {
+        ImageFormat::Fits => fits_io::read_fits_header_wcs(path),
+        ImageFormat::Xisf => xisf_io::read_xisf_header_wcs(path),
+        ImageFormat::Asdf => None,
+    }
+}
+
+/// Number of colour channels the image had before it was reduced to one.
+pub fn read_channels(path: &Path) -> usize {
+    match detect_format(path) {
+        Ok(ImageFormat::Fits) => fits_io::read_fits_channels(path),
+        Ok(ImageFormat::Xisf) => xisf_io::read_xisf_channels(path),
+        Ok(ImageFormat::Asdf) | Err(_) => 1,
+    }
+}
+
 /// Write the solution back into the image file (`--update`).
 ///
 /// Only FITS supports this. XISF and ASDF would each need the whole file
@@ -161,6 +183,30 @@ pub fn pixel_scale_from(
     let ps = xpixsz_um.filter(|v| *v > 0.0)?;
     let bin = xbinning.filter(|v| *v > 0.0).unwrap_or(1.0);
     Some(ps * bin / fl * 206.265)
+}
+
+/// A TAN WCS from header keywords, shared by the formats that carry them.
+///
+/// `key` looks a numeric keyword up by name. CRVAL1/2, CRPIX1/2 and a non-zero
+/// `CD1_1` are required; missing off-diagonal terms are zero.
+pub fn tan_wcs_from(mut key: impl FnMut(&str) -> Option<f64>) -> Option<TanWcs> {
+    let cd1_1 = key("CD1_1").filter(|v| *v != 0.0)?;
+    let wcs = TanWcs {
+        ra0: key("CRVAL1")?.to_radians(),
+        dec0: key("CRVAL2")?.to_radians(),
+        crpix1: key("CRPIX1")?,
+        crpix2: key("CRPIX2")?,
+        cd: [
+            [cd1_1, key("CD1_2").unwrap_or(0.0)],
+            [key("CD2_1").unwrap_or(0.0), key("CD2_2").unwrap_or(0.0)],
+        ],
+        sip: None,
+    };
+    let finite = [wcs.ra0, wcs.dec0, wcs.crpix1, wcs.crpix2]
+        .into_iter()
+        .chain(wcs.cd.into_iter().flatten())
+        .all(f64::is_finite);
+    finite.then_some(wcs)
 }
 
 /// Pointing from the usual keyword pair, preferring the telescope's own report
@@ -248,6 +294,27 @@ mod tests {
         assert!(pixel_scale_from(Some(250.0), Some(-1.0), None).is_none());
         // Absent binning is 1, not zero.
         assert!(pixel_scale_from(Some(250.0), Some(3.76), None).is_some());
+    }
+
+    #[test]
+    fn a_header_wcs_needs_a_cd_matrix() {
+        let full = |k: &str| match k {
+            "CRVAL1" => Some(150.0),
+            "CRVAL2" => Some(40.0),
+            "CRPIX1" => Some(100.5),
+            "CRPIX2" => Some(80.5),
+            "CD1_1" => Some(-2e-4),
+            "CD2_2" => Some(2e-4),
+            _ => None,
+        };
+        let w = tan_wcs_from(full).unwrap();
+        assert_eq!(w.cd, [[-2e-4, 0.0], [0.0, 2e-4]]);
+        let (ra, dec) = w.pixel_to_sky(100.5, 80.5);
+        assert!((ra.to_degrees() - 150.0).abs() < 1e-9 && (dec.to_degrees() - 40.0).abs() < 1e-9);
+        // CDELT alone, or a zero CD1_1, is not a solution.
+        assert!(tan_wcs_from(|k| if k == "CD1_1" { None } else { full(k) }).is_none());
+        assert!(tan_wcs_from(|k| if k == "CD1_1" { Some(0.0) } else { full(k) }).is_none());
+        assert!(tan_wcs_from(|k| if k == "CRPIX2" { None } else { full(k) }).is_none());
     }
 
     #[test]

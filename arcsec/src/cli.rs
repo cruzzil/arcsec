@@ -138,8 +138,11 @@ pub fn solver_command() -> Command {
         .arg(
             Arg::new("check")
                 .long("check")
-                .action(ArgAction::SetTrue)
-                .help("[not implemented] Apply the check-pattern filter before solving"),
+                .value_name("y|n")
+                .num_args(0..=1)
+                .default_missing_value("y")
+                .value_parser(["y", "n"])
+                .help("Even out a raw one-shot-colour (Bayer) image before solving; for unbinned raw OSC frames only"),
         )
         .arg(
             Arg::new("database")
@@ -164,14 +167,19 @@ pub fn solver_command() -> Command {
         .arg(
             Arg::new("sip")
                 .long("sip")
-                .action(ArgAction::SetTrue)
-                .help("[not implemented] Add SIP (Simple Imaging Polynomial) distortion coefficients"),
+                .value_name("y|n")
+                .num_args(0..=1)
+                .default_missing_value("y")
+                .value_parser(["y", "n"])
+                .help("Add third-order SIP (Simple Imaging Polynomial) distortion terms to the .wcs file and --update, when the field shows significant distortion"),
         )
         .arg(
             Arg::new("speed")
                 .long("speed")
                 .value_name("MODE")
-                .help("Search mode, auto or slow; only auto is implemented"),
+                .value_parser(["auto", "slow"])
+                .default_value("auto")
+                .help("Search mode: slow reads twice the field at every search position, for more overlap"),
         )
         .arg(
             Arg::new("index")
@@ -226,21 +234,21 @@ pub fn solver_command() -> Command {
                 .long("analyse")
                 .value_name("SNR_MIN")
                 .value_parser(value_parser!(f64))
-                .help("[not implemented] Only analyse: report the median HFD and number of stars"),
+                .help("Analyse only, without solving: print the median HFD and number of stars (SNR_MIN 0 means 30)"),
         )
         .arg(
             Arg::new("extract")
                 .long("extract")
                 .value_name("SNR_MIN")
                 .value_parser(value_parser!(f64))
-                .help("[not implemented] As --analyse, and export the star list to .csv"),
+                .help("Analyse only, and write every star found to <IMAGE>.csv (SNR_MIN 0 means 30)"),
         )
         .arg(
             Arg::new("extract2")
                 .long("extract2")
                 .value_name("SNR_MIN")
                 .value_parser(value_parser!(f64))
-                .help("[not implemented] Solve, and export the star list with RA/Dec to .csv"),
+                .help("Solve (with SIP), then write every star found, with its RA and Dec, to <IMAGE>.csv"),
         )
 }
 
@@ -434,6 +442,59 @@ mod tests {
         assert_eq!(m.get_one::<f64>("fov"), Some(&0.0));
         assert_eq!(m.get_one::<f64>("spd"), Some(&97.0));
         assert!(m.get_flag("wcs") && m.get_flag("log") && m.get_flag("update"));
+    }
+
+    fn parse(args: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
+        solver_command().try_get_matches_from(normalize_astap_args(
+            args.iter().copied().map(OsString::from),
+        ))
+    }
+
+    #[test]
+    fn sip_and_check_take_an_optional_y_or_n() {
+        let m = parse(&["astap_cli", "-f", "a.fits", "-sip", "-check", "y", "-wcs"]).unwrap();
+        assert_eq!(m.get_one::<String>("sip").map(String::as_str), Some("y"));
+        assert_eq!(m.get_one::<String>("check").map(String::as_str), Some("y"));
+        assert!(m.get_flag("wcs"), "a following flag is not the value");
+        let m = parse(&["astap_cli", "-sip", "n", "-check"]).unwrap();
+        assert_eq!(m.get_one::<String>("sip").map(String::as_str), Some("n"));
+        assert_eq!(m.get_one::<String>("check").map(String::as_str), Some("y"));
+        let m = parse(&["astap_cli", "-f", "a.fits"]).unwrap();
+        assert!(m.get_one::<String>("sip").is_none() && m.get_one::<String>("check").is_none());
+        assert!(parse(&["astap_cli", "-sip", "maybe"]).is_err());
+    }
+
+    #[test]
+    fn speed_is_auto_or_slow() {
+        let m = parse(&["astap_cli", "-speed", "slow"]).unwrap();
+        assert_eq!(
+            m.get_one::<String>("speed").map(String::as_str),
+            Some("slow")
+        );
+        let m = parse(&["astap_cli"]).unwrap();
+        assert_eq!(
+            m.get_one::<String>("speed").map(String::as_str),
+            Some("auto")
+        );
+        assert!(parse(&["astap_cli", "-speed", "fast"]).is_err());
+    }
+
+    #[test]
+    fn analyse_options_take_a_minimum_snr() {
+        let m = parse(&[
+            "astap_cli",
+            "-f",
+            "a.fits",
+            "-analyse",
+            "30",
+            "-extract",
+            "0",
+        ])
+        .unwrap();
+        assert_eq!(m.get_one::<f64>("analyse"), Some(&30.0));
+        assert_eq!(m.get_one::<f64>("extract"), Some(&0.0));
+        let m = parse(&["astap_cli", "-extract2", "20"]).unwrap();
+        assert_eq!(m.get_one::<f64>("extract2"), Some(&20.0));
     }
 
     #[test]

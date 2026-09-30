@@ -342,7 +342,7 @@ class Wcs:
         return bool(self.sip or self.tpv)
 
     @classmethod
-    def from_header(cls, h):
+    def from_header(cls, h, keep_sip_constant=False):
         try:
             crpix1, crpix2 = float(h["CRPIX1"]), float(h["CRPIX2"])
             crval1, crval2 = float(h["CRVAL1"]), float(h["CRVAL2"])
@@ -403,9 +403,12 @@ class Wcs:
             # frames nevertheless write A_0_0 ~ 0.72 px; applying it puts every solved
             # WISE frame 0.64 px off in the same *pixel* direction whatever the
             # frame's orientation on the sky, while ignoring it leaves ~0.1 px - so the
-            # constant is treated as the non-standard artefact it is.
-            a.pop((0, 0), None)
-            b.pop((0, 0), None)
+            # constant is treated as the non-standard artefact it is - in truth
+            # headers. A solver's own SIP output (arcsec's and ASTAP's --sip fit a full
+            # cubic, constant included) must be read as written: keep_sip_constant.
+            if not keep_sip_constant:
+                a.pop((0, 0), None)
+                b.pop((0, 0), None)
             if a or b:
                 sip = (a, b)
 

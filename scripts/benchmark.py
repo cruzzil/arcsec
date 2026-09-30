@@ -275,6 +275,7 @@ def run_one(entry, args):
         cmd += ["-s", str(args.stars)]
     if args.threads is not None:
         cmd += ["--threads", str(args.threads)]
+    cmd += args.extra_arg
 
     t0 = time.time()
     try:
@@ -298,7 +299,8 @@ def run_one(entry, args):
         return with_astap(res)
 
     sol_h = parse_wcs_file(out_base + ".wcs")
-    sol = Wcs.from_header(sol_h)
+    # A solution's SIP terms are read as written (see fitslite.Wcs.from_header).
+    sol = Wcs.from_header(sol_h, keep_sip_constant=True)
     if sol is None:
         res["status"] = "BAD_WCS"
         return with_astap(res)
@@ -434,6 +436,8 @@ def main():
     ap.add_argument("--max-corner-err", type=float, default=5.0,
                     help="corner error (arcsec) above which a reported solve is "
                          "counted as a FALSE POSITIVE, not a success")
+    ap.add_argument("--extra-arg", action="append", default=[],
+                    help="pass this argument to arcsec as well (repeatable), e.g. --extra-arg=--sip")
     ap.add_argument("--tier", action="append", default=[])
     ap.add_argument("--id", action="append", default=[])
     ap.add_argument("--set", action="append", default=[],

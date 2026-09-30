@@ -47,6 +47,53 @@ impl ImageBuffer {
         }
     }
 
+    /// Even out the four pixel phases of a Bayer matrix (ASTAP's check-pattern
+    /// filter, `-check y`).
+    ///
+    /// A raw one-shot-colour frame has a colour filter over each pixel in a
+    /// repeating 2×2 pattern, so its pixels alternate in brightness, and the
+    /// detector sees the checkerboard rather than the stars. This scales each of the
+    /// four phases (even/odd column × even/odd row) so its mean over the central
+    /// quarter of the frame matches the brightest phase's, then rounds to whole
+    /// numbers, as ASTAP does. Only meaningful on an unbinned raw mosaic.
+    ///
+    /// Returns `false`, leaving the image untouched, if a phase has no positive
+    /// mean to scale by (an image under 2×2 pixels, or a blank one).
+    pub fn check_pattern_filter(&mut self) -> bool {
+        let (w, h) = (self.width, self.height);
+        let mut sum = [0.0f64; 4];
+        let mut count = [0u64; 4];
+        let phase = |x: usize, y: usize| (x & 1) + 2 * (y & 1);
+        for y in h / 4..=(h * 3 / 4).min(h.saturating_sub(1)) {
+            for x in w / 4..=(w * 3 / 4).min(w.saturating_sub(1)) {
+                sum[phase(x, y)] += f64::from(self.data[y * w + x]);
+                count[phase(x, y)] += 1;
+            }
+        }
+        let mut mean = [0.0f64; 4];
+        for k in 0..4 {
+            if count[k] == 0 {
+                return false;
+            }
+            mean[k] = sum[k] / count[k] as f64;
+            if !(mean[k] > 0.0 && mean[k].is_finite()) {
+                return false;
+            }
+        }
+        let max = mean.iter().copied().fold(f64::MIN, f64::max);
+        let factor = mean.map(|m| max / m);
+        for y in 0..h {
+            for x in 0..w {
+                let f = factor[phase(x, y)];
+                if f != 1.0 {
+                    let v = &mut self.data[y * w + x];
+                    *v = (f64::from(*v) * f).round_ties_even() as f32;
+                }
+            }
+        }
+        true
+    }
+
     /// Replace non-finite pixels and rescale the data into a range the
     /// histogram-based background estimator can actually resolve.
     ///
@@ -339,6 +386,27 @@ pub struct WcsSolution {
     pub step_distances: Vec<f64>,
     /// Total quad matches found before scale-outlier filtering (the M in "N of M quads").
     pub raw_matches: usize,
+    /// The star pairs the final fit was verified on: each detected star with the
+    /// catalogue star it was identified as. What [`crate::wcs::sip::fit_sip`] fits.
+    pub matched_stars: Vec<MatchedStar>,
+    /// SIP distortion polynomials on top of the linear solution, if fitted.
+    ///
+    /// [`crate::pipeline::solve_image`] leaves this `None`; add it with
+    /// [`crate::wcs::sip::fit_sip`].
+    pub sip: Option<crate::wcs::sip::Sip>,
+}
+
+/// A detected star paired with the catalogue star it was identified as.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchedStar {
+    /// Column of the detected star: 1-based FITS pixels on the unbinned image.
+    pub x: f64,
+    /// Row of the detected star: 1-based FITS pixels on the unbinned image.
+    pub y: f64,
+    /// Catalogue right ascension, radians.
+    pub ra: f64,
+    /// Catalogue declination, radians.
+    pub dec: f64,
 }
 
 #[cfg(test)]
@@ -351,6 +419,33 @@ mod tests {
             width: w,
             height: h,
         }
+    }
+
+    #[test]
+    fn check_pattern_filter_evens_out_a_bayer_mosaic() {
+        // An RGGB-like mosaic: R 1000, G 2000, B 500, on a 40×30 frame.
+        let (w, h) = (40, 30);
+        let level = |x: usize, y: usize| match (x & 1, y & 1) {
+            (0, 0) => 1000.0,
+            (1, 1) => 500.0,
+            _ => 2000.0,
+        };
+        let mut img = buf((0..w * h).map(|i| level(i % w, i / w)).collect(), w, h);
+        // A "star" on a red pixel, outside the central quarter the means come from,
+        // is scaled with its phase.
+        img.data[2 * w + 2] = 1500.0;
+        assert!(img.check_pattern_filter());
+        for (i, &v) in img.data.iter().enumerate() {
+            if i == 2 * w + 2 {
+                assert_eq!(v, 3000.0);
+            } else {
+                assert_eq!(v, 2000.0, "pixel {i}");
+            }
+        }
+        // Nothing to scale by: left alone.
+        let mut blank = buf(vec![0.0; 16], 4, 4);
+        assert!(!blank.check_pattern_filter());
+        assert!(!buf(vec![5.0], 1, 1).check_pattern_filter());
     }
 
     #[test]

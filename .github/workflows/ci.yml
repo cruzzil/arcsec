@@ -124,8 +124,14 @@ jobs:
           expect 16 run -f /nonexistent/nope.fits
           expect 16 run -f not-an-image.dat
           expect 32 run -f tiny.fits -d /nonexistent/catalogs -D d50
-          expect 1  run --sip -f tiny.fits
-          rm -f tiny.fits not-an-image.dat
+          expect 32 run --sip -f tiny.fits -d /nonexistent/catalogs -D d50
+          expect 1  run --speed fast -f tiny.fits
+          # --extract needs no catalogue: a blank frame has no stars, and the CSV
+          # holds just its header. (Not --analyse: on Windows its exit code
+          # carries the result, as ASTAP's does.)
+          expect 0  run --extract 10 -f tiny.fits
+          grep -q '^x,y,hfd,snr,flux' tiny.csv
+          rm -f tiny.fits tiny.csv tiny.ini not-an-image.dat
 
   # Nightly clippy, for lints that have not reached stable yet. Advisory: a failure
   # here shows up on the run but does not block a merge. Fix what it finds, or wait for
