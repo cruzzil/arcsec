@@ -77,19 +77,7 @@ pub fn read_area_file(
     }
 
     // 110-byte header; last byte encodes record size
-    let record_size = if mmap[109] == b' ' {
-        11
-    } else {
-        mmap[109] as usize
-    };
-
-    // We only handle record_size 5 (RA+DEC) and 6 (RA+DEC+Gaia colour)
-    if record_size != 5 && record_size != 6 {
-        return Err(ArcsecError::CatalogIo(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unsupported record_size {record_size}"),
-        )));
-    }
+    let record_size = record_size(&mmap)?;
 
     // Parse directly from the memory-mapped slice — no copy, no extra allocation.
     let data = &mmap[110..];
@@ -238,16 +226,10 @@ pub fn detect_layout(db_path: &Path, db_name: &str) -> CatalogLayout {
 
 /// Read stars from a .290 database.
 ///
-/// Two differences from the 1476 path, both forced by the field sizes these
-/// databases exist for (G05 3°–20°, W08 20°–80°):
-///
-/// * every overlapping area is enumerated rather than sampling four corners, which
-///   only works when the field fits inside one declination ring;
-/// * `max_stars` is shared out across the areas and the combined list is then cut by
-///   magnitude. Filling the budget area by area would take every star from the
-///   southern edge of a 60° field and none from the north, because areas are visited
-///   in declination order. Records within an area are already magnitude-ordered, so
-///   a per-area slice is that area's brightest.
+/// Every overlapping area is enumerated rather than sampling four corners, which
+/// only works when the field fits inside one declination ring; the databases exist
+/// for 3°–80° fields, which span many rings. The areas are then read together, a
+/// magnitude step at a time, by [`read_brightest`].
 fn read_catalog_stars_290(
     db_path: &Path,
     db_name: &str,
@@ -257,42 +239,21 @@ fn read_catalog_stars_290(
     max_stars: usize,
 ) -> Result<Vec<CatalogStar>> {
     let areas = super::areas_290::find_areas_290(telescope_ra, telescope_dec, fov);
-    if areas.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let field_diameter = fov * 1.05;
-    let cos_dec = telescope_dec.cos().max(1e-6);
-    // Read a little over the fair share so a sparse area does not starve the total.
-    let per_area = (max_stars / areas.len()).max(16) * 2;
-
-    let mut all_stars: Vec<CatalogStar> = Vec::new();
-    for area_nr in areas {
-        let fname = super::areas_290::filename_290(area_nr);
-        let file_path = db_path.join(format!("{db_name}_{fname}"));
-        match read_area_file(
-            &file_path,
-            telescope_ra,
-            telescope_dec,
-            field_diameter,
-            cos_dec,
-            per_area,
-        ) {
-            Ok(mut stars) => all_stars.append(&mut stars),
-            Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-    }
-
-    if all_stars.len() > max_stars {
-        all_stars.sort_unstable_by(|a, b| a.mag.total_cmp(&b.mag));
-        all_stars.truncate(max_stars);
-    }
-    Ok(all_stars)
+    read_brightest(
+        areas.into_iter().map(|area_nr| {
+            let fname = super::areas_290::filename_290(area_nr);
+            db_path.join(format!("{db_name}_{fname}"))
+        }),
+        telescope_ra,
+        telescope_dec,
+        fov,
+        max_stars,
+    )
 }
 
-/// Read stars from a .1476 database. Unchanged ASTAP behaviour: four-corner area
-/// sampling, FOV capped at one ring height, budget filled in area order.
+/// Read stars from a .1476 database: ASTAP's four-corner area sampling, FOV capped
+/// at one ring height, and the (up to four) areas read together by
+/// [`read_brightest`].
 fn read_catalog_stars_1476(
     db_path: &Path,
     db_name: &str,
@@ -302,43 +263,201 @@ fn read_catalog_stars_1476(
     max_stars: usize,
 ) -> Result<Vec<CatalogStar>> {
     let areas = super::areas::find_areas_1476(telescope_ra, telescope_dec, fov);
-    if areas.is_empty() {
-        return Ok(vec![]);
-    }
+    read_brightest(
+        areas.into_iter().map(|(area_nr, _frac)| {
+            let fname = filename_1476(area_nr);
+            db_path.join(format!("{db_name}_{fname}"))
+        }),
+        telescope_ra,
+        telescope_dec,
+        fov,
+        max_stars,
+    )
+}
 
-    // We read a slightly oversized area to ensure we cover the full FOV plus margins
-    let field_diameter = fov * 1.05; // small margin
-    let cos_dec = telescope_dec.cos().max(1e-6);
+/// The brightest `max_stars` stars in the square window of side `fov * 1.05` round
+/// the pointing, drawn from every area file in `paths`, whichever of them holds
+/// them, and returned brightest first.
+///
+/// Each area file is brightest first, in groups of one magnitude step (0.1), so
+/// the files are read in step: the brightest unread group of every file, then the
+/// next, until the window holds `max_stars` stars. Each file is read only as deep
+/// as the field's own magnitude limit, so a file that the field barely clips costs
+/// no more than one the field sits inside.
+///
+/// This replaces filling the budget file by file, which took every star from the
+/// first file and none from the rest, so a field straddling a tile boundary had
+/// catalogue stars on one side only (plate-solving.md §11.11). ASTAP shares the
+/// budget in proportion to each area's share of the field instead, which gives the
+/// brightest stars only where the sky is uniformly dense; reading by magnitude
+/// gives them everywhere.
+///
+/// The cut usually falls part-way through the last magnitude group read. The stars
+/// kept from that group are the first read: from the files in the order given, and
+/// within a file south to north (records in a group are ordered by their high Dec
+/// byte). With a single file that is exactly the old, and ASTAP's, choice. Choosing
+/// them by a hash of position instead, so the cut is spatially even, made no
+/// measurable difference to the benchmark and was not kept (test-images.md §7.7).
+///
+/// Missing area files are skipped (sparse databases are normal); one that exists
+/// but cannot be read is an error.
+fn read_brightest(
+    paths: impl Iterator<Item = std::path::PathBuf>,
+    telescope_ra: f64,
+    telescope_dec: f64,
+    fov: f64,
+    max_stars: usize,
+) -> Result<Vec<CatalogStar>> {
+    let window = Window {
+        ra: telescope_ra,
+        dec: telescope_dec,
+        // A slightly oversized area, to cover the full FOV plus margins.
+        half: fov * 1.05 * 0.5,
+        cos_dec: telescope_dec.cos().max(1e-6),
+    };
 
-    let mut all_stars: Vec<CatalogStar> = Vec::new();
-
-    for (area_nr, _frac) in areas {
-        let fname = filename_1476(area_nr);
-        let file_path = db_path.join(format!("{db_name}_{fname}"));
-
-        match read_area_file(
-            &file_path,
-            telescope_ra,
-            telescope_dec,
-            field_diameter,
-            cos_dec,
-            max_stars,
-        ) {
-            Ok(mut stars) => all_stars.append(&mut stars),
-            Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => {
-                // Area file not present — non-fatal (sparse databases)
-                continue;
-            }
+    let mut cursors = Vec::new();
+    for path in paths {
+        match AreaCursor::open(&path) {
+            Ok(Some(c)) => cursors.push(c),
+            Ok(None) => {}
+            Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
+    }
 
-        if all_stars.len() >= max_stars {
-            break;
+    let mut stars: Vec<CatalogStar> = Vec::new();
+    while stars.len() < max_stars {
+        let Some(group) = cursors
+            .iter()
+            .filter_map(AreaCursor::next_mag)
+            .min_by(f64::total_cmp)
+        else {
+            break; // every file exhausted
+        };
+        for c in &mut cursors {
+            c.read_through(group, &window, &mut stars);
         }
     }
 
-    all_stars.truncate(max_stars);
-    Ok(all_stars)
+    // Stable, so stars of the magnitude the cut falls in keep their read order.
+    stars.sort_by(|a, b| a.mag.total_cmp(&b.mag));
+    stars.truncate(max_stars);
+    Ok(stars)
+}
+
+/// The square field window the readers collect: centre, half side and `cos(dec)`,
+/// all radians.
+struct Window {
+    ra: f64,
+    dec: f64,
+    half: f64,
+    cos_dec: f64,
+}
+
+impl Window {
+    fn contains(&self, ra: f64, dec: f64) -> bool {
+        let mut delta_ra = (ra - self.ra).abs();
+        if delta_ra > PI {
+            delta_ra = 2.0 * PI - delta_ra;
+        }
+        delta_ra * self.cos_dec < self.half && (dec - self.dec).abs() < self.half
+    }
+}
+
+/// A read position in one memory-mapped area file.
+struct AreaCursor {
+    mmap: Mmap,
+    record_size: usize,
+    /// Byte offset of the next unread record.
+    pos: usize,
+    /// High Dec byte and magnitude from the last header record.
+    dec9: i32,
+    mag: f64,
+}
+
+impl AreaCursor {
+    /// Map `path` and check its header. `None` for a file too short to hold one.
+    fn open(path: &Path) -> Result<Option<Self>> {
+        let file = std::fs::File::open(path).map_err(ArcsecError::CatalogIo)?;
+        // Safety: we only read; the catalog files are never written concurrently.
+        let mmap = unsafe { Mmap::map(&file).map_err(ArcsecError::CatalogIo)? };
+        if mmap.len() < 110 {
+            return Ok(None);
+        }
+        let record_size = record_size(&mmap)?;
+        Ok(Some(Self {
+            mmap,
+            record_size,
+            pos: 110,
+            dec9: 0,
+            mag: 0.0,
+        }))
+    }
+
+    /// The magnitude of the next unread record: its own if it is a header,
+    /// otherwise that of the group it continues. `None` at the end of the file.
+    fn next_mag(&self) -> Option<f64> {
+        let r = self.mmap.get(self.pos..self.pos + self.record_size)?;
+        Some(if r[..3] == [0xFF; 3] {
+            header_mag(r[4])
+        } else {
+            self.mag
+        })
+    }
+
+    /// Read every record up to and including magnitude `limit`, appending the stars
+    /// inside `window` to `out`. Stops before the first header fainter than `limit`.
+    fn read_through(&mut self, limit: f64, window: &Window, out: &mut Vec<CatalogStar>) {
+        let data = &self.mmap[..];
+        let rs = self.record_size;
+        while self.pos + rs <= data.len() {
+            let r = &data[self.pos..self.pos + 5];
+            let ra_raw = (r[0] as u32) | ((r[1] as u32) << 8) | ((r[2] as u32) << 16);
+            if ra_raw == HEADER_SENTINEL {
+                let mag = header_mag(r[4]);
+                if mag > limit {
+                    return;
+                }
+                self.mag = mag;
+                self.dec9 = r[3] as i32 - 128; // signed byte
+            } else {
+                let ra = ra_raw as f64 * RA_SCALE;
+                let dec_raw = (self.dec9 << 16) | ((r[4] as i32) << 8) | (r[3] as i32);
+                let dec = dec_raw as f64 * DEC_SCALE;
+                if window.contains(ra, dec) {
+                    out.push(CatalogStar {
+                        ra,
+                        dec,
+                        mag: self.mag,
+                    });
+                }
+            }
+            self.pos += rs;
+        }
+    }
+}
+
+/// Magnitude carried by a header record's last byte.
+fn header_mag(byte: u8) -> f64 {
+    (byte as f64 - 16.0) / 10.0
+}
+
+/// Record size from a mapped area file's 110-byte header (byte 109): 5 (RA + Dec)
+/// or 6 (plus Gaia colour); anything else is unsupported.
+fn record_size(mmap: &[u8]) -> Result<usize> {
+    let record_size = if mmap[109] == b' ' {
+        11
+    } else {
+        mmap[109] as usize
+    };
+    if record_size != 5 && record_size != 6 {
+        return Err(ArcsecError::CatalogIo(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported record_size {record_size}"),
+        )));
+    }
+    Ok(record_size)
 }
 
 #[cfg(test)]
@@ -729,18 +848,12 @@ mod tests {
         assert!(got.iter().any(|s| s.dec > dec + deg(3.0)));
     }
 
-    /// `read_catalog_stars_290` gives each tile a fixed share of the budget,
-    /// `(max_stars / n_tiles).max(16) * 2`, reads that many from each, and cuts
-    /// the union by magnitude. When one tile covers most of the field that share
-    /// is far too small for it: here tile 75 holds 76 of the field's 100 brightest
-    /// stars but contributes only 32, and the five tiles that clip the field's
-    /// edges fill the rest with fainter stars — the 100th star returned is mag 10.8
-    /// where the field's 100th brightest is mag 9.0. The catalogue handed to the
-    /// matcher is then dense at the field's edges and sparse in its middle, the
-    /// opposite of the image. The per-tile reads need to be sized by each tile's
-    /// share of the field (or take `max_stars` from every tile before the cut).
+    /// Tile 75 holds 76 of the field's 100 brightest stars. The reader used to give
+    /// each tile a fixed share of the budget, `(max_stars / n_tiles).max(16) * 2`,
+    /// so tile 75 contributed only 32 and the tiles clipping the field's edges filled
+    /// the rest with fainter stars (a cut at mag 10.8 where the field's 100th
+    /// brightest is mag 9.0): a catalogue dense at the edges and sparse in the middle.
     #[test]
-    #[ignore = "bug: the .290 reader's per-tile budget under-samples a tile that covers most of the field"]
     fn a_290_database_returns_the_brightest_stars_of_the_field() {
         let (dir, full, (ra, dec, fov)) = g05_field();
         let got = read_catalog_stars(dir.path(), "g05", ra, dec, fov, 100).unwrap();
@@ -752,6 +865,63 @@ mod tests {
             "cut at mag {faintest}, but the field's 100th brightest is {}",
             mags[99]
         );
+        assert_brightest(&full, &got, 100);
+    }
+
+    /// `got` is `n` stars of `full` (a whole-field read), brightest first, and holds
+    /// every star of `full` strictly brighter than the faintest it returns: the
+    /// field's `n` brightest, whatever tiles they came from.
+    fn assert_brightest(full: &[CatalogStar], got: &[CatalogStar], n: usize) {
+        assert_eq!(got.len(), n);
+        assert!(
+            got.windows(2).all(|w| w[0].mag <= w[1].mag),
+            "brightest first"
+        );
+        let cut = got[n - 1].mag;
+        for s in full.iter().filter(|s| s.mag < cut) {
+            assert!(
+                got.iter()
+                    .any(|g| separation(g.ra, g.dec, s.ra, s.dec) < 1e-9),
+                "{s:?} is brighter than the cut at {cut} but was not returned"
+            );
+        }
+        for g in got {
+            assert!(
+                full.iter()
+                    .any(|s| separation(g.ra, g.dec, s.ra, s.dec) < 1e-9),
+                "{g:?} is not in the field"
+            );
+        }
+    }
+
+    /// A field whose four corners fall in four different 1476 tiles (RA 0 and the
+    /// 5.14° ring boundary cross in it). The budget used to be filled from the first
+    /// tile alone, leaving the other three quarters of the field without catalogue
+    /// stars (plate-solving.md §11.11); now it is the field's brightest, wherever
+    /// they are.
+    #[test]
+    fn a_1476_budget_is_shared_across_every_tile_of_the_field() {
+        let (ra, dec, fov) = (deg(0.3), deg(5.0), deg(2.0));
+        assert_eq!(super::super::areas::find_areas_1476(ra, dec, fov).len(), 4);
+        let all = field(5, 0.3, 5.0, 4.0, 4000);
+        let dir = TempDir::new("db1476-budget");
+        write_1476_db(dir.path(), "d50", &all);
+        let full = read_catalog_stars(dir.path(), "d50", ra, dec, fov, usize::MAX).unwrap();
+        assert_field_read(&all, &full, ra, dec, fov);
+        for n in [25, 200, 600] {
+            let got = read_catalog_stars(dir.path(), "d50", ra, dec, fov, n).unwrap();
+            assert_brightest(&full, &got, n);
+        }
+        // Every quarter of the field is represented in proportion to its area.
+        let got = read_catalog_stars(dir.path(), "d50", ra, dec, fov, 400).unwrap();
+        let ring = deg(5.142_857);
+        for (east, north) in [(false, false), (false, true), (true, false), (true, true)] {
+            let n = got
+                .iter()
+                .filter(|s| (s.ra < PI) == east && (s.dec > ring) == north)
+                .count();
+            assert!(n > 20, "quarter east={east} north={north} has {n} of 400");
+        }
     }
 
     #[test]

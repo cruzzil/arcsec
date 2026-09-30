@@ -915,28 +915,44 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     })
 }
 
-/// Format RA (radians) and Dec (radians) as ASTAP-style `"HH: MM  SS.S ±DDd MM  SS"`.
+/// Format RA (radians) as `astap_cli` prints it: `"HH: MM  SS.S"`, each field at
+/// least two digits (ASTAP's `prepare_ra(ra, ': ')`).
 #[must_use]
-pub fn format_radec(ra_rad: f64, dec_rad: f64) -> String {
+pub fn format_ra(ra_rad: f64) -> String {
     // Round once, at the printed precision, and only then split into fields.
     // Splitting first and letting `{:.1}` round the seconds printed 59.96 s as
     // "60.0" without carrying into the minutes (and 23:59:59.96 as "23: 59  60.0").
+    // ASTAP carries, but prints 23:59:59.96 as "24: 00  00.0"; this wraps to 00h.
     const TENTHS_PER_DAY: f64 = 24.0 * 36_000.0;
     let ra_tenths = ((ra_rad.to_degrees() / 15.0 * 36_000.0)
         .round()
         .rem_euclid(TENTHS_PER_DAY)) as u64;
     let h = ra_tenths / 36_000;
     let m = ra_tenths / 600 % 60;
-    let s = (ra_tenths % 600) as f64 / 10.0;
+    let s = ra_tenths % 600 / 10;
+    let tenths = ra_tenths % 10;
+    format!("{h:02}: {m:02}  {s:02}.{tenths}")
+}
 
+/// Format Dec (radians) as `astap_cli` prints it: `"±DDd MM  SS"`, each field at
+/// least two digits (ASTAP's `prepare_dec(dec, 'd ')`).
+#[must_use]
+pub fn format_dec(dec_rad: f64) -> String {
     let dec_deg = dec_rad.to_degrees();
     let sign = if dec_deg < 0.0 { '-' } else { '+' };
     let dec_secs = (dec_deg.abs() * 3600.0).round() as u64;
     let dd = dec_secs / 3600;
     let dm = dec_secs / 60 % 60;
     let ds = dec_secs % 60;
+    format!("{sign}{dd:02}d {dm:02}  {ds:02}")
+}
 
-    format!("{h}: {m:02}  {s:.1} {sign}{dd}d {dm:02}  {ds}")
+/// Format RA and Dec (radians) as `astap_cli`'s `Solution found:` line does:
+/// `"HH: MM  SS.S ±DDd MM  SS"`. (Its `Start position:` line puts a comma between
+/// the two; see [`format_ra`] and [`format_dec`].)
+#[must_use]
+pub fn format_radec(ra_rad: f64, dec_rad: f64) -> String {
+    format!("{} {}", format_ra(ra_rad), format_dec(dec_rad))
 }
 
 #[cfg(test)]
@@ -1054,15 +1070,36 @@ mod tests {
         let ra = deg((1.0 + 59.0 / 60.0 + 59.97 / 3600.0) * 15.0);
         // +10° 59' 59.7" rounds to +11° 00' 00".
         let dec = deg(10.0 + 59.0 / 60.0 + 59.7 / 3600.0);
-        assert_eq!(format_radec(ra, dec), "2: 00  0.0 +11d 00  0");
+        assert_eq!(format_radec(ra, dec), "02: 00  00.0 +11d 00  00");
         // RA just short of 24h wraps to 0h.
         let s = format_radec(deg(359.999_999_9), deg(-0.5));
-        assert!(s.starts_with("0: 00  0.0 -0d 30  0"), "{s}");
+        assert_eq!(s, "00: 00  00.0 -00d 30  00");
         // An ordinary value is unchanged by the rewrite.
         assert_eq!(
             format_radec(deg((5.0 + 35.0 / 60.0 + 17.3 / 3600.0) * 15.0), deg(-5.39)),
-            "5: 35  17.3 -5d 23  24"
+            "05: 35  17.3 -05d 23  24"
         );
+    }
+
+    /// Byte-for-byte what `astap_cli` prints (checked against 2026.07.30):
+    /// `Start position: 04: 20  00.0, +35d 00  00` and
+    /// `Solution found: 04: 20  00.0 +35d 00  00`. Every field is at least two
+    /// digits wide, as ASTAP's `LeadingZero` makes it.
+    #[test]
+    fn ra_and_dec_are_formatted_as_astap_cli_prints_them() {
+        let ra = deg(65.0); // 4h 20m
+        let dec = deg(35.0);
+        assert_eq!(format_ra(ra), "04: 20  00.0");
+        assert_eq!(format_dec(dec), "+35d 00  00");
+        assert_eq!(format_radec(ra, dec), "04: 20  00.0 +35d 00  00");
+        assert_eq!(
+            format_radec(
+                deg((13.0 + 7.0 / 60.0 + 9.25 / 3600.0) * 15.0),
+                -deg(89.0 + 1.0 / 60.0 + 2.0 / 3600.0)
+            ),
+            "13: 07  09.3 -89d 01  02"
+        );
+        assert_eq!(format_dec(deg(-0.0001)), "-00d 00  00");
     }
 
     #[test]

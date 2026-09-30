@@ -6,10 +6,11 @@ user would build one without a large download.
 Companion to [plate-solving.md](plate-solving.md) §5.2 (spiral vs pre-indexed) and
 §12.5 (quad-selection robustness). Written 2026-09-03.
 
-**Status (0.1.0, 2026-09-25): not started.** None of the phases below, including the
+**Status (0.2.0, 2026-10-01): not started.** None of the phases below, including the
 Phase 0 experiment, has been done; there is no `arcsec index` subcommand and no
-`PLOVIDX` reader. The numbers in §1 still hold on the current code (90/103, 0 false
-positives, the same 8 tier-A failures).
+`PLOVIDX` reader. §1's numbers were measured at 90/103 on the original corpus; the
+current code scores 92/103 there (0 false positives) after the catalogue-read fix, and
+the expanded corpus in docs/test-images.md §7 is now the better reference.
 
 ---
 

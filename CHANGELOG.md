@@ -50,6 +50,24 @@ follows `astap_cli`'s, checked against it.
 - `--sip`, `--check` and `--speed` take ASTAP's optional values (`-sip n`, `-check y`,
   `-speed slow`); anything else is a usage error.
 
+### Fixed
+
+- The catalogue read now returns the field's brightest stars from every database tile
+  the field overlaps. The `.1476` reader (D-series) filled its whole star budget from the
+  first tile, so a field straddling a tile boundary had catalogue stars on one side only
+  and its fit rested on half the frame; the `.290` reader (G05) gave each tile a fixed
+  share, under-sampling a tile that covered most of the field. On the 635-image
+  benchmark corpus this solves 29 more images with the true centre as hint (475 → 504
+  of 596) and 30 more with the hint 0.3 fields off, with fewer false positives in both,
+  and it is no slower. It changes which catalogue stars a multi-tile field is matched
+  against, so a few marginal solves change either way (docs/test-images.md §7.7).
+- ASTAP compatibility: the `Start position:` and `Solution found:` lines on stdout now
+  match `astap_cli` byte for byte. Every field is two digits wide and the start position
+  has ASTAP's comma: `Start position: 04: 20  00.0, +35d 00  00` where arcsec printed
+  `4: 20  0.0 +35d 00  0`. N.I.N.A. reads only the `.ini` file, so it never saw the
+  difference, but a script that parses stdout could. One deliberate difference remains:
+  an RA that rounds up to 24h prints as `00:` where ASTAP prints `24:`.
+
 ## [0.1.2] - 2026-09-28
 
 ### Fixed

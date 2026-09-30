@@ -21,7 +21,8 @@ use std::time::Instant;
 
 use arcsec_core::ArcsecError;
 use arcsec_core::pipeline::{
-    BlindSolveParams, SearchSpeed, SolveMethod, SolveParams, format_radec, solve_image,
+    BlindSolveParams, SearchSpeed, SolveMethod, SolveParams, format_dec, format_ra, format_radec,
+    solve_image,
 };
 use arcsec_core::types::{ImageBuffer, WcsSolution};
 use arcsec_core::wcs::{TanWcs, fit_sip};
@@ -220,9 +221,11 @@ fn main() {
         "Search radius: {:.0} degrees, ",
         search_radius_rad.to_degrees()
     );
+    // ASTAP separates RA and Dec with a comma here, but not on "Solution found".
     println!(
-        "Start position: {}",
-        format_radec(ra_hint_rad, dec_hint_rad)
+        "Start position: {}, {}",
+        format_ra(ra_hint_rad),
+        format_dec(dec_hint_rad)
     );
     println!(
         "Image height: {:.2} degrees",

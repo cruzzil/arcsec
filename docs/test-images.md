@@ -636,7 +636,8 @@ Last re-measured 2026-09-25 on the 0.1.0 code, at both `-r 3` and the script's d
 | + 9-NN quad redundancy | 64 | 4 | 38/62 | 26/34 | 0/7 |
 | + star-level verification | 86 | 0 | 54/63 | 32/34 | 0/6 |
 | + spread check, no star trim | 89 | 0 | 55/63 | 34/34 | 0/6 |
-| + `.290`/`.001` catalogues, `--auto-db` | **90** | **0** | **56/64** | **34/34** | 0/5 |
+| + `.290`/`.001` catalogues, `--auto-db` | 90 | 0 | 56/64 | 34/34 | 0/5 |
+| + catalogue read across tiles (§7.7) | **92** | **0** | **58/64** | **34/34** | 0/5 |
 | **ASTAP CLI-2026.07.30** | 47 | 0 | 39/64 | 8/34 | 0/5 |
 
 Accuracy of arcsec's correct solves (2026-09-25):
@@ -901,8 +902,10 @@ scripts/benchmark.py --auto-db --astap ~/astap_cli --radius 3 --jobs 1   # for t
 
 ## 7. Results — expanded corpus (635 entries)
 
-Measured 2026-09-30 with the 0.1.2 release binary, `--auto-db` (d80 0.15°–6°, g05
-3°–20°, w08 20°–80° installed), true centre as the hint, `-r 5`, 8 jobs:
+Measured 2026-10-01 on the code after the catalogue-read fix (§7.7, unreleased), against
+the 0.1.2 release binary as "before" (the numbers this section showed until then).
+`--auto-db` (d80 0.15°–6°, g05 3°–20°, w08 20°–80° installed), true centre as the hint,
+`-r 5`, 12 jobs:
 
 ```bash
 scripts/benchmark.py --corpus --auto-db --by tier,source,dataset,fov,set --csv run.csv
@@ -917,91 +920,108 @@ in §7.5 is a reference point, not a ranking.
 
 ### 7.1 Overall
 
-| | n | correct | false positives | inexact | no solve |
+| | n | correct (0.1.2 → now) | false positives | inexact | no solve |
 |---|---|---|---|---|---|
-| Tier A — synthetic cutouts | 234 | 192 (82 %) | 1 | – | 41 |
-| Tier B — survey pixels | 255 | 196 (77 %) | 2 | 5 | 52 (2 below any catalogue) |
-| Tier C — LCO frames | 42 | 37 (88 %) | 0 | – | 5 |
-| Tier S — simulated camera artefacts | 65 | 50 (77 %) | 2 | 6 | 7 |
-| **A + B + C + S** | **596** | **475 (80 %)** | **5** | **11** | **105** |
-| Tier D — must-fail controls | 35 | – | **0** | – | 35 correctly refused |
-| Tier D — wrong-FOV stress (`expect=any`) | 4 | 3 solved correctly | 0 | – | 1 |
-| v1 subset | 98 + 5 | 90 | 0 | – | 8 (unchanged from §6) |
+| Tier A — synthetic cutouts | 234 | 192 → **206** (88 %) | 1 → 1 | – | 41 → 27 |
+| Tier B — survey pixels | 255 | 196 → **206** (81 %) | 2 → 3 | 5 → 4 | 52 → 42 (2 below any catalogue) |
+| Tier C — LCO frames | 42 | 37 → **38** (90 %) | 0 → 0 | – | 5 → 4 |
+| Tier S — simulated camera artefacts | 65 | 50 → **54** (83 %) | 2 → 0 | 6 → 7 | 7 → 4 |
+| **A + B + C + S** | **596** | **475 → 504 (85 %)** | **5 → 4** | **11 → 11** | **105 → 77** |
+| Tier D — must-fail controls | 35 | – | **0 → 0** | – | 35 correctly refused |
+| Tier D — wrong-FOV stress (`expect=any`) | 4 | 3 → 3 solved correctly | 0 | – | 1 |
+| v1 subset | 98 + 5 | 90 → **92** | 0 → 0 | – | 8 → 6 |
 
-Accuracy of the correct solves (median centre / corner): A 0.53″ / 0.81″, B 0.15″ / 0.33″,
-C 0.24″ / 0.62″, S 0.62″ / 1.25″. Median time 0.2–0.5 s per image.
+Accuracy of the correct solves (median centre / corner, now): A 0.52″ / 0.77″, B 0.16″ /
+0.33″, C 0.23″ / 0.63″, S 0.60″ / 1.01″ (0.1.2: A 0.53″ / 0.81″, B 0.15″ / 0.33″, C 0.24″ /
+0.62″, S 0.62″ / 1.25″). Of the 475 images both versions solve, 39 moved more than 0.2″
+closer to the truth at the worst corner and 9 moved further away. Median time 0.2–0.5 s
+per image.
 
 **By field of view** (long side):
 
-| FOV | n | correct | FP | inexact |
+| FOV | n | correct (0.1.2 → now) | FP | inexact |
 |---|---|---|---|---|
-| < 0.15° | 6 | 4 | 0 | 0 |
-| 0.15–0.3° | 113 | 103 (91 %) | 0 | 0 |
-| 0.3–0.6° | 126 | 116 (92 %) | 0 | 0 |
-| 0.6–1.2° | 180 | 156 (87 %) | 0 | 6 |
-| 1.2–2.5° | 88 | 62 (70 %) | 0 | 2 |
-| 2.5–6° | 43 | 9 (21 %) | 1 | 2 |
-| 6–20° | 36 | 23 (64 %) | 4 | 1 |
-| > 20° | 8 | 5 | 0 | 0 |
+| < 0.15° | 6 | 4 → 4 | 0 → 0 | 0 → 0 |
+| 0.15–0.3° | 113 | 103 → 103 (91 %) | 0 → 0 | 0 → 0 |
+| 0.3–0.6° | 126 | 116 → 117 (93 %) | 0 → 0 | 0 → 0 |
+| 0.6–1.2° | 180 | 156 → **163** (91 %) | 0 → 0 | 6 → 2 |
+| 1.2–2.5° | 88 | 62 → **75** (85 %) | 0 → 0 | 2 → 2 |
+| 2.5–6° | 43 | 9 → **17** (40 %) | 1 → 0 | 2 → 5 |
+| 6–20° | 36 | 23 → 23 (64 %) | 4 → 4 | 1 → 2 |
+| > 20° | 8 | 5 → 5 | 0 → 0 | 0 → 0 |
 
 **By source:**
 
-| Source | n | correct | FP | inexact | centre / corner (median) |
+| Source | n | correct (0.1.2 → now) | FP | inexact | centre / corner (median, now) |
 |---|---|---|---|---|---|
-| hips2fits (22 surveys) | 234 | 192 (82 %) | 1 | 0 | 0.53″ / 0.81″ |
-| ZTF | 43 | **43** | 0 | 0 | 0.09″ / 0.39″ |
-| SDSS | 33 | **33** | 0 | 0 | 0.20″ / 0.33″ |
-| Pan-STARRS1 | 20 | **20** | 0 | 0 | 0.20″ / 0.32″ |
-| SkyView | 37 | 35 | 0 | 0 | 0.55″ / 0.68″ |
-| Legacy Surveys | 40 | 37 | 0 | 0 | 0.05″ / 0.10″ |
-| LCO (tier C) | 42 | 37 | 0 | 0 | 0.24″ / 0.62″ |
-| WISE L1b | 25 | 16 | 0 | 4 | 0.31″ / 8.6″ (5.5″ linear floor) |
-| SkyMapper native, 0.17° | 15 | 8 | 0 | 0 | 0.07″ / 0.23″ |
-| TESS FFI crops | 42 | **4** | 2 | 1 | 6.6″ / 66″ |
-| tier S | 65 | 50 | 2 | 6 | 0.62″ / 1.25″ |
+| hips2fits (22 surveys) | 234 | 192 → **206** (88 %) | 1 → 1 | 0 | 0.52″ / 0.77″ |
+| ZTF | 43 | **43** → **43** | 0 | 0 | 0.10″ / 0.35″ |
+| SDSS | 33 | **33** → **33** | 0 | 0 | 0.20″ / 0.33″ |
+| Pan-STARRS1 | 20 | **20** → **20** | 0 | 0 | 0.20″ / 0.32″ |
+| SkyView | 37 | 35 → 36 | 0 | 0 | 0.55″ / 0.68″ |
+| Legacy Surveys | 40 | 37 → 37 | 0 | 0 | 0.05″ / 0.10″ |
+| LCO (tier C) | 42 | 37 → 38 | 0 | 0 | 0.23″ / 0.63″ |
+| WISE L1b | 25 | 16 → **20** | 0 | 4 → 0 | 0.32″ / 8.6″ (5.5″ linear floor) |
+| SkyMapper native, 0.17° | 15 | 8 → 8 | 0 | 0 | 0.07″ / 0.23″ |
+| TESS FFI crops | 42 | 4 → **9** | 2 → 3 | 1 → 4 | 6.9″ / 49″ |
+| tier S | 65 | 50 → **54** | 2 → 0 | 6 → 7 | 0.60″ / 1.01″ |
 
-Among the tier-A HiPS: TESS 2-yr 10/16 (3°–24°), SHASSA 4/8 (15°–50°), coarse DSS 3/6,
-named objects 29/36, random galactic-plane fields 17/23.
+The gains are where §7.7 says they should be: fields of 0.6°–6°, which straddle a d80 tile
+boundary more often than not, and above all the 1.2°–6° bands, where a tile is not much
+larger than the field. Among the tier-A HiPS (0.1.2 figures): TESS 2-yr 10/16 (3°–24°),
+SHASSA 4/8 (15°–50°), coarse DSS 3/6, named objects 29/36, random galactic-plane fields
+17/23; now `cam_ztf_a`, the three 3°–5° TESS-HiPS fields, `obj_heart`, `obj_rosette`,
+`obj_orion_belt`, `type_m31`, `type_m44` and six random fields solve as well, and
+`obj_47tuc` no longer does (§7.7).
 
-**Tier S by family:** Bayer mosaics 5/5, trailing 3/3, saturation 2/2, satellites and
-junk 5/5, binning 3/3, clouds 3/4, formats (u8, i32, f64, gzip, XISF, header WCS) 10/12,
-orientation 13/16, defocus 2/3, amateur 1/2 (+1 inexact), lens distortion 3/10 (5 inexact,
-1 false positive). Every format and orientation miss has a parent that also fails
-(`cam_dss_c`, `cam_ztf_a`) or is a coarse TESS-HiPS parent, so none is a format bug.
+**Tier S by family** (0.1.2): Bayer mosaics 5/5, trailing 3/3, saturation 2/2, satellites
+and junk 5/5, binning 3/3, clouds 3/4, formats (u8, i32, f64, gzip, XISF, header WCS)
+10/12, orientation 13/16, defocus 2/3, amateur 1/2 (+1 inexact), lens distortion 3/10 (5
+inexact, 1 false positive). Every format and orientation miss has a parent that also fails
+(`cam_dss_c`, `cam_ztf_a`) or is a coarse TESS-HiPS parent, so none is a format bug. Now
+`cam_ztf_a` solves and so do its clouds and rot90 variants, `s_dss_c_flipx`,
+`s_tess_c_defocus` and `s_tess_c_flipx`; `s_tess_c_flipy` no longer does.
 
 ### 7.2 With the hint 0.3 fields off (`--offset-hint 0.3`)
 
-| | correct | FP | inexact |
+| | correct (0.1.2 → now) | FP | inexact |
 |---|---|---|---|
-| A | 183 (−9) | 4 (+3) | 0 |
-| B | 169 (−27) | 3 (+1) | 24 (+19) |
-| C | 39 (+2) | 0 | 0 |
-| S | 38 (−12) | 2 | 9 (+3) |
-| v1 subset | 86 (−4, as in §6.7) | 0 | 0 |
-| tier D | – | 0 | – |
+| A | 183 → **199** | 4 → 1 | 0 → 0 |
+| B | 169 → **173** | 3 → 2 | 24 → 30 |
+| C | 39 → 39 | 0 → 0 | 0 → 0 |
+| S | 38 → **48** | 2 → 1 | 9 → 9 |
+| **A + B + C + S** | **429 → 459** | **9 → 4** | **33 → 39** |
+| v1 subset | 86 → 86 | 0 → 0 | 0 → 0 |
+| tier D | – | 0 → 0 | – |
 
-The losses concentrate where the image carries distortion: WISE drops from 16 correct to
-1 (19 inexact — fitted from an off-centre spiral position, the linear plate follows the
-SIN-SIP distortion differently), TESS, wide TESS-HiPS fields and tier-S lenses. The new
-tier-A false positives are small (5.6″ `rnd_057`, 8.5″ `rnd_074`, both galactic-plane
-fields) plus coarse wide fields.
+By field of view the gains are again 0.6°–2.5° (+24) and 2.5°–6° (+4). Tier B's six more
+inexact solves are seven TESS FFI crops that used to fail outright and now solve to the
+linear plate's distortion floor, less `ztf_34`, which went from inexact to correct.
+
+In 0.1.2 the losses against the true-centre hint concentrated where the image carries
+distortion: WISE drops from 16 correct to 1 (19 inexact — fitted from an off-centre spiral
+position, the linear plate follows the SIN-SIP distortion differently), TESS, wide
+TESS-HiPS fields and tier-S lenses. That is unchanged. Three of 0.1.2's four tier-A false
+positives here (`rnd_057` 5.6″, `rnd_074` 8.5″, both galactic-plane fields, and
+`wide_tess_02`) are now correct solves.
 
 ### 7.3 False positives, all of them (true-centre hint)
 
 | Entry | FOV | Corner error | What it is |
 |---|---|---|---|
-| `wide_shassa_01` | 15° at 26″/px | 30.9″ (1.2 px) | a correct field just over the one-pixel threshold |
-| `tess_25`, `tess_32` | 12° TESS FFI crops | 2200–2450″, centre 100–180″ | right area, but one linear plate across 1000″ of distortion: genuinely wrong at the edges |
-| `s_tess_b_pincush` | 9°, 137″ linear floor | 279″ | the same, synthetic |
-| `s_tess_c_flipx` | 4° at 12″/px | 12.2″ (1.02 px) | at the threshold |
+| `wide_shassa_01` | 15° at 26″/px | 31.0″ (1.2 px) | a correct field just over the one-pixel threshold |
+| `tess_03`, `tess_25`, `tess_32` | 12° TESS FFI crops | 2200–2830″, centre 100–180″ | right area, but one linear plate across 1000″ of distortion: genuinely wrong at the edges |
 
-None in tiers C or D, and none below 2.5°. The dangerous ones are the three wide
+`tess_03` is new with the catalogue fix (it failed with the true-centre hint, and was
+already a false positive with the offset one); the two tier-S false positives of 0.1.2
+went, `s_tess_b_pincush` (279″, now no solve) and `s_tess_c_flipx` (12.2″, now correct at
+3.2″). None in tiers C or D, and none below 6°. The dangerous ones are the three wide
 *distorted* cases: once the fit residuals show structure, a linear plate should be
 refused — or a distortion model fitted — rather than reported as a solve.
 
 ### 7.4 Failure categories that point at solver work
 
-1. **Native wide-field camera data: TESS FFIs 4/42.** 21″/px, a PSF of 1–2 pixels, and
+1. **Native wide-field camera data: TESS FFIs 9/42** (4/42 in 0.1.2). 21″/px, a PSF of 1–2 pixels, and
    25″–1000″ of SIP distortion. The solver *finds* the field — on `tess_05` (2.2°) the
    first spiral position reports 614 matching quad references — and then accepts no
    solution. The same sky through the TESS HiPS (resampled, undistorted) solves 10/16.
@@ -1014,8 +1034,8 @@ refused — or a distortion model fitted — rather than reported as a solve.
    floor): the star-level refit keeps only matches within 2 px, so the edges, where the
    distortion is largest, drop out and the plate is fitted to the centre. WISE shows the
    same pattern.
-3. **2.5°–6° is the weakest band (9/43).** It is where d80 hands over to g05 and pixel
-   scales pass 10″/px; most entries are TESS (FFI or HiPS) or coarse DSS.
+3. **2.5°–6° is the weakest band (17/43, 9/43 in 0.1.2).** It is where d80 hands over
+   to g05 and pixel scales pass 10″/px; most entries are TESS (FFI or HiPS) or coarse DSS.
 4. **Real-telescope misses (LCO 37/42).** M43 (bright nebula), two frames with FWHM 6–7″
    (seeing or defocus), a sparse *z*-band field, and a 10′ 2 m frame (below d80's floor).
    ASTAP solves four of the five (§7.5), so they are worth a direct look.
@@ -1026,8 +1046,9 @@ refused — or a distortion model fitted — rather than reported as a solve.
 
 ### 7.5 ASTAP on the same images (reference only)
 
-`astap_cli` CLI-2026.07.30 with `-D d80` only (so no catalogue above 6°), the same hints
-and the same scoring. ASTAP was run with the harness's defaults and no per-image tuning;
+Measured against arcsec 0.1.2, before the catalogue-read fix. `astap_cli`
+CLI-2026.07.30 with `-D d80` only (so no catalogue above 6°), the same hints and the same
+scoring. ASTAP was run with the harness's defaults and no per-image tuning;
 its low counts on Legacy Surveys (0/40) and SDSS (5/33) repeat v1's pattern and probably
 reflect settings (downsampling, star count) as much as ability. Read this as "where the
 two differ", not as a ranking.
@@ -1043,6 +1064,8 @@ ASTAP solves 24 images arcsec does not: 6 SkyMapper 0.17° cutouts, 4 of the 5 L
 8 random tier-A fields (mostly galactic plane; PS1, ZTF, 2MASS, SkyMapper), `obj_rosette`,
 `obj_orion_belt`, v1's `type_m31` and `type_m44`, and two tier-S images of `cam_ztf_a`.
 Those 24 are the most direct pointers to what arcsec's detection or matching still misses.
+Since the catalogue-read fix arcsec solves `obj_rosette`, `obj_orion_belt`, `type_m31`,
+`type_m44` and the `cam_ztf_a` images among them too.
 
 ### 7.6 Ground-truth checks
 
@@ -1067,6 +1090,72 @@ Those 24 are the most direct pointers to what arcsec's detection or matching sti
   at the 2″ level.
 * **Fetch-time checks** dropped three LCO frames whose pipeline flagged its own fit
   (`WCSERR ≠ 0`) and one TESS FFI with no celestial WCS.
+
+### 7.7 The catalogue read across tiles (2026-10-01)
+
+[plate-solving.md §11.11](plate-solving.md#1111-the-1476-catalogue-read-starves-every-tile-but-the-first--fixed-2026-10-01):
+the `.1476` reader filled the whole star budget from the first tile a field overlaps, so a
+field straddling a tile boundary was matched on one side only; the `.290` reader
+under-sampled a tile covering most of the field. Both now return the field's brightest
+`max_stars` stars from every tile it overlaps. The numbers in §7.1–7.3 are after the fix.
+
+**Images whose status changed, true-centre hint** (32 newly correct, 3 no longer solved,
+net +29):
+
+* Now correct — 26 from no solve: `cam_ztf_a`, `lco_29`, `obj_heart`, `obj_orion_belt`,
+  `obj_rosette`, `rnd_026`, `rnd_035`, `rnd_036`, `rnd_057`, `rnd_074`, `rnd_079`,
+  `s_dss_c_flipx`, `s_tess_c_defocus`, `s_ztf_a_clouds`, `s_ztf_a_rot90`, `sv2_06`,
+  `tess_19`, `tess_22`, `tess_24`, `tess_33`, `tess_37`, `type_m31`, `type_m44`,
+  `wide_tess_01`–`03`; 5 from inexact: `tess_13`, `wise_04`, `wise_09`, `wise_10`,
+  `wise_24` (the WISE corners fall from 10.5–26″ to 8.3–9.5″, inside their linear
+  floor); 1 from false positive: `s_tess_c_flipx` (12.2″ → 3.2″).
+* Now inexact rather than no solve: `s_tess_b_lens`, `tess_12`, `tess_15`, `tess_21`,
+  `tess_23` — distorted TESS fields that now find the right field and stop at the linear
+  plate's floor.
+* No longer a false positive: `s_tess_b_pincush` (now no solve).
+* Newly a false positive: `tess_03` (12° TESS FFI, 2830″ at the corners). It was a false
+  positive in 0.1.2 too, with the offset hint; the cause is the 1000″ of distortion, not
+  the catalogue.
+* No longer solved: `obj_47tuc`, `s_tess_c_flipy`, `tess_09`. On 47 Tuc (0.6°) the
+  field's 500 brightest catalogue stars now come from the cluster, which Gaia resolves and
+  the image does not, so the catalogue reaches only mag 13.9 where the image's stars go
+  to mag 16; the old read took one tile that held none of the core and happened to match
+  the image better. `s_tess_c_flipy` and `tess_09` are coarse (12–21″/px) TESS frames
+  that now fail verification at the first position; their siblings (`s_tess_c_flipx`,
+  `s_tess_c_rot270`, the other FFI crops) gained.
+
+**With the hint 0.3 fields off** (45 better, 7 worse): 36 new correct solves (among them
+`dens_bootes`, `dens_norma`, `obj_ic1396`, `obj_rigel`, `obj_rosette`, `obj_smc`,
+`type_m44`, eight tier-S SkyMapper and DSS variants, `wide_tess_10`/`11` and `ztf_34`
+from inexact), of which 4 were false positives (`rnd_057`, `rnd_074`, `s_tess_c_defocus`, `wide_tess_02`),
+`tess_03` and `tess_25` no longer false positives, and seven TESS FFI crops inexact
+rather than unsolved. Lost: `fov_10p0`, `s_dss_c_flipx`, `s_dss_c_xisf`, `type_dbl_clus`,
+`type_m31`, `wide_dss_05` (no solve), and `tess_43`, a new 988″ false positive of the
+distorted-TESS kind. Most losses were marginal solves before (30–70 matched quads, verified
+barely above the 30-star minimum): with the hint off-centre only part of the catalogue
+window overlaps the image, and a one-sided read that happened to cover the overlap
+matched it better than the whole window's brightest does. `fov_3p00` and `s_ps1_b_i32`
+are of the same kind: they solve in this run and failed in the run with the position-hash
+cut below.
+
+**Matched-star coverage.** With `--sip`, the v1 solves whose verified stars leave a cell
+of the 3×3 grid empty fell from 26 of 90 to 7 of 92. In the remaining seven the gap is in
+the image (`ps1_big_c`'s window holds only 297 catalogue stars, all of them read).
+
+**Speed.** The v1 subset with `--jobs 1 --threads 1`, two alternating rounds: total
+71.0 s → 62.6 s and 70.0 s → 69.7 s, median 0.19 s → 0.18 s and 0.18 s → 0.19 s. A full
+spiral that finds nothing (`neg_shuffle_1`, `--threads 1`) went from 7.5 s to 6.7 s:
+stopping every tile at the field's magnitude limit reads fewer records than filling the
+budget from one tile.
+
+**Negative result — breaking magnitude ties by position.** The budget is usually cut
+part-way through a 0.1 mag group, and within a group a tile's records run south to north,
+so the stars kept from the last group favour the south of the field (as they always have,
+and as in ASTAP). Choosing them by a hash of position instead makes the cut spatially
+even. Over the whole corpus it was a wash — true-centre hint 506 correct / 5 false
+positives against the file-order cut's 504 / 4, offset hint 458 / 6 against 459 / 4, the
+false-positive differences all in distorted TESS fields — so the simpler file-order cut,
+which is also what a single-tile read has always done, was kept.
 
 ## 8. Licensing and attribution
 
