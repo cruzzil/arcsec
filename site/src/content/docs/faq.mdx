@@ -88,10 +88,12 @@ writes the same files, but that is untested. If you try one, please
 
 ## Does it correct for lens distortion?
 
-No. arcsec fits a linear (TAN) solution and does not add SIP distortion terms, so
-`--sip` is refused with an error. The 15° field in the benchmark solves with its worst
-corner 4.5″ out, but a strongly distorted camera lens may need a solver that models
-distortion.
+Only if you ask for it. By default arcsec fits a linear (TAN) solution, which suits
+most telescopes. With `--sip` it also fits third-order distortion terms and writes them
+to the `.wcs` file (and the header with `--update`), but only when the stars show
+significant distortion across the frame: on an undistorted field extra terms just add
+noise at the corners. Strongly distorted fields, such as very wide camera lenses, are
+the hardest case for any linear solve.
 
 ## What is `--method tetra`?
 

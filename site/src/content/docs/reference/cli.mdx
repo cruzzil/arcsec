@@ -33,7 +33,9 @@ everything below.
 | `-i`, `--index <path>` | Astrometry.net index file, or a folder of `index-*.fits` files, for [blind solving](#blind-solving) | off |
 | `--threads <n>` | Maximum worker threads; `0` for one per core. `1` runs single-threaded | `0` |
 | `--method <m>` | Matching method: `quads`, or the experimental `tetra` (three-star triangles) | `quads` |
-| `--speed <mode>` | Search mode; only `auto` is implemented | `auto` |
+| `--speed <mode>` | Search mode: `auto`, or `slow`, which reads twice the field at every search position for more overlap | `auto` |
+| `--sip [y\|n]` | Add third-order SIP distortion terms to the `.wcs` file (and the header with `--update`) when the field shows significant distortion | off |
+| `--check [y\|n]` | Even out a raw one-shot-colour (Bayer) image before solving; for unbinned raw colour frames only | off |
 | `--wcs` | Accepted for compatibility; the `.wcs` file is always written | |
 | `--update` | Write the solution into the input FITS file's header | off |
 | `--log` | Write the solver log to `<base>.log` | off |
@@ -52,19 +54,20 @@ spellings too, so an `astap_cli` command line works unchanged:
 `-fov 1.2` and `--fov 1.2` mean the same. Options not in that list, such as
 `--threads`, `--method` and `--index`, are arcsec's own and take two dashes.
 
-### Not implemented
+### Star analysis and export
 
-These ASTAP options are refused with an error and exit code 1, rather than silently
-ignored:
+These follow ASTAP's output exactly, so tools that call `astap_cli` for star
+measurements (focus and filter-offset utilities, for example) can use arcsec instead.
 
-| Option | ASTAP's meaning |
+| Option | What it does |
 |---|---|
-| `--sip` | Add SIP distortion coefficients to the solution |
-| `--check` | Apply the check-pattern filter before solving |
-| `--analyse <snr>` | Only analyse: report the median HFD and number of stars |
-| `--extract <snr>` | As `--analyse`, and export the star list to `.csv` |
-| `--extract2 <snr>` | Solve, and export the star list with RA and Dec to `.csv` |
-| `--speed slow` | The slower, more thorough search mode |
+| `--analyse <snr>` | Measure without solving: prints `HFD_MEDIAN=` and `STARS=`, writes no `.ini` or `.wcs` and needs no catalogue. `0` means an SNR of 30 |
+| `--extract <snr>` | As `--analyse`, and writes every star to `<image>.csv` (`x,y,hfd,snr,flux,ra[0..360],dec[0..360]`; RA/Dec only if the header already holds a WCS). As in ASTAP the CSV goes next to the image whatever `-o` says |
+| `--extract2 <snr>` | Solve (with SIP), then write the same CSV with every star's RA and Dec, whether or not the solve succeeded |
+
+Where arcsec differs from ASTAP, deliberately: `--extract` alone prints the real median
+HFD (ASTAP prints 21.5), a bare `--check` turns the filter on (as ASTAP's help says it
+should), and SIP terms are added only when the distortion is statistically significant.
 
 ### Position and scale from the header
 
