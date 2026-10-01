@@ -181,6 +181,92 @@ pub fn read_catalog_stars(
     }
 }
 
+/// Call `f` for every star of `db_name` brighter than or equal to `mag_limit` whose
+/// declination lies in `[dec_lo, dec_hi]` (radians), all the way round in RA.
+///
+/// This is the whole-sky read the blind-index builder needs, a declination band at
+/// a time so that a deep magnitude limit never holds the whole catalogue in memory.
+/// Every area file is sorted brightest first, so each is read only down to
+/// `mag_limit`. Stars arrive in no particular order. Works on all three layouts.
+///
+/// # Errors
+///
+/// [`ArcsecError::CatalogIo`] if an area file exists but cannot be read or is
+/// malformed. Missing area files are skipped, as everywhere else.
+pub fn for_each_star_in_dec_band(
+    db_path: &Path,
+    db_name: &str,
+    dec_lo: f64,
+    dec_hi: f64,
+    mag_limit: f64,
+    mut f: impl FnMut(&CatalogStar),
+) -> Result<()> {
+    let paths: Vec<std::path::PathBuf> = match detect_layout(db_path, db_name) {
+        CatalogLayout::AllSky001 => {
+            // Brightest first and small (W08 is ~41k stars): read whole.
+            let all = super::format_001::read_001_file(
+                &db_path.join(format!("{db_name}_0101.001")),
+                0.0,
+                0.0,
+                4.0 * PI,
+                1.0,
+                usize::MAX,
+            )?;
+            for s in all.iter().filter(|s| s.dec >= dec_lo && s.dec <= dec_hi) {
+                if s.mag > mag_limit {
+                    break;
+                }
+                f(s);
+            }
+            return Ok(());
+        }
+        CatalogLayout::Areas290 => super::areas_290::areas_in_dec_band_290(dec_lo, dec_hi)
+            .into_iter()
+            .map(|a| db_path.join(format!("{db_name}_{}", super::areas_290::filename_290(a))))
+            .collect(),
+        CatalogLayout::Areas1476 => super::areas::areas_in_dec_band_1476(dec_lo, dec_hi)
+            .into_iter()
+            .map(|a| db_path.join(format!("{db_name}_{}", filename_1476(a))))
+            .collect(),
+    };
+    for path in paths {
+        let cursor = match AreaCursor::open(&path) {
+            Ok(Some(c)) => c,
+            Ok(None) => continue,
+            Err(ArcsecError::CatalogIo(ref e)) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let data = &cursor.mmap[..];
+        let rs = cursor.record_size;
+        let mut pos = cursor.pos;
+        let mut dec9 = 0i32;
+        let mut mag = 0.0f64;
+        while pos + rs <= data.len() {
+            let r = &data[pos..pos + 5];
+            pos += rs;
+            let ra_raw = (r[0] as u32) | ((r[1] as u32) << 8) | ((r[2] as u32) << 16);
+            if ra_raw == HEADER_SENTINEL {
+                mag = header_mag(r[4]);
+                if mag > mag_limit {
+                    break;
+                }
+                dec9 = r[3] as i32 - 128;
+                continue;
+            }
+            let dec_raw = (dec9 << 16) | ((r[4] as i32) << 8) | (r[3] as i32);
+            let dec = dec_raw as f64 * DEC_SCALE;
+            if dec >= dec_lo && dec <= dec_hi {
+                f(&CatalogStar {
+                    ra: ra_raw as f64 * RA_SCALE,
+                    dec,
+                    mag,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Which sky tiling a database directory uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogLayout {

@@ -156,6 +156,185 @@ pub fn estimate_position(
     }
 }
 
+// ── arcsec's own index ──────────────────────────────────────────────────────────
+
+/// Relative uncertainty allowed on a pixel scale taken from `--fov` or the header.
+/// FOCALLEN and XPIXSZ are often a few percent off (reducers, binning written
+/// inconsistently); 20% covers that without letting the vote spread.
+const SCALE_SLACK: f64 = 1.2;
+
+/// Pixel scales searched when nothing gives one, arcseconds per pixel.
+const SCALE_UNKNOWN: (f64, f64) = (0.3, 60.0);
+
+/// The arcsec blind index `path` names: the file itself, or the first `*.arcsecix`
+/// in a directory. `None` when there is none (the path may still hold
+/// Astrometry.net files).
+pub fn find_arcsec_index(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return arcsec_core::index::is_blind_index(path).then(|| path.to_path_buf());
+    }
+    crate::catalog_cmd::index_cmd::index_files(path)
+        .into_iter()
+        .find(|p| arcsec_core::index::is_blind_index(p))
+}
+
+/// Search radius, in fields, that the spiral covers before an automatically found
+/// index is consulted. Inside it the result is exactly the spiral's, so a usable
+/// hint solves as it always did; beyond it the spiral's cost grows with the square
+/// of the radius, while the index's does not grow at all.
+pub const AUTO_SPIRAL_FIELDS: f64 = 5.0;
+
+/// The smallest stage-one spiral radius, radians (1°).
+const AUTO_SPIRAL_MIN: f64 = 1.0 * core::f64::consts::PI / 180.0;
+
+/// Smallest `-r` at which an installed index is consulted automatically, radians
+/// (10°). Below it a failed search is cheap anyway (about a second on the corpus),
+/// and consulting the index roughly doubled it for nothing; above it the spiral's
+/// cost dominates and the index adds a few percent to a failure.
+const AUTO_MIN_RADIUS: f64 = 10.0 * core::f64::consts::PI / 180.0;
+
+/// An arcsec index to use, and whether the user named it.
+pub struct OwnIndex {
+    path: PathBuf,
+    explicit: bool,
+}
+
+/// The arcsec index for this solve: the one `--index` names, if it names one;
+/// otherwise, when the search radius reaches past [`AUTO_SPIRAL_FIELDS`] fields and
+/// is at least 10°, one installed in the catalogue directory or beside the star
+/// database.
+pub fn arcsec_index_for(
+    explicit: Option<&PathBuf>,
+    template: &arcsec_core::pipeline::SolveParams,
+) -> Option<OwnIndex> {
+    if let Some(p) = explicit {
+        return find_arcsec_index(p).map(|path| OwnIndex {
+            path,
+            explicit: true,
+        });
+    }
+    if template.search_radius <= stage_one_radius(template)
+        || template.search_radius < AUTO_MIN_RADIUS
+    {
+        return None;
+    }
+    find_arcsec_index(&crate::catalog_cmd::default_dir())
+        .or_else(|| find_arcsec_index(&template.db_path))
+        .map(|path| OwnIndex {
+            path,
+            explicit: false,
+        })
+}
+
+fn stage_one_radius(template: &arcsec_core::pipeline::SolveParams) -> f64 {
+    (template.fov * AUTO_SPIRAL_FIELDS).max(AUTO_SPIRAL_MIN)
+}
+
+/// Solve with an arcsec index; `None` if nothing verified, and the caller runs
+/// the ordinary search.
+///
+/// Named with `--index`, the index is tried first. Found automatically, the
+/// spiral first searches [`AUTO_SPIRAL_FIELDS`] fields round the hint (if there is
+/// a hint), which returns exactly what the full search would for any field that
+/// close; only then is the index consulted, limited to `-r` round the hint unless
+/// the radius is the whole sky.
+///
+/// `scale` is arcseconds per pixel of the image as solved (after binning);
+/// `scale_known` says whether it came from the user or the header rather than the
+/// 1″/px fallback.
+pub fn index_stage(
+    img: &ImageBuffer,
+    ix: &OwnIndex,
+    template: &arcsec_core::pipeline::SolveParams,
+    has_hint: bool,
+    scale: f64,
+    scale_known: bool,
+) -> Option<arcsec_core::types::WcsSolution> {
+    use core::f64::consts::PI;
+    if !ix.explicit && has_hint {
+        let r0 = stage_one_radius(template);
+        log::info!(
+            "Searching {:.1}° round the hint before the blind index.",
+            r0.to_degrees()
+        );
+        let near = arcsec_core::pipeline::SolveParams {
+            search_radius: r0,
+            ..template.clone()
+        };
+        if let Ok(w) = arcsec_core::pipeline::solve_image(img, &near) {
+            return Some(w);
+        }
+    }
+    // Named with --index the solve is blind, as with Astrometry.net files; found
+    // automatically it stands in for the rest of the spiral, so it keeps to -r.
+    let within = (!ix.explicit && has_hint && template.search_radius < PI).then_some((
+        template.ra_hint,
+        template.dec_hint,
+        template.search_radius + template.fov,
+    ));
+    let mut wcs = solve_with_arcsec_index(img, &ix.path, template, scale, scale_known, within)?;
+    // The hinted solve started at the index's hypothesis; report the distance from
+    // the user's start position, as the spiral would.
+    let (s1, c1) = template.dec_hint.sin_cos();
+    let (s2, c2) = wcs.dec0.sin_cos();
+    let cos_d = (s1 * s2 + c1 * c2 * (wcs.ra0 - template.ra_hint).cos()).clamp(-1.0, 1.0);
+    wcs.search_dist_deg = cos_d.acos().to_degrees();
+    Some(wcs)
+}
+
+/// Solve with an arcsec blind index; `None` if it found nothing that verified.
+fn solve_with_arcsec_index(
+    img: &ImageBuffer,
+    path: &Path,
+    template: &arcsec_core::pipeline::SolveParams,
+    scale: f64,
+    scale_known: bool,
+    within: Option<(f64, f64, f64)>,
+) -> Option<arcsec_core::types::WcsSolution> {
+    let t0 = std::time::Instant::now();
+    let index = match arcsec_core::index::BlindIndex::open(path) {
+        Ok(ix) => ix,
+        Err(e) => {
+            eprintln!("Blind index {}: {e}", path.display());
+            return None;
+        }
+    };
+    let (scale_lo, scale_hi) = if scale_known {
+        (scale / SCALE_SLACK, scale * SCALE_SLACK)
+    } else {
+        SCALE_UNKNOWN
+    };
+    log::info!(
+        "Blind index {} ({} patterns), pixel scale {scale_lo:.3}–{scale_hi:.3}\"/px",
+        path.display(),
+        index.n_patterns()
+    );
+    let params = arcsec_core::pipeline::IndexSolveParams {
+        scale_lo,
+        scale_hi,
+        within,
+    };
+    match arcsec_core::pipeline::index_solve(img, &index, template, &params) {
+        Ok((wcs, stats)) => {
+            log::info!(
+                "Blind index: solved in {:.2} s (hypothesis rank {:?}, score {}, {} hinted solves)",
+                t0.elapsed().as_secs_f64(),
+                stats.accepted_rank,
+                stats.best_score,
+                stats.verified
+            );
+            Some(wcs)
+        }
+        Err(e) => {
+            log::info!(
+                "Blind index: no solution after {:.2} s: {e}",
+                t0.elapsed().as_secs_f64()
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

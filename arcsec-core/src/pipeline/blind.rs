@@ -18,6 +18,7 @@
 
 use core::f64::consts::PI;
 
+use super::sky_votes::{SkyVotes, medoid};
 use crate::catalog::anet::AnetIndex;
 use crate::detection::get_background;
 use crate::detection::stars::find_stars_with_background;
@@ -429,6 +430,9 @@ fn verify_score(
 
 const N_ENTRY_STARS: usize = 30;
 const VOTE_STEP: f64 = 0.1 * PI / 180.0; // 0.1° bins
+/// Vote bin width in `ln(pixel scale)`: hypotheses whose scales differ by more than
+/// about 5% are not agreeing on a field.
+const VOTE_LOG_SCALE_STEP: f64 = 0.05;
 const MATCH_PX: f64 = 5.0;
 // Quad stars are excluded from verify_score; empirical false-positive max ≈ 17
 // across 20 test fields.  MIN_VERIFY_SCORE=18 eliminates all observed false
@@ -485,8 +489,7 @@ fn run_blind_pass(
     }
 
     // ── Phase C: match and accumulate WCS hypotheses ──────────────────────────
-    let mut vote_map: std::collections::HashMap<(i32, i32), Vec<HypEntry>> =
-        std::collections::HashMap::new();
+    let mut votes: SkyVotes<HypEntry> = SkyVotes::new(VOTE_STEP, VOTE_LOG_SCALE_STEP);
     let mut n_matches = 0usize;
     let mut n_hyp = 0usize;
 
@@ -498,9 +501,8 @@ fn run_blind_pass(
         for &idx in &hits_scratch {
             let idx_entry = &index.entries[idx];
             if let Some(h) = hyp_from_entry(ie, idx_entry, img.width, img.height) {
-                let ra_bin = (h.est_ra / VOTE_STEP) as i32;
-                let dec_bin = ((h.est_dec + PI / 2.0) / VOTE_STEP) as i32;
-                vote_map.entry((ra_bin, dec_bin)).or_default().push(h);
+                let scale = (h.plate.a * h.plate.e - h.plate.b * h.plate.d).abs().sqrt();
+                votes.add(h.est_ra, h.est_dec, scale, h);
                 n_hyp += 1;
             }
         }
@@ -512,7 +514,7 @@ fn run_blind_pass(
         img_entries.len(),
         n_matches,
         n_hyp,
-        vote_map.len(),
+        votes.len(),
     );
 
     if n_hyp == 0 {
@@ -527,19 +529,17 @@ fn run_blind_pass(
     // ── Phase D: verify top-K cells ───────────────────────────────────────────
     let det_stars: Vec<(f64, f64)> = stars.0.iter().map(|s| (s.x, s.y)).collect();
 
-    let mut vote_cells: Vec<_> = vote_map.iter().collect();
-    // Ties break on the (ra_bin, dec_bin) key. sort_by_key is stable, so without
-    // this the order among equally-voted cells came from HashMap iteration, which
-    // is randomly seeded per process; the verification loop below takes strictly
-    // greater scores and stops early, so two runs on one image could disagree.
-    vote_cells.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    // Regions of agreement, strongest first (see `sky_votes`): each is represented
+    // by the medoid of its strongest bucket, so a region is not scored on a stray
+    // member. The order is deterministic, which the early stop below relies on.
+    let regions = votes.regions(usize::MAX);
 
     let mut best_score = 0usize;
     let mut best_ra = 0.0f64;
     let mut best_dec = 0.0f64;
 
-    'outer: for (_, hyps) in &vote_cells {
-        let h = &hyps[0];
+    'outer: for region in &regions {
+        let h = &region.members[medoid(region.members, |h| (h.est_ra, h.est_dec))];
         let sc = verify_score(
             h,
             &stars_by_dec,
@@ -554,7 +554,7 @@ fn run_blind_pass(
             parity_label,
             h.est_ra.to_degrees(),
             h.est_dec.to_degrees(),
-            hyps.len(),
+            region.votes,
             sc,
         );
         if sc > best_score {
@@ -568,11 +568,11 @@ fn run_blind_pass(
     }
 
     log::info!(
-        "Blind ({}): best verified score = {} (threshold {}, cells={}).",
+        "Blind ({}): best verified score = {} (threshold {}, regions={}).",
         parity_label,
         best_score,
         MIN_VERIFY_SCORE,
-        vote_cells.len(),
+        regions.len(),
     );
 
     (best_ra, best_dec, best_score)

@@ -12,7 +12,8 @@ pub use areas::{DEC_BOUNDARIES_1476, area_and_boundaries_1476, filename_1476, fi
 pub use areas_290::{DEC_BOUNDARIES_290, area_nr_290, filename_290, find_areas_290};
 pub use format_001::read_001_file;
 pub use format_1476::{
-    CatalogLayout, CatalogStar, catalog_present, detect_layout, read_area_file, read_catalog_stars,
+    CatalogLayout, CatalogStar, catalog_present, detect_layout, for_each_star_in_dec_band,
+    read_area_file, read_catalog_stars,
 };
 
 /// The star density, in stars per square degree, that the database `db_name` is

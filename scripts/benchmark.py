@@ -251,6 +251,11 @@ def run_one(entry, args):
     hint_dec = max(-89.9, min(89.9, cdec + ddec))
     fov_hint = fov_height_deg * float(opts.get("fov_scale", 1.0))
     radius = opts.get("radius", args.radius)
+    if args.blind:
+        # A hint at the antipode tells the solver nothing (and keeps it from
+        # falling back to the header's CRVAL); the position must come from -i.
+        hint_ra, hint_dec = cra + 180.0, -cdec
+        radius = args.radius
 
     out_base = os.path.join(args.workdir, iid)
     for ext in (".wcs", ".ini", ".log"):
@@ -265,10 +270,11 @@ def run_one(entry, args):
     cmd += [
         "--ra", f"{(hint_ra % 360.0) / 15.0:.9f}",
         "--spd", f"{hint_dec + 90.0:.9f}",
-        "--fov", f"{fov_hint:.9f}",
         "-r", str(radius),
         "-o", out_base,
     ]
+    if not args.no_fov:
+        cmd += ["--fov", f"{fov_hint:.9f}"]
     if args.method != "quads":
         cmd += ["--method", args.method]
     if args.stars:
@@ -423,6 +429,12 @@ def main():
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--offset-hint", type=float, default=0.0,
                     help="push the hint off truth by this many field widths")
+    ap.add_argument("--blind", action="store_true",
+                    help="hint at the antipode of the truth, so only a blind index "
+                         "(pass -i with --extra-arg) can find the field; -r still applies")
+    ap.add_argument("--no-fov", action="store_true",
+                    help="do not pass --fov: arcsec gets the pixel scale from the header "
+                         "(FOCALLEN/XPIXSZ) or not at all")
     ap.add_argument("--method", default="quads")
     ap.add_argument("--stars", type=int, default=None,
                     help="pass -s to arcsec (max detected stars)")
@@ -483,7 +495,10 @@ def main():
     print(f"database : {args.db} ({'auto' if args.auto_db else args.db_name};"
           f" installed: {','.join(sorted(args.dbs)) or 'none'})")
     print(f"images   : {len(entries)} from {args.images}")
-    print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
+    if args.blind:
+        print(f"hint     : blind (antipode of the truth), -r {args.radius}")
+    else:
+        print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
     print()
 
     results = []

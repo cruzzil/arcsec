@@ -47,8 +47,10 @@ Rules of thumb:
   shoot with a camera lens, and `w08` if you shoot all-sky. They are small.
 * **Colour calibration**: `v05` unless you need the depth of `v50`.
 * **Blind solving** (`-i`): only if you cannot supply an approximate position. With a
-  mount that reports where it is pointing, you do not need these at all. The index
-  only finds the rough position; the solve is then finished against a star database,
+  mount that reports where it is pointing, you do not need these at all. Build
+  arcsec's own index from the star database you already have (§5) rather than
+  downloading these: it is faster and finds more fields. The Astrometry.net indexes
+  only find the rough position; the solve is then finished against a star database,
   so you need one of those as well.
 
 ---
@@ -132,16 +134,35 @@ for the format details.
 
 ---
 
-## 5. Building your own
+## 5. Building a blind index
 
-Not yet possible, and worth being straight about it. Generating a catalogue from Gaia,
-or a pre-computed quad index, is designed and costed in
-[offline-index.md](offline-index.md) but not implemented. The plan's own conclusion is
-that it is **not** currently the highest-value work — read §1 there before starting.
+arcsec can build its own blind-solving index from an installed star database — no
+download:
 
-Until then, `arcsec catalog install` is the supported route, and it needs no external
-tools: downloads and unpacking (both `.zip` and `.deb`) are built in, so nothing has to
-be on `PATH`.
+```bash
+arcsec catalog index build                  # deepest installed database, fields 0.3°–30°
+arcsec catalog index build --min-fov 0.15   # down to D80's narrowest fields
+arcsec catalog index info                   # what was built
+```
+
+From D80, fields 0.3°–30° take about 2 minutes and 290 MB; down to 0.15° about 13
+minutes and 700 MB (`--max-fov` and `--min-fov` choose the range; the build lists the
+tiers it will make first). The file, `<db>.arcsecix`, goes into the catalogue directory,
+and `catalog list` and `catalog verify` include it.
+
+With it installed:
+
+* `arcsec -f image.fits -i "$(arcsec catalog path)"` solves with no position at all,
+  typically in a second or two, and with no pixel scale either if `--fov` and the
+  header's FOCALLEN/XPIXSZ are missing.
+* Without `-i`, a search of `-r` 10° or more that reaches past five fields round the hint
+  (N.I.N.A.'s blind mode sends `-r 180`) tries the index once the first five fields have
+  failed, instead of spiralling over the whole sky.
+
+Design and measurements: [offline-index.md](offline-index.md). Generating the star
+catalogue itself from Gaia is not possible; `arcsec catalog install` is the supported
+route, and it needs no external tools: downloads and unpacking (both `.zip` and `.deb`)
+are built in, so nothing has to be on `PATH`.
 
 ---
 

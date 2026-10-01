@@ -1168,12 +1168,18 @@ positions that fail.
                           ▼
      for each (image, index) code match:
         solve_plate_constants on the 3–4 star correspondences
-        derive_wcs → an (α, δ) hypothesis
-        vote into 0.1° sky bins                  ← VOTE_STEP
+        derive_wcs → an (α, δ, scale) hypothesis
+        vote into (α, δ, ln scale) buckets: 0.1° on the sky with the RA
+        width divided by cos δ, 5% in scale     ← VOTE_STEP, VOTE_LOG_SCALE_STEP
                           │
                           ▼
-     for every vote cell, in descending vote order:
-        take the cell's first hypothesis and run verify_score():
+     rank regions (pipeline/sky_votes.rs): each bucket scored by the votes of
+     its 3×3×3 neighbourhood, represented by the neighbourhood's strongest
+     bucket, neighbours of a taken region suppressed
+                          │
+                          ▼
+     for every region, strongest first:
+        take the medoid of its strongest bucket and run verify_score():
         project the index stars in a ±1.1·FOV declination band into the
         image and count those landing within MATCH_PX = 5 px of a detected
         star (excluding the quad's own stars, which would always match and
@@ -1226,7 +1232,8 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `MIN_VERIFY_SCORE` | 18 | `blind.rs` | blind acceptance |
 | `EARLY_STOP_SCORE` | 20 | `blind.rs` | blind early exit |
 | `MATCH_PX` | 5.0 | `blind.rs` | verification match radius |
-| `VOTE_STEP` | 0.1° | `blind.rs` | sky vote bin |
+| `VOTE_STEP` | 0.1° | `blind.rs` | sky vote bin (RA width ÷ cos δ) |
+| `VOTE_LOG_SCALE_STEP` | 0.05 | `blind.rs` | vote bin in ln(pixel scale) |
 | `N_ENTRY_STARS` | 30 | `blind.rs` | brightest detected stars used to build blind quads |
 | `BLIND_MAX_INDEXES` | 2 | `arcsec` binary | parallel index files |
 
@@ -1435,6 +1442,11 @@ was removed once verification existed. See
 
 ### 11.3 We cannot solve without a good pixel-scale estimate
 
+**Partly fixed 2026-10-02** for blind solving: with arcsec's blind index
+([offline-index.md](offline-index.md)) and no `--fov` or FOCALLEN/XPIXSZ, the index
+searches 0.3–60″/px and solved 436 of 596 corpus images with no scale and no position.
+The hinted (spiral) path still assumes 1″/px.
+
 The spiral **step size is the FOV**. If the FOV estimate is wrong by 2×, the steps are wrong
 by 2× and the catalogue window is wrong by 2×, so the correct position is stepped over.
 Worse, when neither `--fov` nor `FOCALLEN`/`XPIXSZ` is available, the CLI silently
@@ -1538,6 +1550,12 @@ pixel-scale test exists). That comment has since been replaced by an accurate on
 
 ### 11.9 Search-cost scaling and thread usage
 
+**Mitigated 2026-10-02**: with a blind index installed (`arcsec catalog index build`), a
+search of `-r` ≥ 10° reaching past five fields from the hint consults the index after the
+first five fields, so `-r 180` with no useful hint (N.I.N.A.'s blind mode) takes 1–4 s instead of
+minutes ([offline-index.md §7.3](offline-index.md)). Without an index the following
+still holds.
+
 The spiral is `O((r/FOV)²)` positions and each position rebuilds catalogue quads from
 scratch. The blind front-end exists precisely to avoid this, but it needs astrometry.net
 index files — so a user with only the ASTAP database and no position hint has no fast path.
@@ -1562,9 +1580,18 @@ blind stage still runs at most `BLIND_MAX_INDEXES = 2` index files concurrently.
   cell is verified, which
   is why blind failures are much slower than blind successes — `bench_all.sh` already
   reduces concurrency to 4 for `quads+blind` because of this.
-* Blind verification tests only `hyps[0]`, the first hypothesis deposited in each vote
+* ~~Blind verification tests only `hyps[0]`, the first hypothesis deposited in each vote
   cell, rather than the cell's best or a consensus of its members. A cell can therefore
-  hold the right answer and be scored on the wrong member.
+  hold the right answer and be scored on the wrong member.~~ **Fixed 2026-10-02**
+  (`pipeline/sky_votes.rs`): votes are binned in (RA, Dec, ln scale) with the RA bin
+  scaled by cos δ (raw-RA bins split one field's votes over many cells near the poles),
+  each bucket is scored with its 3×3×3 neighbours, the region is represented by the
+  medoid of its *strongest* bucket, and neighbours of a taken region are suppressed.
+  The idea of taking the representative from the strongest bucket comes from seiza,
+  where it moved the true field from rank 185–364 to rank 0. On arcsec's corpus with
+  the 4107–4119 indexes it moved the 254 fields of ≥ 0.6° from 70 to 72 correct, no new
+  false positive (offline-index.md §9.1): the 4100 series' failures there are coverage,
+  not ranking.
 * No unit test covers an end-to-end solve — there is no `tests/` directory, and the in-file
   unit tests cover components (spiral order, LSQ, areas, coordinate round-trips) but never
   the pipeline. `scripts/benchmark.py` over the 103-image corpus is the integration
@@ -1725,7 +1752,9 @@ The deeper fix for §11.2. Options, cheapest first:
 2. **Match the star sets by count, not by magnitude cut.** Choose the catalogue depth so
    that the *number* of catalogue stars in the field equals the number of detected stars,
    rather than over-reading by `oversize²` and hoping.
-3. **Build a proper offline index** in the astrometry.net style — scale-banded quads with
+3. **Build a proper offline index** (**built 2026-10-02** for blind and wide-radius
+   solving, see [offline-index.md](offline-index.md); the hinted path's online quads are
+   unchanged) in the astrometry.net style — scale-banded quads with
    redundancy — which removes the online quad-construction mismatch entirely and makes
    hinted and blind solving the same code path. Fully designed and costed in
    **[offline-index.md](offline-index.md)**: format, builder algorithm, user-facing CLI,

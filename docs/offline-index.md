@@ -1,362 +1,487 @@
-# Building an Offline Quad Index
+# arcsec's Blind Index
 
-A design and staged plan for pre-computing arcsec's own quad index, including how a
-user would build one without a large download.
+A pre-computed pattern index, built from the ASTAP star database the user already has,
+that finds an image's field anywhere on the sky without a position hint and — with no
+extra cost — without a pixel scale either.
 
-Companion to [plate-solving.md](plate-solving.md) §5.2 (spiral vs pre-indexed) and
-§12.5 (quad-selection robustness). Written 2026-09-03.
+Companion to [plate-solving.md](plate-solving.md) §5.2 (spiral vs pre-indexed), §10.4
+(the Astrometry.net blind path) and §12.3/§12.5. First written 2026-09-03 as a plan;
+rewritten 2026-10-02 when the index was built. The plan's original sections (sizing by
+cell, an astrometry.net-style code index) are summarised in §10, with why the built
+design differs.
 
-**Status (0.2.0, 2026-10-01): not started.** None of the phases below, including the
-Phase 0 experiment, has been done; there is no `arcsec index` subcommand and no
-`PLOVIDX` reader. §1's numbers were measured at 90/103 on the original corpus; the
-current code scores 92/103 there (0 false positives) after the catalogue-read fix, and
-the expanded corpus in docs/test-images.md §7 is now the better reference.
-
----
-
-## 1. Read this first: the case is weaker than it was
-
-`FUTURE_IMPROVEMENTS.md` proposed an offline index to fix the quad-correspondence
-problem, and [plate-solving.md §12.5](plate-solving.md#125-make-quad-selection-robust-to-differing-star-sets)
-listed it as the deep fix. Since then two things landed that took most of that
-motivation away:
-
-* **9-nearest-neighbour quad redundancy** — tier A went 26/62 → 38/62 on its own.
-* **Star-level verification** — took the corpus to 90/103 with **zero** false
-  positives, against ASTAP's 47.
-
-The original argument was "online quad construction is fragile because the image and
-catalogue star sets differ". That is still true, but redundancy has absorbed most of
-the damage. Of the 8 tier-A images still failing, every one is a dense galactic-plane
-field or a frame dominated by one bright or extended object — cases where the
-*detected* stars are not catalogue stars at all (saturation, blends, nebulosity). A
-pre-built index does not fix that; it changes which fixed star selection we mismatch
-against.
-
-So the honest position: **an offline index is unlikely to move the 8 remaining
-failures.** Do not build it for that reason. There are three arguments left that do
-stand up:
-
-1. **Drop the astrometry.net dependency for blind solving.** Blind mode currently
-   needs their index files — a separate download on top of the ASTAP database the user
-   already has (`arcsec catalog install anet-4100` is ~160 MB; the Gaia-based
-   `anet-5200` LITE series is ~8.8 GB). Building from the ASTAP database means **no new
-   data download at all**.
-2. **Wide-radius and blind speed.** The spiral costs `O((r/FOV)²)` positions and
-   rebuilds catalogue quads at every one. Profiling put 36% of a failing dense solve
-   in `find_matches_indexed`, called once per position. An index turns that into one
-   lookup per image quad, independent of search radius.
-3. **Very sparse fields.** Where only a handful of stars exist, a pre-enumerated quad
-   set with deliberate redundancy beats whatever the online 9-NN happens to pick.
-
-§9 proposes a cheap experiment that tests all three before committing to the
-subsystem.
+**Status (2026-10-02): built, behind `--index` and an opt-in automatic fallback.**
+`arcsec catalog index build` writes `<db>.arcsecix` into the catalogue directory;
+`arcsec -i <file|dir>` solves blind with it; and when an index is installed, a search
+of `-r` ≥ 10° reaching past five fields round the hint consults it after the first five
+fields of the spiral. On the 596-image corpus (tiers A/B/C/S), measured on main after the
+distortion and solver-robustness merge (#10), a blind solve finds 473 images (85 % of the
+558 the hinted solver finds with the true centre as its hint) in a median 0.5 s, with
+**no false position**: every reported solution passes the hinted solver's own
+star-level verification, and the only wrong answer is the one the hinted solver also
+gives (`wide_shassa_01`). Astrometry.net's 4107–4119 on the same images: 70 of the 254
+fields ≥ 0.6° against the index's 216, at 26 s against 0.8 s.
 
 ---
 
-## 2. Why this is affordable now
+## 1. Why build it — the case, revisited
 
-`FUTURE_IMPROVEMENTS.md` estimated 10–40 GB, which is what killed the idea. That
-figure assumed astrometry.net's parameters: grid cells one third of the field size and
-each star in up to 8 quads across ~16 passes. Their 4200-series is ~35 GB for exactly
-that reason.
+The plan argued (and §9's experiment confirmed) that an index would not rescue the
+hinted solver's remaining failures: those are detection problems — saturated, blended or
+nebulous fields — and a pre-built index mismatches them just as the online quads do.
+That stands. What made the index worth building is the other three arguments, and the
+evidence for each came out stronger than the plan expected:
 
-We do not need their robustness envelope, because we have a hint and a verifier. Sizing
-a cell to the **quad diameter** rather than a third of the field, with 12 stars per
-cell and 6 quads per star at 32 bytes per quad:
-
-| Quad diameter | Cells | Stars | Quads | Band size |
-|---|---|---|---|---|
-| 0.25° | 660,048 | 7.9 M | 47.5 M | 1584 MB |
-| 0.35° | 330,024 | 4.0 M | 23.8 M | 792 MB |
-| 0.50° | 165,012 | 2.0 M | 11.9 M | 396 MB |
-| 0.71° | 82,506 | 990 k | 5.9 M | 198 MB |
-| 1.00° | 41,253 | 495 k | 3.0 M | 99 MB |
-| 1.41° | 20,626 | 248 k | 1.5 M | 50 MB |
-| 2.00° | 10,313 | 124 k | 743 k | 25 MB |
-| 2.83° | 5,157 | 62 k | 371 k | 12 MB |
-| 4.00° | 2,578 | 31 k | 186 k | 6 MB |
-| 5.66°–22.6° | ≤1,289 | ≤15 k | ≤93 k | ≤3 MB each |
-
-**Full ladder, 0.25° to 24°, whole sky: 3.2 GB.** Per rig it is far less, because a
-field of view `F` only needs quads roughly 0.45 F to 1.0 F across:
-
-| Rig | Bands | Size |
-|---|---|---|
-| NGC 3372 set (3.13″/px, 2.6° field) | 3 | **87 MB** |
-| 1.5° field | 3 | **347 MB** |
-| 0.5° field | 3 | 2.8 GB |
-
-That is the headline for usability: **a typical user builds 100–400 MB from data they
-already have.** Only sub-0.5° fields get expensive, and those are the fields where a
-positional hint is easiest to come by anyway.
-
-The knobs, in order of effect on size:
-
-* **Bands built** — quadratic in `1/d`. Building 3 bands instead of 6 is the single
-  biggest saving.
-* **Declination range** — most people image a limited slice of sky. `--dec-range
-  -30:+60` is 0.65 of the sphere; `-10:+70` is 0.55.
-* **Cell offset passes** — one pass leaves quads straddling cell boundaries
-  unindexed. A second pass on a half-cell-offset grid removes the blind spot and
-  doubles the size. Start with one pass and measure whether it matters.
-* **Stars per cell and quads per star** — linear, and the least safe to cut.
+1. **No Astrometry.net dependency for blind solving.** `-i` used to need index files on
+   top of the ASTAP database (`anet-4100` is 355 MB and covers only fields ≥ ~0.7°). The
+   arcsec index is built from D80 (or whichever database is installed) in 2–13 minutes,
+   with nothing downloaded.
+2. **Wide-radius and hint-free speed.** The spiral is `O((r/FOV)²)`: N.I.N.A.'s blind
+   mode (`-r 180`, no position) took 76–418 s per image. The index answers in a second or
+   two whatever the radius (§7.3).
+3. **The pixel scale becomes optional.** Every index match implies a scale, so a sweep
+   over 0.3–60″/px costs about twice a scale-hinted solve (§7.4). plate-solving.md
+   §11.3 listed "cannot solve without a good pixel-scale estimate" as a shortcoming.
 
 ---
 
-## 3. Format
+## 2. Design
 
-One file per scale band, memory-mapped, binary-searchable, no new dependencies —
-mirroring how the existing readers work. Little-endian throughout.
+### 2.1 Disc-anchored patterns
+
+The idea, which comes from seiza's blind index (Apache-2.0; ideas only, the code here is
+an independent implementation), is to index exactly the patterns an image can rebuild
+without knowing where it is:
+
+* For each **tier** — a disc radius `r` and a magnitude cap — a star **anchors** patterns
+  only if it is the brightest star (no fainter than the cap) within `r` of itself.
+* Its **group** is itself plus the next-brightest stars of its disc: 6 stars in the
+  wider tiers, 5 in the two deepest.
+* Every **4-subset** of the group is a pattern: 15 per anchor (6-star groups) or 5.
+
+An image that contains a disc sees the same locally-brightest stars, so it can rebuild
+the group from its own brightest detections. The 4-subsets give redundancy: a group
+member that is undetected or ranks differently in the image costs some patterns, not
+all of them.
+
+No two anchors share a pattern (a pattern contains its anchor, and one anchor cannot lie
+in another's disc — one of them would be the brighter), so nothing needs de-duplicating.
+
+### 2.2 Descriptor, key and correspondence
+
+* **Descriptor**: the quad's six pairwise distances, sorted, divided by the largest —
+  the five ratios ASTAP's own quads use. Invariant to translation, rotation, scale and
+  reflection, so one entry serves both image parities.
+* **Key**: each ratio quantised into 128 bins (1/128 ≈ 0.0078, close to the hinted
+  solver's 0.007 tolerance), packed eight bits per dimension into a `u64`. A lookup is a
+  binary search for an exact key. A measured ratio within 0.0025 of a bin edge also
+  probes the neighbouring bin, which costs one to four lookups per quad instead of 3⁵.
+* **Correspondence**: the descriptor does not say which star is which, so both sides
+  order a quad's vertices canonically — ascending total distance to the other three.
+  Where two totals are within 1.5 %, the image side also tries the swapped order. A
+  wrong correspondence fails the affine shape check, never produces a match.
+
+The plan (§10) chose astrometry.net's code space instead, which carries the
+correspondence in the code. The quantised 5-ratio hash won on three counts: an exact-key
+binary search over a flat sorted array needs no kd-tree or window scan; one entry serves
+both parities; and the ratios were already arcsec's descriptor.
+
+### 2.3 Tiers
+
+| Disc radius | Mag cap | Group | Fields served (short side) | Anchors | Patterns | Size |
+|---|---|---|---|---|---|---|
+| 12° | 4.6 | 6 | 30°–144° | — | — | (not built by default) |
+| 6° | 6.1 | 6 | 15°–72° | — | — | (not built by default) |
+| 3° | 7.6 | 6 | 7.5°–36° | 1 436 | 21 404 | 0.5 MB |
+| 1.5° | 9.2 | 6 | 3.75°–18° | 5 824 | 87 162 | 2.1 MB |
+| 0.75° | 10.7 | 6 | 1.9°–9° | 23 387 | 349 669 | 8.4 MB |
+| 0.4° | 11.8 | 6 | 1.0°–4.8° | 80 980 | 1 185 086 | 28 MB |
+| 0.2° | 12.7 | 6 | 0.5°–2.4° | 285 240 | 3 639 264 | 87 MB |
+| 0.1° | 14.2 | 5 | 0.25°–1.2° | 986 604 | 4 428 404 | 106 MB |
+| 0.06° | 16.0 | 5 | 0.15°–0.72° | 2 824 154 | 12 900 826 | 310 MB |
+
+Each cap is where a disc of that radius holds 15–20 stars on average (D80, measured:
+mag ≤ 6.1 → 0.1 stars/deg², ≤ 9.2 → 7, ≤ 12.7 → 150, ≤ 14.2 → 600, ≤ 16 → 1900). Radii
+step by about 2×, so a field normally sees two tiers. "Size" is the tier's keys and quads
+(24 bytes a pattern); the star table comes on top (12 bytes a star).
+
+`arcsec catalog index build --min-fov F --max-fov G` builds the tiers that cover fields
+F–G: every tier overlapping the span, but of the tiers reaching below F only the widest,
+and of those reaching above G only the narrowest. The defaults, 0.3°–30°, give the six
+tiers 3°–0.1°: **287 MB**, built in 2 minutes. `--min-fov 0.15` adds the 0.06° tier for
+D80's narrowest fields: **698 MB**, 13 minutes (both on 24 threads, under a load average
+of 50–80 from other jobs). For comparison D80 itself is 1.3 GB, G05 102 MB.
+
+### 2.4 File format: `ARCSECIX` version 1
+
+One file, memory-mapped, little-endian, every section 8-byte aligned
+(`arcsec-core/src/index/format.rs` has the byte layout):
 
 ```
-  ┌─ header, 256 bytes ─────────────────────────────────────────────┐
-  │ magic          [u8; 8]  "PLOVIDX\0"                             │
-  │ version        u32      = 1                                     │
-  │ dim_quads      u32      4 (quads) or 3 (triangles, wide fields)  │
-  │ n_quads        u64                                              │
-  │ n_stars        u64                                              │
-  │ band_lo        f64      min quad diameter, radians               │
-  │ band_hi        f64      max quad diameter, radians               │
-  │ cell_side      f64      grid cell side used, radians             │
-  │ dec_lo, dec_hi f64      sky coverage, radians                    │
-  │ epoch_jyear    f32      catalogue epoch (ASTAP headers say 2025) │
-  │ mag_limit      f32      faintest star included                   │
-  │ source         [u8; 32] e.g. "ASTAP d80"                        │
-  │ built_unix     i64                                              │
-  │ codes_crc32    u32      integrity, cheap to check on load        │
-  │ reserved       ...      zero-filled to 256                       │
-  ├─ section 1: codes ──────────────────────────────────────────────┤
-  │ n_quads × [f32; 4]   (CX, CY, DX, DY), sorted ascending by DY    │
-  ├─ section 2: quad stars ─────────────────────────────────────────┤
-  │ n_quads × [u32; 4]   indices into section 3, in A,B,C,D order    │
-  ├─ section 3: stars ──────────────────────────────────────────────┤
-  │ n_stars × [f32; 2]   (RA, Dec) radians                           │
-  └─────────────────────────────────────────────────────────────────┘
+header (256 bytes)  magic "ARCSECIX", version, byte-order marker, header length,
+                    descriptor bins, tier/star/pattern counts, build time, source
+                    database, a table of 5 sections {offset, length, CRC-32},
+                    and a CRC-32 of the header itself
+tiers               40 bytes each: radius, mag cap, group size, pattern range, anchors
+stars               12 bytes each: RA, Dec (f32 radians), mag ×100 (i16), widest tier
+star directory      first star of each of 720 quarter-degree declination bands
+keys                u64 per pattern, sorted within each tier
+quads               4 × u32 star indices per pattern, canonical vertex order
 ```
 
-Three choices worth justifying:
+* **Instant open, lazy validation.** Opening checks magic, version, byte order, the
+  header CRC, and that every section lies inside the file with the size its counts imply
+  — a few hundred bytes of work, so the 698 MB index opens in 9 ms. The section CRCs are
+  checked only by `arcsec catalog verify` (4 s for 698 MB). Every star reference a lookup
+  follows is bounds-checked, so a corrupt body can fail a solve but never read out of
+  bounds.
+* **Versioned.** Any change to the tier table semantics, the bin count, the descriptor or
+  the canonical order changes which patterns exist or how they hash, and must bump
+  `VERSION`; an old file is then refused with "rebuild it" rather than silently matching
+  nothing.
+* **Written atomically**: to `<file>.arcsecix.part`, then renamed.
+* **Sorted by star band and RA**, the star table doubles as the verification catalogue:
+  `stars_near` finds a field's stars with two binary searches per band.
 
-**Astrometry.net code space, not our 5-ratio descriptor.** `blind.rs` already
-implements the canonical A–B frame construction (for quads `CX + DX ≤ 1` and
-`CX ≤ DX`; for triangles `CX ≤ 0.5`) and its matcher, so the online side largely
-exists. More importantly a code match yields the **star correspondence** (A↔A′, B↔B′,
-…), so a single matched quad gives a full WCS — that is what makes blind solving cheap.
-Our 5-ratio descriptor is reflection-invariant and gives no correspondence, which is why
-the hinted path's first fit at each position is built from quad *centroids*, and star
-pairs only appear afterwards in `verify_and_refit`. The 5 ratios can always be recomputed from the four star positions if
-something needs them.
+### 2.5 Builder
 
-**Sorted by the last code dimension, not the first.** Exactly the finding from the
-matcher optimisation: the tolerance window on a tightly-clustered key catches a large
-slice of the file. Measure the spread of each code dimension over a real band and sort
-on the widest, as `INDEX_RATIO` does for the ratio matcher.
+`arcsec-core/src/index/build.rs`. For each tier, the sky is processed in 5° declination
+strips (one strip for the shallow tiers), reading the strip plus an `r` margin from the
+database with `for_each_star_in_dec_band` — each area file only down to the tier's cap,
+since files are sorted brightest first. Stars are sorted by (magnitude, RA, Dec), a total
+order, so "brighter" means the same thing in every strip. A grid of `r`-sized cells
+answers the disc queries; anchors are found in parallel; the result is identical for any
+thread count (tested). Stars reached from two strips or two tiers are merged by exact
+position at the end, keeping the widest tier.
 
-**Star indices, not inline positions.** A star appears in ~6 quads, so indices cost
-16 B where inline `(f32, f32)` pairs would cost 32 B, and the star table doubles as
-the verification catalogue that `verify_and_refit` needs.
+Build cost on D80, 24 threads, machine load 50–80:
 
-`f32` for positions gives ~0.05″ resolution at these magnitudes — an order of
-magnitude finer than our 0.69″ median centre error, and the codes are matched to a
-tolerance three orders of magnitude coarser.
+| Index | Tiers | Patterns | Stars | Size | Time | Peak RSS |
+|---|---|---|---|---|---|---|
+| fields 1°–30° | 3°…0.4° | 1.64 M | 0.43 M | 45 MB | 19 s | 179 MB |
+| fields 0.3°–30° (default) | 3°…0.1° | 9.71 M | 4.52 M | 287 MB | 122 s | 847 MB |
+| fields 0.15°–30° | 3°…0.06° | 22.6 M | 12.9 M | 698 MB | 782 s | 1.55 GB |
 
----
+The deepest tier dominates everything: it reads 52 M stars, and its strip reading is
+serial. Reading strips in parallel would cut the 13 minutes several-fold if it matters.
 
-## 4. Builder algorithm
+### 2.6 Solver
 
-```
-for each band (lo, hi):
-    cell = hi                                  # a maximal quad fits inside one cell
-    grid = equal_area_cells(cell, dec_lo, dec_hi)
+`arcsec-core/src/pipeline/index_solve.rs`:
 
-    parallel for each cell in grid:            # embarrassingly parallel
-        stars = read_catalog_stars(db, centre_of(cell), cell * 1.2, spc_limit)
-        keep the brightest STARS_PER_CELL
-        for each star s:
-            for each 4-subset of s's k nearest neighbours:
-                d = max pairwise separation
-                if d not in [lo, hi]: continue
-                code = canonical_code(A, B, C, D)      # reuse blind.rs
-                emit (code, [A,B,C,D]) , at most QUADS_PER_STAR per s
-        write a per-cell shard to a temp file    # resumability
+1. **Detect** every star (not the `-s` brightest by SNR) and **re-rank by aperture
+   flux**. This was the decisive fix of the first version: SNR is not a brightness order
+   at the bright end — a saturated star's flat top and wide aperture give it a lower SNR
+   than a fainter, sharper star — and the index is built from each region's *brightest*
+   stars. With SNR order, no index group was ever rebuilt on DSS fields; with flux order,
+   the true field ranked first.
+2. **Image patterns**: every 4-subset of the 20 brightest stars, at most two per cell of
+   a 6×6 grid; plus, round each of the 150 brightest stars, the five brightest within
+   seven window radii (short side ÷ 16 … ÷ 2) — the image's version of the disc groups.
+   About 7 000 patterns.
+3. **Lookup** in the tiers whose field range suits the image. A candidate's implied
+   pixel scale (longest edge on the sky ÷ in the image) must lie in the allowed range; a
+   4-point affine fit must be within 6 % of a similarity transform, and its scale within
+   6 % of the edge ratio. Each survivor is a field hypothesis (centre, scale, affine).
+4. **Vote** in (RA, Dec, ln scale) buckets — 5 % of the field on the sky, RA width ÷
+   cos δ; 5 % in scale — with the neighbour smoothing, strongest-bucket representative
+   and non-maximum suppression of `pipeline/sky_votes.rs` (shared with the Astrometry.net
+   path, §9.1). Up to 3 000 regions.
+5. **Rank** each region's medoid hypothesis by projecting the index's stars through it
+   onto the detections, refitting once on the matches. The score is a **significance**,
+   `(matches − E)/√(E + 1)` with `E` the chance matches for that many projected stars,
+   plus 2 per agreeing vote beyond the first. Raw match counts let a hypothesis at a far
+   too coarse scale, which projects hundreds of stars into the frame, outrank the truth;
+   that was the one fix the scale-free mode needed.
+6. **Accept** through the hinted solver: the best hypotheses (score ≥ 8, at most six) go
+   to `solve_image` with the hypothesis as hint, its scale as field size and no search
+   radius. Its star-level verification (≥ 30 matched stars, spread over the frame) is the
+   only acceptance test, so a blind solve is held to exactly the hinted solver's
+   standard. The index never decides on its own that a field is found — seiza's
+   blind-only acceptance (≥ 12 matches, RMS < 2 px) produced wrong-field solves there.
 
-    merge shards, dedup stars, sort by the chosen code dimension, write the band file
-```
-
-Notes that matter:
-
-* **Reuse `find_many_quads`** for the neighbour enumeration — it already does k-NN
-  plus all `C(k,4)` subsets with hash-grid dedup, and it is well tested.
-* **Read through `read_catalog_stars`**, so the builder gets `.1476`, `.290` and
-  `.001` support for free and inherits the FOV-aware database selection.
-* **Equal-area cells** can come from the same generating rule `areas_290.rs` already
-  uses, evaluated at arbitrary resolution: `sin(dec_k) = -1 + 2·k/N_rings` with RA
-  counts set to keep cells near-square. No HEALPix dependency.
-* **Shard then merge.** The 0.5° band is 380 MB of quads — fine in RAM, but 0.25° is
-  1.6 GB and sharding makes the build resumable, which matters when it takes an hour.
-* **One parity in the index.** The solver already tries both image parities, so
-  indexing both would double the file for nothing.
-* **Proper motion.** The ASTAP databases have no proper motions, so the index inherits
-  their epoch. Record it in the header (§3) so a future Gaia-sourced builder can
-  propagate and the solver can tell the difference.
-
----
-
-## 5. What the user does
-
-The builder is a subcommand of the existing binary, not a second tool to install:
+### 2.7 Command line
 
 ```bash
-# The common case: size the bands from an image you already have.
-arcsec index build --like ~/lights/M42_0001.fits
+arcsec catalog index build                    # deepest installed database, fields 0.3°–30°
+arcsec catalog index build --min-fov 0.15     # down to D80's floor (698 MB)
+arcsec catalog index build --db ~/star_database -D d80 -o idx.arcsecix
+arcsec catalog index info                     # tiers, sizes, source
+arcsec catalog list                           # lists built indexes too
+arcsec catalog verify                         # checks every section CRC too
 
-# Or state the field directly.
-arcsec index build --fov 1.5
-
-# Only the sky you can actually see, which is most of the saving.
-arcsec index build --fov 1.5 --dec-range -30:+60
-
-# Explicit control.
-arcsec index build --bands 0.7,1.0,1.5 --db ~/star_database -D d80 --out ~/arcsec-index
-
-arcsec index list ~/arcsec-index      # bands, coverage, size, source, epoch
-arcsec index verify ~/arcsec-index    # CRC + solve a synthetic field per band
+arcsec -f image.fits -i ~/.local/share/arcsec/catalogs        # blind: any position
+arcsec -f image.fits -i idx.arcsecix --fov 1.2                # blind, scale known
 ```
 
-Behaviour that makes it "easy" rather than merely possible:
-
-* **No new data download.** It builds from the ASTAP database the user already has for
-  normal solving. This is the whole point.
-* **Defaults that need no thought.** `--out` defaults to the directory
-  `arcsec catalog` already manages (`catalog_cmd::default_dir`, e.g.
-  `~/.local/share/arcsec/catalogs` on Linux, overridable with `ARCSEC_CATALOG_DIR`),
-  threads to `max_threads()`, bands to 0.45–1.0 × the field.
-* **Says what it will cost before doing it.** `Will build 3 bands (0.71°, 1.00°,
-  1.41°), 347 MB, ~12 min on 24 threads. Continue? [y/N]` — and `--yes` for scripts.
-* **Resumable.** Interrupt it and re-run; completed cell shards are reused.
-* **Progress that means something** — cells done, quads emitted, ETA.
-* **The solver finds it without being told.** `-i` already takes a directory and ranks
-  astrometry.net files by scale; extend that to recognise `PLOVIDX` by magic and rank
-  both kinds together. Then check the catalogue directory when `-i` is absent, so a
-  built index is simply used. (Today `-i` is always required for blind mode, even though
-  `arcsec catalog install anet-4100` puts the astrometry.net files in that directory.)
-
-For users who would rather not build at all, §8 phase 4 covers publishing pre-built
-bands.
+* **`-i` names an arcsec index** (a file, or a directory holding one; recognised by
+  magic, so Astrometry.net files in the same directory are ignored): the index is tried
+  first, blind, whatever the hint and radius; if nothing verifies, the ordinary search
+  runs from the hint, as with Astrometry.net files.
+* **Automatic, no `-i`**: when an index is installed in the catalogue directory (or
+  beside the star database) and `-r` is at least 10° and reaches past five fields round
+  the hint, the
+  spiral first searches those five fields (minimum 1°); only if that fails is the index
+  consulted, restricted to `-r` (plus a field) round the hint unless `-r` covers the
+  sky; if that fails too, the full spiral runs as before. Inside five fields the result
+  is therefore exactly the spiral's, and below `-r` 10° nothing changes at all; see §7.5
+  for the measured effect and why the gate.
+* **N.I.N.A.** in blind mode passes `-r 180` and no `-ra`/`-spd`: with an index installed
+  that is the automatic path, and the five-field first stage is skipped when there is no
+  hint at all (no `-ra`/`-spd` and no RA/Dec in the header).
+* **Pixel scale**: from `--fov` or FOCALLEN/XPIXSZ, ±20 %; with neither, 0.3–60″/px.
 
 ---
 
-## 6. Integration with the solver
+## 3–6. (Superseded plan sections)
 
-Three levels, each independently shippable:
-
-1. **Blind, instead of astrometry.net.** `blind.rs`'s `hyp_from_entry` and
-   `verify_score`, and `AnetIndex::find_code_matches_into`, work on `AnetIndex`. Introduce a small trait —
-   codes, quad stars, star list, scale range — implement it for both `AnetIndex` and
-   the new format, and blind mode reads either. Lowest risk: it touches no path that
-   the current 90/103 depends on.
-2. **Hinted fast path for wide radii.** When the search radius is large enough that
-   the spiral would visit many positions, look the image quads up in the index
-   directly, vote positions, and hand the best to `verify_and_refit`. Keep the spiral
-   as the fallback. Gate on measured wall time, not on a guess.
-3. **Replace online catalogue quads entirely.** Only if 1 and 2 show the index
-   matching or beating the spiral on the corpus. This is the change that could regress
-   90/103, so it goes last and only on evidence.
+The plan's format (`PLOVIDX`, astrometry.net codes sorted by one dimension), its
+cell-grid builder and its staged integration through a shared trait with `AnetIndex`
+were not built as written; §2 is what was built and §10 records why. The
+`--like`/`--dec-range`/resumable-shard/cost-prompt features of the plan's §5 are
+deferred (§8).
 
 ---
 
-## 7. Sizing and validation gates
+## 7. Results
 
-Every phase is measured against the existing 103-image corpus with
-`scripts/benchmark.py`, and must not regress **90 correct / 0 false positives**.
+All on the expanded corpus (docs/test-images.md §7), `scripts/benchmark.py --corpus
+--auto-db`, star databases D80, G05 and W08 in `~/star_database`, 24 cores shared with
+other benchmark jobs, 8 concurrent jobs. The numbers below are from 2026-10-02 after
+merging main's distortion handling and solver-robustness work (#10), at load averages of
+3–80; times are upper bounds. Blind runs use `--blind`, which puts the hint at the
+antipode of the truth with `-r 0`, so only the index can find the field. The first,
+pre-merge measurements (hinted baseline 504) are summarised at the end of §7.1.
 
-| Gate | Requirement |
-|---|---|
-| Reader | Round-trips a synthetic index; rejects truncated and bad-magic files |
-| Builder | For a known sky cell, the index quads contain the quads the online path builds for the same stars |
-| Blind parity | On the HiPS blind test fields, our index matches or beats the astrometry.net 4100 series on solve rate |
-| No regression | Corpus stays at ≥ 90 correct, 0 false positives |
-| Speed | Wide-radius solve (`-r 30`) faster than the spiral, measured, not assumed |
-| Build cost | 3 bands for a 1.5° field in under 30 min on 24 threads, under 400 MB |
+### 7.1 Blind solve rate by field
+
+Correct solves (median time of the correct ones). "Hinted" is the ordinary solver with
+the *true* centre as hint and `-r 5`, the best case; the blind columns get no position.
+The 0.15° index has all seven tiers (698 MB), the 0.3° index the default six (287 MB).
+
+| FOV (long side) | n | hinted, true centre | blind, 0.15° index | blind, 0.3° index | blind, no scale (0.15° index) |
+|---|---|---|---|---|---|
+| < 0.15° | 6 | 5 | 0 | 0 | 0 |
+| 0.15–0.3° | 113 | 113 | 54 (0.26 s) | 2 | 43 |
+| 0.3–0.6° | 125 | 124 | 113 (0.39 s) | 95 | 107 |
+| 0.6–1.2° | 177 | 168 | 165 (0.57 s) | 161 | 163 |
+| 1.2–2.5° | 88 | 79 | 76 (0.77 s) | 76 | 77 |
+| 2.5–6° | 43 | 27 | 24 (0.64 s) | 24 | 21 |
+| 6–20° | 36 | 34 | 34 (1.2 s) | 34 | 25 |
+| > 20° | 8 | 8 | 7 (1.1 s) | 7 | 0 |
+| **all (A+B+C+S)** | **596** | **558** | **473** (0.50 s) | **399** | **436** (1.1 s) |
+| tier A / B / C / S | | 221 / 230 / 42 / 65 | 202 / 166 / 40 / 65 | 185 / 118 / 32 / 64 | 188 / 145 / 38 / 65 |
+| false positives (A–S) | | 1 | 1 | 1 | 0 |
+
+From 0.3° up the blind solve finds 419 of the hinted solver's 440. The accepted
+hypothesis was the top-ranked one in 475 of 478 index solves (rank ≤ 2 in all), and none
+needed a second hinted solve. The slowest solves (30–60 s) are images where *detection*
+takes 20–40 s, which the hinted verification then repeats.
+
+Since the merge the hinted solver accepts sparse images on fewer than 30 matched stars
+if the solved scale matches the one the hint implies. In a blind solve that hint scale
+is the hypothesis' own, so `index_solve` accepts a result below 30 matched stars only if
+the caller's scale range is a real estimate (at most 1.5 wide) and contains the solved
+scale. In the scale-given blind run this never had to refuse anything; in the scale-free
+run it is what keeps sparse fields out.
+
+Before the merge (same index, same corpus): hinted 504, blind 436 (0.15° index) / 368
+(0.3°) / 410 (no scale), the same false positives as the hinted solver (four, three of
+them distorted TESS frames the merge's distortion handling now solves).
+
+### 7.2 Against Astrometry.net 4107–4119
+
+The same 254 fields of ≥ 0.6° (tiers A/B/S), scale given, no position. The Astrometry.net
+runs were made under load averages of 60–200, so their times are inflated, but even
+halved they are an order of magnitude slower: each process loads and sorts its index
+files (~35 s each, two in parallel) before matching.
+
+| FOV | n | anet 4107–4119 before §9.1 | anet after §9.1 | arcsec index (pre-merge) | arcsec index (post-merge) |
+|---|---|---|---|---|---|
+| 0.6–1.2° | 79 | 15 (71 s) | 16 | 72 (3.3 s) | 75 (0.6 s) |
+| 1.2–2.5° | 88 | 24 (18 s) | 25 | 73 (2.8 s) | 76 (0.8 s) |
+| 2.5–6° | 43 | 12 (52 s) | 10* | 16 (0.5 s) | 24 (0.6 s) |
+| 6–20° | 36 | 17 (15 s) | 16 | 23 (1.3 s) | 34 (1.2 s) |
+| > 20° | 8 | 2 | 3 | 4 | 7 |
+| **all** | **254** | **70** (26 s) | **70*** | **188** (2.7 s) | **216** (0.8 s) |
+
+The Astrometry.net runs are pre-merge; the merge does not change what they find (the
+position estimate is theirs), only what the follow-up solve accepts.
+
+\* Two of those were 300 s timeouts under a load average near 200; re-run with a longer
+timeout they solve, giving 72 (§9.1). On the original 103-image set the 4100 series finds
+12 either way: most of it is narrower than 0.7°, below that series' range.
+
+### 7.3 N.I.N.A.-style: `-r 180`, no useful hint
+
+N.I.N.A. hands ASTAP (and so arcsec) `-r 180` and no position when it blind-solves. Eight
+corpus images, hint at the antipode, `-r 180`, two at a time:
+
+| | correct | time |
+|---|---|---|
+| spiral only, pre-merge (0.2.0 + Step 0) | 1 of 8 **plus one false position** (`rnd_022`, 155° off); 5 timeouts at 900 s | 269 s for the one |
+| spiral only, main after #10 | 4 of 8 **plus the same false position** (`rnd_022`, 149° off); 2 timeouts at 900 s | 50–361 s |
+| index installed, automatic (no `-i`), post-merge | 7 of 8, no false position | 1.1–4.1 s each |
+
+(Spiral runs overlapped load averages of 25–200; the Siril work measured 76–418 s per
+image for the same mode on a quiet machine.) The eighth, `wide_dss_01`, fails every way.
+With the antipodal hint the automatic path first spends ~1 s on the five-field spiral;
+with no hint at all (N.I.N.A.'s real case when the header has no RA/Dec) that stage is
+skipped. The spiral's false position is worth noting on its own: a whole-sky spiral
+verifies tens of thousands of positions, and one passes; the index answers before the
+spiral gets there.
+
+### 7.4 No pixel scale at all
+
+`--blind --no-fov`: no `--fov`, and the corpus headers carry no FOCALLEN/XPIXSZ, so the
+index searches 0.3–60″/px. 436 correct against 473 with the scale given (table in §7.1),
+median 1.1 s, and no false positive — the one the other modes share is refused here,
+because it verifies on fewer than 30 stars with no scale to confirm it. Mostly it misses
+narrow survey frames, where the wider search admits more competing hypotheses. Fields above
+20° fail because their scale is above 60″/px. Before the chance-corrected score (§2.6
+step 5) this mode found almost nothing: a hypothesis at 20–50″/px projected hundreds of
+stars into the frame and outscored the truth on raw counts.
+
+### 7.5 Hinted solves with an index installed
+
+The automatic path changes nothing a five-field spiral would solve. Post-merge corpus,
+index installed, `-r 5` (the benchmark default) — run before the 10° gate below, so the
+index *was* consulted on every failure:
+
+* true-centre hint: **558 → 558, identical status, centre and corner error on all 635
+  entries** (and tier D unchanged: the four `stress_fov` alias entries, `expect=any`,
+  return as before);
+* hint 0.3 fields off: **537 → 537, likewise identical on all 635**. (Pre-merge the
+  index had gained three here, `ls_big`, `ps1v2_07`, `sv_sdssr`; main now solves them
+  itself.)
+
+**No-solve overhead, and the 10° gate.** Seven images (five that solve nowhere, two that
+solve), `--jobs 1`, two rounds each, no-solve times:
+
+| `-r` | main | index, auto at any radius | index, auto only at `-r` ≥ 10° |
+|---|---|---|---|
+| 5° (load 2–6) | wise_16 1.2 s, neg_fake_narrow 3.6 s, neg_noise_a 0.07 s, neg_fake_300 0.26 s | 2.5 s, 4.3 s, 0.15 s, 0.26 s | 1.2 s, 3.7 s, 0.07 s, 0.26 s |
+| 30° (load 8–22) | wise_16 27 s, neg_fake_narrow 110 s, neg_fake_300 4.4 s | 28–31 s, 109–118 s, 4.8–5.2 s | the same as "any radius" |
+
+Solved images: 0.12–0.30 s in every column. At small radii consulting the index roughly
+doubles a failure that costs about a second anyway, and gains nothing measurable on the
+corpus; at wide radii it adds a few percent to a failure the spiral makes slow, and turns
+the N.I.N.A. case from minutes into seconds. So the automatic path is now **gated on
+`-r` ≥ 10°** (`AUTO_MIN_RADIUS` in `arcsec/src/blind.rs`): below that an installed index
+is never consulted unless `-i` names it, so every `-r` < 10° solve is exactly main's.
+
+### 7.6 False positives
+
+* Tiers A/B/C/S: only the one the hinted solver also reports, `wide_shassa_01` (31″ at
+  the corners, just over the 1-pixel threshold) — the hinted solver's acceptance, reached
+  from a different start; the no-scale mode refuses even that. (Pre-merge there were also
+  three distorted 12° TESS FFIs, `tess_03`, `tess_25`, `tess_32`, again the hinted
+  solver's own; main's distortion handling now solves them.)
+* Tier D: `neg_hint_1`, `_5`, `_7`, `_8` are reported, correctly placed (0.04–0.24″).
+  Those controls are real images given a *wrong hint and a small radius*; they must fail
+  only because the field lies outside `-r`. A blind solve ignores the hint by design, so
+  in a blind run they are not false positives. The automatic path keeps to `-r`, and in
+  the hinted runs with an index installed they are refused as before. Every
+  must-fail image with no real field behind it (noise, flats, fake star fields, nebula
+  cores) is refused in every mode.
+
+### 7.7 Where blind solving still fails
+
+* **Deep survey frames, 0.15–0.3°** (pre-merge: SDSS 8/33, Pan-STARRS 9/20, SkyMapper
+  5/15, Legacy Survey 26/40, against 33, 20, 8 and 37 hinted): the
+  0.06° tier's anchors are mag 12–15 stars, which saturate or are masked in these
+  surveys, so the groups cannot be rebuilt. A tier that skips stars brighter than a
+  saturation limit, or 6-star groups in the deep tiers (×3 the size), would address it.
+* **Below 0.15°**: no tier.
+* **The hinted solver's own failures** (dense, nebulous, bright-object fields; distorted
+  TESS frames): the index finds some of these fields, but acceptance is the hinted
+  solver's, so they fail as before.
+* The 0.3° default index loses most of the 0.15–0.3° band (2 of 113 against 54); that is
+  the 410 MB the 0.06° tier costs.
 
 ---
 
-## 8. Phases
+## 8. What was built, what was deferred
 
-**Phase 0 — test the premise (≈1 day).** Described in §9. Do this first.
+Built: the format and reader (lazy validation, CRCs, versioning), the builder (strips,
+parallel, deterministic), `catalog index build|info`, `catalog list|verify` awareness,
+the solver, `-i` support, the automatic fallback, the scale-free mode, the Astrometry.net
+path's vote fix (§9.1), benchmark flags `--blind` and `--no-fov`, and unit tests on
+synthetic databases (format round trip and corruption, builder invariants and thread
+independence, an end-to-end blind solve of a rendered field in both parities).
 
-**Phase 1 — format and reader (≈2 days).** Header, three sections, magic and CRC
-checks, memory-mapped loader, code-window binary search. Unit tests on a synthetic
-index built in memory, as `format_001.rs`'s tests do. No builder yet.
+Deferred:
 
-**Phase 2 — builder, single band (≈3 days).** `arcsec index build --bands X`,
-serial, one band, writing shards then merging. Validate against the builder gate
-above. Correctness before speed.
-
-**Phase 3 — builder, usable (≈3 days).** Parallel over cells, resumable, `--like`,
-`--fov`, `--dec-range`, the cost prompt, `index list`, `index verify`, progress.
-
-**Phase 4 — blind integration (≈2 days).** The trait in §6.1 so blind mode reads
-either format; run the blind test scripts against both and compare.
-
-**Phase 5 — hinted fast path (≈3 days, optional).** §6.2, gated on measurement.
-
-**Phase 6 — distribution (optional).** Publish pre-built bands as tarballs with
-checksums, and a `arcsec index fetch --fov 1.5` that downloads instead of building.
-Only worth it once the format has stopped changing.
-
-Roughly two weeks of focused work to the end of phase 4, which is the point where the
-astrometry.net dependency goes away.
+* **Saturated anchors in deep survey frames** (§7.7) — the main remaining loss.
+* **Fields below 0.15°**: no tier; a 0.035° tier would need a catalogue deeper than D80's
+  density limit allows to be useful.
+* **Database choice in the scale-free mode**: the hinted verification uses the database
+  chosen for the assumed 1″/px; a hypothesis many times wider than D80's range is then
+  verified against the wrong catalogue.
+* **Builder conveniences** from the plan: `--like <image>`, `--dec-range`, resumable
+  shards, a size/time prompt before building, parallel strip reading.
+* **Replacing the spiral's online quads** with the index (plan §6.3) — not attempted;
+  the hinted path is untouched.
+* **Distribution** of pre-built files (plan phase 6): unnecessary while a build takes
+  minutes.
 
 ---
 
-## 9. Phase 0: the experiment that decides whether to build any of this
+## 9. Phase 0 and the go decision
 
-The subsystem above is a fortnight of work and a new on-disk format to maintain
-forever. Before committing, spend a day testing whether an index would actually help,
-using a throwaway script rather than production code:
+The plan's §9 experiment was adapted: seiza's results already showed disc-anchored
+indexing working end to end, so instead of a throwaway in-memory index the experiment
+was run on the first version of the real one, on whole-sky indexes, with a debug mode
+(`ARCSEC_INDEX_DEBUG=<true WCS>`) that counts, for the true field, how many index
+patterns lie in the frame, how many of their stars are detected, how many hash to the
+same key, and how many the image side generated.
 
-1. Pick the 8 tier-A images that still fail, plus 4 that succeed as controls.
-2. For each, build a **tiny** index in memory covering only that field's sky and one
-   band at the field size — a few thousand quads, no file format, no CLI.
-3. Run the existing `blind.rs` matcher against it and record: does it find the field,
-   how many code matches, what does `verify_score` say?
-4. Separately, time a `-r 30` hinted solve against the same tiny index versus the
-   spiral, to test argument 2 from §1.
+* First result: **0 of 5 fields** found. The debug counts located the failure exactly:
+  index stars detected but at SNR ranks 22–3 000 (DSS fields; bright stars saturated),
+  so no group was ever rebuilt. Re-ranking detections by aperture flux: **4 of 5**, all
+  at hypothesis rank 0, in 0.2–1 s; the fifth (M101, rank 6) ranked first once votes
+  joined the score.
+* The plan's interpretation rule — "several of the failing images solve → build it" —
+  does not apply as written: the question was never the hinted failures but blind
+  solving, and on that the answer was decisive. **Go.**
+* The plan's tier-A failure set: the blind index does not solve the dense or nebulous
+  fields the hinted solver fails either, as §1 predicted.
 
-Interpretation, decided in advance so the result cannot be rationalised:
+### 9.1 Step 0: the Astrometry.net path's vote ranking
 
-* **Several of the 8 solve** → the correspondence argument is alive after all; build
-  the full thing.
-* **None solve but the controls do** → confirms §1: the remaining failures are
-  detection problems, not indexing problems. Then build the index only if the
-  astrometry.net-dependency and wide-radius-speed arguments are worth two weeks on
-  their own — and fix detection first.
-* **Even the controls fail** → the code-space builder disagrees with `blind.rs`'s
-  canonical form somewhere. Fix that before drawing any conclusion; it is the most
-  likely outcome of a first attempt and the cheapest possible place to discover it.
+`blind.rs` verified only `hyps[0]` of each 0.1° RA/Dec vote cell, binned raw RA (which
+splits one field's votes near the poles) and had no scale axis. It now uses
+`sky_votes.rs`: (RA, Dec, ln scale) buckets with RA ÷ cos δ, 3×3×3 smoothing, the
+medoid of the strongest bucket as representative, and non-maximum suppression.
+
+Measured on the 254 corpus fields of ≥ 0.6° with index files 4107–4119 (`--blind -r 0
+--fov`): 70 → 72 correct, the same one false positive (`wide_shassa_01`, a hinted-solver
+acceptance). Gained `rnd_052`, `rnd_065`, `wide_shassa_06`; lost `wide_tess_10`.
+(`tess_13` and `tess_24` timed out at 300 s in the after run under a load average near
+200 and solve with a longer timeout.) Timing could not be compared: the two runs saw
+load averages of 60–90 and 160–200. On the 103-image v1 set: 12 → 12. So the bug was
+real but cost little here; the 4100 series' weakness is coverage, not ranking. The
+calibrated `MIN_VERIFY_SCORE`/`EARLY_STOP_SCORE` were not changed, and no new false
+positive appeared; the HiPS scripts (`hips_extended_test.sh`) were not re-run, since
+they download from a network service — the corpus run stands in for them.
 
 ---
 
 ## 10. Alternatives considered
 
-**Write astrometry.net's own format instead of a new one.** Then `anet.rs` reads it
-unchanged and their tooling works on our files. Rejected for the builder: their format
-carries kd-trees and range tables that are considerably more work to *write* correctly
-than a sorted flat array is to write and read. Worth revisiting if we ever want
-interoperability rather than independence.
+**Astrometry.net code space with a sorted-dimension window scan** (the plan's design).
+Not built: see §2.2. Its one advantage, correspondence from the code, is recovered by
+the canonical vertex order.
 
-**Index triangles rather than quads for wide fields.** `DIMQUADS=3` is what
-astrometry.net recommends above ~10°, and `blind.rs` already handles it. The header has
-`dim_quads` for this; treat it as a phase-5 refinement.
+**Cell-grid quads sized to the quad diameter** (the plan's builder and size estimates).
+The disc-anchored rule replaces it: anchoring on local brightness maxima gives the
+image a way to rebuild the same groups without knowing the grid, where a cell grid
+needs passes on offset grids and many quads per star for the same robustness.
 
-**Re-encode Gaia DR3 directly**, per `FUTURE_IMPROVEMENTS.md`. That buys proper
-motions and independence from ASTAP's databases, but it is a much larger project
-(terabytes of source data) and it is orthogonal: the index format above does not care
-where the stars came from, and `source`/`epoch_jyear` in the header record it. Do the
-index first, from ASTAP data, and swap the source later if proper motions ever matter.
+**Writing astrometry.net's own format.** Rejected for the same reason as before: their
+kd-trees are much more work to write than a sorted flat array.
 
-**HEALPix for the cell grid.** Genuinely better — exactly equal areas and a
-hierarchical index — but it is a new dependency and the equal-area rule from
-`areas_290.rs` is good enough at the resolutions involved. Reconsider if cell shape
-turns out to bias quad density.
+**HEALPix**: not needed; the builder's strip-and-grid scheme and the star directory's
+declination bands are enough.
+
+**Gaia directly** (proper motions): orthogonal; the header records the source database.
