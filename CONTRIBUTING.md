@@ -88,6 +88,17 @@ current standing, and the results of changes that did not work and are not worth
 repeating, are in [docs/test-images.md](docs/test-images.md). A change that adds a
 false positive is a regression however many new solves it brings.
 
+`benchmark.py` can solve every image with other solvers too and print a head-to-head:
+`--astap ~/astap_cli` for ASTAP (with `--auto-db` it lets ASTAP pick its own database by
+field size; `--astap-db d80` pins one) and `--seiza <binary> --seiza-data <dir>` for
+[seiza](https://github.com/theatrus/seiza). Each gets the same position, field size and
+radius and is scored by the same rules, false positives included. `--blind-index <index>`
+compares blind solving (arcsec with its own index or Astrometry.net index files, seiza
+with its own index); `--blind` alone moves the hint to the antipode without adding `-i`. For
+timings use `--jobs 1`, alternate `--order` between rounds, and compare like with like:
+`--threads 1 --seiza-threads 1 --taskset <cpu>` pins all three to one core. The method and
+the latest numbers are in [docs/test-images.md §9](docs/test-images.md#9-results-arcsec-vs-astap-vs-seiza).
+
 `scripts/bench_all.sh` compares speed and positions against ASTAP's `astap_cli` over
 `resources/*.fits`. The hot paths depend on presorting, binary search, memory-mapped
 catalogues and avoiding per-step allocation, and speed is easy to lose: include

@@ -12,6 +12,8 @@ Companion to [plate-solving.md](plate-solving.md). There are two manifests:
   ([`scripts/corpus.tsv`](../scripts/corpus.tsv), §2.8–2.10 and §3.6, results in §7). It
   contains v1 as the subset `v1`.
 
+§9 runs both against ASTAP and [seiza](https://github.com/theatrus/seiza) as well.
+
 ```bash
 # v1, as before
 scripts/fetch-test-images.sh                  # all tiers → resources/testset/ (~2.2 GB)
@@ -1433,3 +1435,454 @@ Two policy notes for whoever maintains this:
   **nova.astrometry.net is the exception**: its robots file names AI crawlers and its
   pages sit behind a human check, so it was not used at all.
 * The Mellinger mosaic ("all rights reserved") was excluded on licence grounds.
+
+---
+
+## 9. Results: arcsec vs ASTAP vs seiza
+
+Measured 2026-10-02. [seiza](https://github.com/theatrus/seiza) is a Rust plate solver
+(Apache-2.0) with a hinted solver, a blind solver against a prebuilt whole-sky index,
+and compatibility modes for N.I.N.A. (ASTAP's command line) and Siril (astrometry.net's
+`solve-field`). This section runs it on the same corpus, with the same hints and the
+same scoring, next to arcsec and ASTAP. As with §7.5, the corpus was built by this
+project to cover arcsec's weak spots, not to be typical of anyone's frames: read the
+numbers as where the three differ, not as a ranking.
+
+The arcsec numbers are for `main` after the solver-robustness and distortion work of
+§7.8–7.9 (d30e6e7). The comparison was first made against the 0.2.0 release; those
+arcsec figures are kept, dated, at the end of §9.3 and §9.5. The ASTAP and seiza runs
+were not repeated: neither program changed.
+
+### 9.1 What was run
+
+| | arcsec | ASTAP | seiza |
+|---|---|---|---|
+| version | `main` d30e6e7 (after 0.2.0); blind: PR #13 `custom-index` 4f0760a, unreleased | `astap_cli` CLI-2026.07.30 | 0.18.20 (`main`, 66bcde6), built with Rust 1.97.1 |
+| licence | MIT | MPL-2.0 | Apache-2.0 |
+| catalogue | d80 (0.15°–6°), g05 (3°–20°), w08 (20°–80°), chosen by field size (`--auto-db`) | the same directory; no `-D`, so ASTAP chooses by field size itself (§9.2) | `stars-deep-gaia17.bin`, Gaia DR3 to G 17, 154 M stars, 1.54 GB |
+| blind index | its own index built from d80 (PR #13): 287 MB (fields 0.3°–30°) or 698 MB (0.15°–30°); astrometry.net 4107–4119 for the historical row (§9.6) | – | `blind-gaia16.idx`, Gaia DR3 to G 16, 1.63 GB |
+| how it is driven | `-f -d --ra --spd --fov -r 5 -o` | `-f -d -ra -spd -fov -r 5 -o` | one-shot `seiza worker`, a hinted request (§9.2) |
+
+seiza's data came from its own downloader (`seiza download-data prebuilt --file …`,
+bundle `catalog-bundle-v4-2026-10-01`, SHA-256 verified): the two files above plus
+`stars-gaia.bin` (G ≤ 15, 367 MB) and `stars-lite-tycho2.bin` (25 MB), 3.6 GB in all,
+about 2.7 GB to download (zstd). The bundle states no licence of its own; the stars are
+Gaia DR3 (ESA/Gaia/DPAC, CC BY-SA 3.0 IGO) and Tycho-2. Given a directory, seiza uses the
+deepest catalogue in it, so the main runs use the G ≤ 17 file; §9.4 repeats the corpus
+with the G ≤ 15 file its documentation recommends as the general default.
+
+### 9.2 How each solver was driven, and why
+
+* **The same hint for all three.** `benchmark.py` computes the hint once per image (the
+  true centre, or 0.3 fields off with `--offset-hint 0.3`) and gives it to each solver in
+  its own units: arcsec and ASTAP get RA in hours, south-pole distance and the FOV of the
+  image height; seiza gets RA/Dec in degrees and the pixel scale that FOV implies, with
+  its default ±20 % scale tolerance. All three get `-r 5`.
+* **seiza's native hinted solver, not its ASTAP mode.** `seiza solve` prints a rounded
+  summary (centre to 1e-5°, corners to 1e-4°, rotation to 0.01°), which is not enough to
+  score corners on a 15° field, so the harness sends the same request through a one-shot
+  `seiza worker` process: the same `seiza::solve::solve` call, with the WCS returned in
+  full as JSON. On `fov_1p50` the two give the same solution and take 0.44 s and 0.52 s.
+  The worker is asked for 200 stars, which is what `seiza solve` requests. seiza's
+  ASTAP-compatible mode is *not* like for like: it clamps the radius to 0.5°–3°, uses
+  at least 200 stars, ignores `-d`/`-D`/`-z`, and when the hinted solve fails it runs a
+  full blind solve over 0.1–20″/px. §9.4 runs it separately (`--seiza-mode astap`).
+* **ASTAP picks its own database.** §7.5 ran ASTAP with `-D d80` only, which left it
+  nothing above 6°. Here it gets no `-D`, and `astap_cli` then chooses for itself
+  (G05 for a 10° field, D80 for 1.5°, checked with `-progress`). In practice this changes
+  little: ASTAP solves 3 of the 36 fields between 6° and 20° and none above 20°.
+* **Compressed inputs.** seiza recognises images by file extension and does not open
+  `.fits.fz` (the 42 LCO frames, tier C) or `.fits.gz` (`s_dss_b_gz`): "The file
+  extension `.fz` was not recognized as an image format". Those 43 are a format gap, not a
+  search failure, so the main runs use a mirror of the corpus in which those files are
+  decompressed (astropy, same pixels and header) for all three solvers. On the files as
+  delivered, seiza solves 503 rather than 546 and ASTAP 303 rather than 304 (it does not
+  read the `.gz` file either); arcsec reads both and its result is the same (558).
+* **Scoring is identical.** Every solution is scored at the centre and four corners
+  (§4), with the 5″-or-one-pixel threshold, the linear floor for SIP/TPV truth and the
+  INEXACT class (§4.2), for every solver. A tier-D control that is answered at all counts
+  as a false positive, as for arcsec.
+* **Parallelism.** The accuracy runs used `--jobs 12` on a machine that another job was
+  also loading (load average up to 150), so their times are not used; §9.5 has the
+  timing runs.
+
+Commands (the corpus mirror is `resources/corpus` with the 43 compressed files
+decompressed in place of the originals):
+
+```bash
+scripts/benchmark.py --corpus --images <mirror> --auto-db --astap ~/astap_cli \
+    --seiza <seiza> --seiza-data ~/.local/share/seiza-data --jobs 12 --by tier,source,fov
+scripts/benchmark.py ... --offset-hint 0.3
+scripts/benchmark.py --auto-db --astap ~/astap_cli --seiza <seiza> --seiza-data ...   # v1
+```
+
+### 9.3 Accuracy and solve rate
+
+**v1 (103 images), true-centre hint:**
+
+| | arcsec | ASTAP | seiza |
+|---|---|---|---|
+| correct (of 98) | 92 | 47 | **97** |
+| false positives | 0 | 0 | 0 |
+| no solve | 6 | 51 | 1 |
+| tier D (5) false positives | 0 | 0 | 0 |
+| median centre / corner, the 47 all three solve | 0.68″ / 0.86″ | 0.69″ / 0.94″ | 0.79″ / 1.13″ |
+
+seiza solves everything arcsec does except `ls_p14` (a 0.14° Legacy Survey field), plus
+six it does not: `dens_carina`, `dens_scutum`, `dens_vela`, `type_dbl_clus`, `type_m8`,
+`type_sirius` — the crowded and bright-star fields of §6.4. With the hint 0.3 fields off:
+arcsec 86, ASTAP 46, seiza 96 with one false positive (`stress_wide15`, 15°, corner 58″,
+5 px). (v1 is where main changed least: arcsec's v1 counts are the same as 0.2.0's.)
+
+**Expanded corpus (635 entries), true-centre hint:**
+
+| | arcsec | ASTAP | seiza |
+|---|---|---|---|
+| correct (of 596 in tiers A/B/C/S) | **558** | 304 | 546 |
+| false positives | **1** | 2 | 22 |
+| inexact (distorted truth) | **0** | 9 | 24 |
+| no solve | 37 | 281 | **4** |
+| tier D (35 must-fail) false positives | 0 | 0 | 3 |
+| wrong-FOV stress entries (4, `expect=any`) solved correctly | 4 | 0 | 0 |
+| median centre / corner, the 302 all three solve | **0.25″ / 0.49″** | 0.26″ / 0.71″ | 0.38″ / 0.77″ |
+
+| Tier | n | arcsec | ASTAP | seiza |
+|---|---|---|---|---|
+| A — synthetic cutouts | 234 | 221 (1 FP) | 131 (2 FP) | 223 (11 FP) |
+| B — survey pixels | 255 | 230 | 97 (1 inexact) | 224 (8 FP, 19 inexact) |
+| C — LCO frames | 42 | 42 | 41 | 42 |
+| S — simulated camera artefacts | 65 | 65 | 35 (8 inexact) | 57 (3 FP, 5 inexact) |
+
+| FOV (long side) | n | arcsec | ASTAP | seiza |
+|---|---|---|---|---|
+| < 0.15° | 6 | 5 | 0 | 3 |
+| 0.15–0.3° | 113 | 113 | 39 | 112 |
+| 0.3–0.6° | 126 | 125 | 97 | 125 |
+| 0.6–1.2° | 180 | 171 | 111 (3 inexact) | 177 |
+| 1.2–2.5° | 88 | 79 | 53 (1 FP, 2 inexact) | 86 (2 inexact) |
+| 2.5–6° | 43 | 27 | 1 (1 inexact) | 16 (9 FP, 18 inexact) |
+| 6–20° | 36 | 34 (1 FP) | 3 (1 FP, 3 inexact) | 20 (12 FP, 4 inexact) |
+| > 20° | 8 | 8 | 0 | 7 (1 FP) |
+
+| Source | n | arcsec | ASTAP | seiza |
+|---|---|---|---|---|
+| hips2fits (22 surveys) | 234 | 221 (1 FP) | 131 (2 FP) | 223 (11 FP) |
+| ZTF | 43 | 43 | 42 | 43 |
+| SDSS | 33 | 33 | 5 | 33 |
+| Pan-STARRS1 | 20 | 20 | 9 | 20 |
+| SkyView | 37 | 37 | 27 | 37 |
+| Legacy Surveys | 40 | 39 | 0 | 36 |
+| LCO (tier C) | 42 | 42 | 41 | 42 |
+| WISE L1b | 25 | 20 | 0 (1 inexact) | 25 |
+| SkyMapper native, 0.17° | 15 | 15 | 14 | 15 |
+| TESS FFI crops | 42 | 23 | 0 | 15 (8 FP, 19 inexact) |
+| tier S | 65 | 65 | 35 (8 inexact) | 57 (3 FP, 5 inexact) |
+
+**Accuracy, on the images all three solve** (median centre / worst corner):
+
+| Tier | n | arcsec | ASTAP | seiza |
+|---|---|---|---|---|
+| A | 129 | 0.33″ / 0.65″ | 0.42″ / 0.79″ | 0.54″ / 0.93″ |
+| B | 97 | 0.12″ / 0.34″ | 0.13″ / 0.68″ | 0.31″ / 0.65″ |
+| C | 41 | 0.23″ / 0.65″ | 0.22″ / 0.73″ | 0.19″ / 0.72″ |
+| S | 35 | 0.29″ / 0.55″ | 0.27″ / 0.56″ | 0.33″ / 0.86″ |
+
+Pairs that arcsec and seiza both solve, by survey (centre / corner): ZTF 0.10″ / 0.35″
+against 0.43″ / 0.68″, Legacy Surveys 0.05″ / 0.10″ against 0.14″ / 0.40″, SDSS 0.20″ /
+0.33″ against 0.26″ / 0.54″, SkyMapper 0.07″ / 0.26″ against 0.14″ / 0.35″, LCO 0.23″ /
+0.65″ against 0.19″ / 0.72″. Where the truth is good to better than 0.3″ (§7.6), arcsec's
+plates are closer to it, and on tier A as well; on the LCO frames, where the pipeline
+truth is the limit, the two are level. seiza fits its plate to the 200 brightest
+detections on an 8-bit stretched copy of the image, arcsec to up to 500 stars measured on
+the linear pixels, which is the likely difference; we did not test it directly.
+
+**Who solves what** (correct only):
+
+* arcsec and seiza both: 524. arcsec only: 34. seiza only: 22. ASTAP solves nothing that
+  neither of the others does; it solves one image arcsec does not (`rnd_054`) and one
+  seiza does not (`wide_tess_08`, which seiza answers 1.2 px out).
+* seiza only (22): the crowded and bright-star fields that remain arcsec's standing
+  failures (`dens_carina`, `dens_scutum`, `dens_vela`, `obj_47tuc`, `obj_sgra`,
+  `type_dbl_clus`, `type_m8`, `type_sirius`); `rnd_054`; three coarse DSS fields
+  (`wide_dss_01/02/04`); five TESS FFI crops (`tess_05/17/20/31/40`); five WISE frames
+  (`wise_06/08/11/15/16`).
+* arcsec only (34): ten coarse TESS fields that seiza answers just outside the
+  threshold (`cam_tess_c`, `wide_tess_01/02/04/05/07/08/09/12/13`) and three tier-S
+  variants of them (`s_tess_c_flipx/flipy/rot270`); thirteen distorted TESS FFI crops
+  that seiza answers wrong or inexact (`tess_03/09/10/12/13/18/21/23/25/32/33/41/44`) and
+  five tier-S lens and pincushion cases (`s_dss_d_lens`, `s_tess_a_lens`,
+  `s_tess_b_lens`, `s_tess_b_pincush`, `s_tess_c_pincush`) — main's distortion model
+  (§7.9) at work; and `ls2_07`, `ls2_21`, `ls_p14`, which seiza does not solve.
+
+**False positives, by kind** (true-centre hint):
+
+| Kind | arcsec | ASTAP | seiza |
+|---|---|---|---|
+| right field, corners 1–3 px out (coarse 12–29″/px TESS and SHASSA HiPS) | 1 (`wide_shassa_01`, 1.2 px) | – | 14 |
+| distorted TESS FFI, one linear plate over 500–2800″ of distortion | – | – | 8 |
+| plate wrong at the corners (centre within 14″) | – | 2 (`rnd_074`, `wide_tess_06`) | – |
+| a must-fail control answered | – | – | 3 |
+
+The three tier-D answers are different in kind. `neg_fake_wide` (400 random stars,
+10°) is a wrong field, 5.4° off. `neg_shuffle_6` (`cam_tess_a` with 128-px blocks
+permuted) comes out at the right centre with 12″ corners: a solution for a scrambled
+image. `neg_orion_2massk` is a 0.04° 2MASS K crop that is a control only because it lies
+below every ASTAP database; seiza's G ≤ 17 catalogue reaches it and the answer is
+correct (0.07″ / 0.33″).
+
+**Offset hint (0.3 fields), expanded corpus:**
+
+| | arcsec | ASTAP | seiza |
+|---|---|---|---|
+| correct | **537** | 280 | 531 |
+| false positives | **1** | 2 | 25 |
+| inexact | 1 | 6 | 32 |
+| no solve | 57 | 308 | 8 |
+| tier D false positives | 0 | 0 | 2 |
+| median centre / corner, the 279 all three solve | 0.27″ / 0.60″ | 0.26″ / 0.69″ | 0.39″ / 0.80″ |
+
+arcsec and seiza both solve 502; arcsec only 35 (again mostly coarse and distorted TESS,
+plus `wise_03`, `wise_23`, `sdss2_18`, `sdss2_19`), seiza only 29. arcsec's one false
+positive is `wide_shassa_01` again. Nine of seiza's 25 + 2 are worse than near misses:
+seven wide fields (`stress_wide15`, `wide_shassa_02/04/05/06`, `wide_tess_12/13`,
+15°–42°) whose offset puts the true centre outside `-r 5`, answered with corners 3–11 px
+out, and two wrong fields (`wide_shassa_08`, 35° away, and `neg_shuffle_6`, 3.8°). ASTAP
+returns nothing for all nine; arcsec solves `wide_tess_12` correctly and returns nothing
+for the rest.
+
+**Against 0.2.0** (the first run of this comparison, 2026-10-02): arcsec 0.2.0 scored
+504 correct / 4 false positives / 11 inexact with the true-centre hint and 459 / 4 / 39
+with the offset hint, against seiza's 546 / 22 / 24 and 531 / 25 / 32; at that point
+seiza solved 57 images arcsec did not and arcsec 15 that seiza did not. The gains since
+(§7.8–7.9) are mostly the fields where seiza was ahead (SkyMapper, the LCO misses,
+random galactic-plane fields, tier S) and the distorted TESS frames.
+
+### 9.4 Variations on seiza
+
+| Run (expanded corpus, true centre) | correct | FP | inexact | no solve | tier D FP |
+|---|---|---|---|---|---|
+| seiza hinted, G ≤ 17 catalogue (§9.3) | 546 | 22 | 24 | 4 | 3 |
+| seiza hinted, G ≤ 15 `stars-gaia.bin` | 484 | 22 | 24 | 66 | 3 |
+| seiza hinted, files as delivered (`.fz`/`.gz` unread) | 503 | 22 | 24 | 47 | 3 |
+| seiza ASTAP-compatible mode (blind fallback) | 544 | 21 | 27 | 4 | 10 |
+
+* **Catalogue depth matters below 0.3°.** With the G ≤ 15 catalogue seiza solves 54 of
+  the 113 fields of 0.15°–0.3° rather than 112, and 1 of 6 below 0.15°; above 0.3° the
+  counts differ by at most two per band. Small fields need the 1.5 GB file.
+* **ASTAP mode** solves about the same images, but its blind fallback answers seven more
+  tier-D controls. Six are `neg_hint_*` — real fields given a hint 30°–60° away, which
+  the blind search finds correctly; they are failures only by the rule that a hinted
+  solver must not wander that far. One is a wrong answer for pure noise (`neg_noise_c`,
+  2.6° off), and `wise_16` becomes a wrong field (1.8° off) where the hinted solver
+  found it. A run in this mode took 60–90 s on some images (the blind fallback).
+
+### 9.5 Speed
+
+Timing runs used `--jobs 1`, so one solver ran at a time. Two sets: v1 (103 images) and a
+stratified 98-image subset of the expanded corpus (4–16 per FOV band across the sources,
+plus 10 tier-D controls, chosen by a fixed rule before any timing). Two thread settings:
+each solver's default, and one thread (`--threads 1` for arcsec, `RAYON_NUM_THREADS=1`
+for seiza — its only thread pool — and every solver pinned to one core with
+`taskset -c 5`; ASTAP has no thread option). Two rounds of each.
+
+ASTAP and seiza were timed together with arcsec 0.2.0, each image going through all
+three in turn, the order alternating between rounds. arcsec `main` was timed afterwards
+on its own, with the same protocol on the same quiet machine; 0.2.0 and main take the
+same time on the images whose result did not change, which cross-checks the two
+sessions. The machine was shared with another job that came and went: each run waited
+for a load average under 4, and a sampler recorded the CPU used by processes outside the
+run's own process tree every 5 s; a run with a mean above 1 core or a peak above 4 was
+discarded and repeated (three were). The runs kept had 0.2–0.3 cores of outside load on
+average and at most 1.3. Totals agreed between rounds to within 2 % (arcsec main: within
+0.5 %), and solve counts were identical. Times are wall-clock per process, start to exit,
+warm page cache, averaged over the two rounds.
+
+**Per image, median / mean / p90 / total (s):**
+
+| Set, threads | | arcsec (main) | ASTAP | seiza |
+|---|---|---|---|---|
+| v1, default | all 103 | 0.15 / 0.31 / 0.63 / 31.5 | 0.55 / 0.87 / 1.31 / 89.8 | 0.18 / 0.24 / 0.36 / 24.7 |
+| | solved (n = 92 / 47 / 97) | 0.15 / 0.24 / 0.38 / 22.1 | 0.15 / 0.27 / 0.77 / 12.9 | 0.18 / 0.21 / 0.34 / 20.7 |
+| | not solved (n = 11 / 56 / 6) | 0.70 / 0.85 / 2.16 / 9.4 | 0.93 / 1.37 / 2.50 / 76.9 | 0.76 / 0.66 / 1.59 / 3.9 |
+| v1, one thread | all 103 | 0.18 / 0.58 / 0.68 / 59.6 | 0.56 / 0.87 / 1.32 / 90.0 | 0.19 / 0.26 / 0.43 / 26.8 |
+| | solved | 0.18 / 0.28 / 0.57 / 25.6 | 0.15 / 0.28 / 0.76 / 13.1 | 0.19 / 0.24 / 0.39 / 23.1 |
+| | not solved | 3.26 / 3.10 / 7.34 / 34.1 | 0.92 / 1.37 / 2.49 / 77.0 | 0.76 / 0.63 / 1.49 / 3.8 |
+| subset, default | all 98 | 0.14 / 0.63 / 0.40 / 62.0 | 0.34 / 1.26 / 1.62 / 123.8 | 0.17 / 0.39 / 0.42 / 38.6 |
+| | solved (n = 83 / 33 / 88) | 0.14 / 0.18 / 0.34 / 15.2 | 0.16 / 0.20 / 0.37 / 6.5 | 0.17 / 0.18 / 0.27 / 16.0 |
+| | not solved (n = 15 / 65 / 10) | 0.23 / 3.12 / 13.0 / 46.9 | 0.51 / 1.80 / 2.94 / 117.3 | 1.33 / 2.26 / 13.0 / 22.6 |
+| subset, one thread | all 98 | 0.16 / 5.66 / 0.74 / 554.7 | 0.34 / 1.24 / 1.62 / 121.9 | 0.17 / 0.39 / 0.47 / 38.2 |
+| | solved | 0.16 / 0.20 / 0.40 / 16.8 | 0.16 / 0.20 / 0.38 / 6.4 | 0.16 / 0.18 / 0.26 / 15.9 |
+| | not solved | 1.11 / 35.9 / 158 / 537.8 | 0.49 / 1.78 / 2.97 / 115.5 | 1.32 / 2.24 / 12.9 / 22.4 |
+
+"Solved" means the solver returned an answer, right or wrong; the counts are arcsec /
+ASTAP / seiza.
+
+**On the same images.** Where arcsec and seiza both solve correctly (91 v1 images, 74
+subset images), arcsec's time is 0.85–0.96 of seiza's (geometric mean of the per-image
+ratio: 0.92 and 0.85 at default threads, 0.96 and 0.92 on one thread); medians 0.155 s
+against 0.174 s on v1 and 0.137 s against 0.167 s on the subset. On the 47 v1 images all
+three solve, the medians are 0.155 s, 0.147 s and 0.177 s (arcsec, ASTAP, seiza) at
+default threads and 0.182 s, 0.148 s and 0.188 s on one thread. A solved image costs
+about the same in all three.
+
+**The totals are decided by the failures, and arcsec's failed search is the expensive
+one.** With all cores, arcsec gives up in a median 0.2–0.7 s, but its spiral runs to the
+edge of the radius before it does, and the tier-D `neg_hint_*` controls (real fields with
+the hint 30°–60° away and `-r 10`) take 6–26 s each. On one thread the same three take
+72 s, 158 s and over 300 s (`neg_hint_1`, stopped by the timeout): 532 of the subset's
+555 s. seiza gives up sooner (its slowest failure, `neg_fake_300`, took 13 s; its others
+1–3 s) and fails least often, so it has the lowest totals: 25 s against arcsec's 32 s
+and ASTAP's 90 s on v1, and 39 s against 62 s and 124 s on the subset. ASTAP spends 77
+of its 90 s on v1 in the 56 images it does not solve, and its failures on the widest
+fields (the SHASSA mosaics, 20°–50°) take 6–17 s each.
+
+**Threads.** seiza and ASTAP take the same time on one pinned core as with the whole
+machine (seiza's hinted solve is close to serial; ASTAP's CLI did not use more than one
+core here). arcsec uses every core for star detection and the spiral search; on one
+thread its v1 total nearly doubles (31.5 → 59.6 s), almost all of it in failed searches
+(9.4 → 34.1 s).
+
+**By field of view** (median / total per band, default threads, subset):
+
+| FOV | n | arcsec (main) | ASTAP | seiza |
+|---|---|---|---|---|
+| < 0.15° | 4 | 0.05 / 0.2 | 0.51 / 21.6 | 0.17 / 1.2 |
+| 0.15–0.3° | 13 | 0.09 / 1.3 | 0.55 / 12.3 | 0.15 / 2.4 |
+| 0.3–0.6° | 15 | 0.14 / 2.2 | 0.25 / 8.9 | 0.16 / 2.6 |
+| 0.6–1.2° | 16 | 0.14 / 3.1 | 0.22 / 4.8 | 0.18 / 2.8 |
+| 1.2–2.5° | 14 | 0.18 / 2.6 | 0.24 / 3.3 | 0.17 / 2.5 |
+| 2.5–6° | 12 | 0.32 / 3.4 | 0.58 / 8.9 | 0.15 / 2.3 |
+| 6–20° | 10 | 0.20 / 3.0 | 0.62 / 8.6 | 0.19 / 1.9 |
+| > 20° | 4 | 0.13 / 0.5 | 15.6 / 50.5 | 0.24 / 1.0 |
+| tier D | 10 | 0.15 / 45.7 | 0.22 / 4.8 | 1.33 / 21.9 |
+
+**Fixed costs.** seiza's worker reports its own timings: of a typical 0.17 s solve, 28 ms
+is reading the image, 15–35 ms star detection and about 115 ms the solve; process start,
+catalogue open (memory-mapped) and the JSON exchange add 7–8 ms. `neg_m42_tiny`
+(400 × 400 pixels, which every solver refuses at once) gives the floor for a whole
+process: arcsec 15–25 ms, seiza 8–18 ms, ASTAP 60 ms. Times are with a warm page cache;
+the first solve after a reboot, which has to read the catalogue from disk, was not
+measured.
+
+**Against 0.2.0** (2026-10-02, timed in the same session as ASTAP and seiza): v1 totals
+32.6 s (default threads) and 62.1 s (one thread), subset 79.2 s and 735.4 s. Main is
+faster on the subset because 13 more images solve, which on 0.2.0 were failed searches
+(the 0.15°–0.3° band alone went from 13.6 s to 1.3 s, and from 138 s to 1.2 s on one
+thread); the `neg_hint_*` controls cost the same in both.
+
+### 9.6 Blind solving
+
+`--blind-index <index>` gives arcsec `-i` and seiza a blind request against its own index. Neither gets
+a position. arcsec still needs a hint on its command line, for the ordinary search it
+falls back to when the index finds nothing, so the harness gives it the antipode of the
+true centre with `-r 0`: only the index can find the field. Both keep the field size
+(arcsec `--fov`, ±20 %; seiza a pixel-scale range of ±20 %, where its own default is
+0.1–20″/px).
+
+arcsec's blind numbers here use its own pattern index, **from PR #13 (`custom-index`,
+4f0760a), not yet merged or released**; see [offline-index.md](offline-index.md). The
+Astrometry.net 4100-series results measured with 0.2.0 are kept as a historical row.
+
+| | arcsec, own index (PR #13) | arcsec, astrometry.net (0.2.0, historical) | seiza |
+|---|---|---|---|
+| index | built from the user's d80: 287 MB (fields 0.3°–30°) or 698 MB (0.15°–30°) | 4107–4119, 340 MB, Tycho-2, quads 22′ and up | `blind-gaia16.idx`, 1.63 GB (Gaia DR3 to G 16) |
+| also needs | the d80/g05/w08 databases the hinted solver uses | the same | the 1.54 GB G ≤ 17 catalogue, for verification |
+| acceptance | the hinted solver's star-level verification (≥ 30 matched stars, spread over the frame) | the same | ≥ 12 matched stars, RMS < 2 px |
+
+**Expanded corpus (596 in tiers A/B/C/S), no position, scale given:**
+
+| | arcsec, 698 MB index | arcsec, 287 MB index | seiza |
+|---|---|---|---|
+| correct | 473 | 399 | **494** |
+| false positives | **1** | **1** | 58 |
+| … of which a different part of the sky (11°–176° away) | 0 | 0 | 42 |
+| inexact | 0 | 0 | 18 |
+| no solve | 122 | 196 | 26 |
+| tier-D controls answered | 4 (all `neg_hint_*`, correct) | 2 (the same kind) | 8 (6 `neg_hint_*` correct, `neg_orion_2massk` 143° away, `neg_shuffle_6`) |
+| median centre / corner, the 438 both (698 MB) solve | 0.31″ / 0.66″ | | 0.43″ / 0.90″ |
+
+| FOV (long side) | n | arcsec, 698 MB | arcsec, 287 MB | seiza |
+|---|---|---|---|---|
+| < 0.15° | 6 | 0 | 0 | 0 (5 FP) |
+| 0.15–0.3° | 113 | 54 | 2 | 79 (10 FP) |
+| 0.3–0.6° | 126 | 113 | 95 | 114 (11 FP) |
+| 0.6–1.2° | 180 | 165 | 161 | 172 (4 FP) |
+| 1.2–2.5° | 88 | 76 | 76 | 85 (1 FP, 2 inexact) |
+| 2.5–6° | 43 | 24 | 24 | 15 (15 FP, 13 inexact) |
+| 6–20° | 36 | 34 (1 FP) | 34 (1 FP) | 21 (12 FP, 3 inexact) |
+| > 20° | 8 | 7 | 7 | 8 |
+
+**v1, blind:** arcsec 76 of 98 with the 698 MB index and 64 with the 287 MB one, no false
+positives; seiza 86 with 4 false positives (three of them other parts of the sky:
+`stress_narrow`, `ls_north`, `ls_p14`); arcsec with the astrometry.net 4100 series
+(0.2.0) 12.
+
+* **The blind solves are mostly the hinted ones.** Of the images each solves hinted with
+  the true centre (§9.3), arcsec's 698 MB index finds 473 of 558 blind and seiza's 488 of
+  546. arcsec's misses are below 0.3° (the 287 MB index stops there, the 698 MB one at
+  0.15°, and half the 0.15°–0.3° fields still fail) and in the SDSS, Pan-STARRS and
+  Legacy Survey frames (8, 9 and 26 of 33, 20 and 40); seiza's are spread more evenly.
+  Both solve 438; arcsec only 35 (distorted and coarse TESS, tier-S lenses, and ten
+  fields that seiza places elsewhere on the sky or does not solve), seiza only 56 (SDSS
+  and Pan-STARRS frames, SkyMapper, the crowded fields of §9.3).
+* **The false positives differ in kind.** arcsec's one is the hinted solver's
+  `wide_shassa_01` (1.2 px out). seiza returned 42 images (and one tier-D control) at a
+  different part of the sky, between 11° and 176° from the truth: 0.1°–0.8° fields
+  (random fields, Legacy Survey, WISE) and 2.9°–5.9° TESS FFI crops; its hinted solver, which only looks near the hint, made none of
+  these. arcsec accepts a blind hypothesis only through the hinted solver's star-level
+  verification; seiza's blind acceptance (≥ 12 matched stars, RMS < 2 px) is looser.
+  The `neg_hint_*` controls are real fields with a hint 30°–60° away; a blind solve ignores
+  the hint, so finding them is correct here.
+* **The indexes are not the same size or source.** arcsec's are built locally from the
+  d80 database the user already has (287 or 698 MB on top of it); seiza's are a 1.63 GB
+  index plus a 1.54 GB catalogue from Gaia DR3, downloaded. Below 0.3° the 698 MB index is
+  what arcsec needs.
+
+**Timing**, 98-image subset, quiet machine (`--jobs 1`, default threads, outside load
+0.2–0.35 cores, one round), median / mean / p90 / total (s):
+
+| | arcsec, 698 MB | arcsec, 287 MB | seiza |
+|---|---|---|---|
+| correct (of 88) / FP | 66 / 0 | 58 / 0 | 64 / 16 |
+| all 98 | 0.31 / 0.55 / 1.25 / 54.1 | 0.27 / 0.52 / 1.25 / 50.8 | 1.40 / 4.26 / 9.57 / 417 |
+| answered | 0.37 / 0.67 / 1.38 / 45.9 (n = 68) | 0.54 / 0.71 / 1.46 / 41.4 (n = 58) | 1.38 / 1.65 / 1.60 / 142 (n = 86) |
+| not answered | 0.21 / 0.27 / 0.41 / 8.2 (n = 30) | 0.18 / 0.23 / 0.38 / 9.4 (n = 40) | 30.7 / 23.0 / 46.4 / 276 (n = 12) |
+
+arcsec's blind solve costs about what its hinted one does, and gives up in a fraction of
+a second (it tries at most six hypotheses and then runs the ordinary search at `-r 0`).
+seiza takes 1.4 s for an answer and 30–50 s to give up after its 400 hypotheses; under
+load those searches ran past 300 s, and 26 of its corpus runs had to be repeated with a
+longer timeout (none then solved; one, `sv2_07`, returned a different part of the sky).
+
+**The historical row.** With 0.2.0 and the astrometry.net 4107–4119 files, arcsec solved
+12 of v1 and 21 of the subset blind (seiza 86 and 64), nothing below 0.6° on v1, with no
+false positives; its blind solves took a median 6 s on a quiet machine against seiza's
+1.5 s, mostly loading and sorting the index files.
+
+Commands: `scripts/benchmark.py --corpus --images <mirror> --auto-db --blind
+<index.arcsecix> --arcsec <custom-index build> --seiza <seiza> --seiza-data
+~/.local/share/seiza-data` (and without `--seiza` for the second index).
+
+### 9.7 Caveats
+
+* **One machine, one corpus.** A 24-core x86-64 Linux (WSL2) machine, warm page cache.
+  The corpus is mostly reprojected survey cutouts and survey frames; tier C (42 LCO
+  frames) is the only set of real observing frames, and none are DSLR or one-shot-colour
+  camera frames apart from the simulated ones of tier S.
+* **The catalogues differ.** arcsec and ASTAP use the same ASTAP `.1476/.290/.001` files;
+  seiza uses its own Gaia tiles, to G 17. A field one solver misses for want of catalogue
+  stars may be a catalogue result rather than a solver one; the G ≤ 15 run shows how much
+  depth moves seiza.
+* **Defaults, not tuning.** Every solver ran with its defaults apart from the hint. ASTAP
+  in particular might solve more of the Legacy Surveys and SDSS frames with other
+  `-z`/`-s` settings (§7.5).
+* **The harness was written by arcsec's authors**, its thresholds (5″ or one pixel at a
+  corner) were set for arcsec's own work, and the corpus was chosen to find arcsec's
+  weaknesses — and arcsec's changes since 0.2.0 were measured on the same corpus, so its
+  current numbers have had the benefit of being tuned against it, which seiza's and
+  ASTAP's have not. seiza is held to the same corner threshold; many of its "false
+  positives" are the right field with a plate one to three pixels out at the corners on
+  12–29″/px images, which some users would accept.
+* **seiza's own numbers** (its README) were measured differently: real camera frames,
+  its own catalogue recommendations for each solver, Windows. They are not contradicted
+  or reproduced here.
