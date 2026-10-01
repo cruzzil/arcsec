@@ -3,8 +3,9 @@
 //! Given the pixels of an astronomical image and an approximate pointing, this crate
 //! works out exactly where the image lies on the sky and returns a FITS-style WCS
 //! solution. It implements the star-pattern matching approach introduced by ASTAP and
-//! reads ASTAP's star databases (`.1476`, `.290` and `.001`), plus Astrometry.net
-//! index files for hint-free ("blind") position estimates.
+//! reads ASTAP's star databases (`.1476`, `.290` and `.001`). For hint-free ("blind")
+//! solving it builds its own pattern index from those databases ([`mod@index`],
+//! [`pipeline::index_solve()`]), and also reads Astrometry.net index files.
 //!
 //! The pipeline, driven by [`pipeline::solve_image`]:
 //!
@@ -99,6 +100,7 @@ pub fn max_threads() -> usize {
 pub mod catalog;
 pub mod detection;
 pub mod error;
+pub mod index;
 pub mod math;
 pub mod pipeline;
 pub mod quads;
