@@ -11,7 +11,31 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- Distortion handling in the catalogue solve. Once a position verifies, the solver
+  re-reads the catalogue about the image centre and fits a polynomial plate (up to
+  cubic, order chosen by F-tests and frame coverage) by re-matching every catalogue
+  star as the model improves, astrometry.net `tweak` style. When the field is
+  measurably distorted (F ≥ 30 over a linear fit, a pixel or more of difference, the
+  pairs covering the frame) the reported plate is the linear plate closest to the model
+  over the whole frame instead of the one the centre's stars give, and the model's star
+  pairs, which reach the corners, become `WcsSolution::matched_stars`. The written WCS
+  stays linear and ASTAP-compatible; `--sip` now fits its SIP terms to those pairs. On
+  the 635-image corpus: TESS 9 → 23 of 42 correct (the 12° frames' corners from
+  2000–2800″ off to the ~1000″ linear floor; with `--sip` 15–41″), WISE with the offset
+  hint 1 → 20 of 25, the synthetic lens set 3 → 10 of 10. Undistorted fields are
+  unchanged.
+- A position whose quads agree strongly (≥ 50 pairs) but whose linear plate fails
+  verification is retried with the distortion model before the search moves on.
+
 ### Changed
+
+- A strongly distorted field that the model cannot follow over the whole frame (a
+  significant cubic 3 px or more from the verified plate where there are stars, but
+  too little of the frame covered to fit it there) is now refused (exit 1, no
+  solution) rather than reported with a linear plate fitted to part of it. No corpus
+  image is affected.
 
 - The catalogue solve uses at most as many image stars as the database can hold in the
   field, its density times the field's area (ASTAP's "database limit"): the brightest
