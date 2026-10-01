@@ -11,6 +11,15 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--update` now removes the `PC` matrix and SIP terms of an earlier solution before
+  writing its own. Left in place, a `PC` matrix takes precedence over the new `CD` matrix
+  in wcslib, astropy and most other readers, and combined with arcsec's `CDELT` it
+  described a mirrored field: re-solving an image Siril had already solved (Siril writes
+  `PC` + `CDELT` with SIP) put the corners of a 1° frame about a degree out for every
+  reader except Siril. `astap_cli -update` leaves these keywords behind too.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added

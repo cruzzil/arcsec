@@ -214,7 +214,8 @@ On a successful solve arcsec writes, next to the image (or at `-o <base>`):
 When a solve fails, `<base>.ini` is still written, holding `PLTSOLVD=F` and the command
 line, as ASTAP does; tools that poll the `.ini` rely on it.
 
-With `--update` the same keywords are also written into the FITS image's own header.
+With `--update` the same keywords are also written into the FITS image's own header,
+after removing any `PC` matrix and SIP terms left there by an earlier solve.
 The report on stdout follows ASTAP's layout.
 
 ### Exit codes

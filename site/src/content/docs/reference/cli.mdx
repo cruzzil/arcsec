@@ -132,8 +132,9 @@ not written when arcsec stops before trying to solve: an unreadable image (exit
 code 16) or a mistake on the command line.
 
 With **`--update`**, arcsec also writes the solution into the image's own FITS header,
-in place. This is FITS only; for XISF and ASDF input it prints a warning and writes the
-`.wcs` and `.ini` files as usual. With **`--log`**, it writes the step-by-step log that
+in place, first removing any `PC` matrix and SIP terms an earlier solve left there, so
+the header describes only the new solution. This is FITS only; for XISF and ASDF input
+it prints a warning and writes the `.wcs` and `.ini` files as usual. With **`--log`**, it writes the step-by-step log that
 `--progress` prints to `<base>.log`.
 
 The report on stdout follows ASTAP's layout, ending with the solved centre:
