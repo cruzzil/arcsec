@@ -171,12 +171,16 @@ fn main() {
     let fov_hint = matches.get_one::<f64>("fov").copied().unwrap_or(0.0);
     let naxis = img.width.max(img.height) as f64;
     let height = img.height as f64;
+    let mut scale_known = true;
     let (arcsec_per_px, fov_rad) = if fov_hint > 0.0 {
         let fov_height = fov_hint * PI / 180.0;
         let ps = fov_height.to_degrees() * 3600.0 / height;
         (ps, fov_height * (naxis / height))
     } else {
-        let ps = image_io::read_pixel_scale(file).unwrap_or(1.0);
+        let ps = image_io::read_pixel_scale(file).unwrap_or_else(|| {
+            scale_known = false;
+            1.0
+        });
         let fov = naxis * ps / 3600.0 * PI / 180.0;
         (ps, fov)
     };
@@ -264,10 +268,51 @@ fn main() {
         _ => SolveMethod::Quads,
     };
 
-    // With --index, the blind solver estimates the position first, and that
-    // estimate becomes the hint for the catalogue spiral solver.
+    let template = SolveParams {
+        ra_hint: ra_hint_rad,
+        dec_hint: dec_hint_rad,
+        fov: fov_rad,
+        search_radius: search_radius_rad,
+        quad_tolerance: quad_tol,
+        hfd_min,
+        max_stars,
+        db_path,
+        db_name,
+        binning,
+        method,
+        speed,
+        threads,
+    };
+
+    // arcsec's own blind index, named by --index or, for a search wider than a
+    // few fields, found in the catalogue directory: it finds the field and the
+    // hinted solver accepts it (see blind::index_stage). With Astrometry.net
+    // files, the blind solver estimates the position first, and that estimate
+    // becomes the hint for the catalogue spiral solver.
+    let has_hint = matches.get_one::<f64>("ra").is_some()
+        || matches.get_one::<f64>("spd").is_some()
+        || image_io::read_ra_dec(file).is_some();
+    let own_index = blind::arcsec_index_for(matches.get_one::<PathBuf>("index"), &template);
+    let index_wcs = own_index.as_ref().and_then(|ix| {
+        blind::index_stage(
+            &img,
+            ix,
+            &template,
+            has_hint,
+            arcsec_per_px * binning as f64,
+            scale_known,
+        )
+    });
+
     let (ra, dec, search_radius) = match matches.get_one::<PathBuf>("index") {
         None => (ra_hint_rad, dec_hint_rad, search_radius_rad),
+        _ if index_wcs.is_some() => (ra_hint_rad, dec_hint_rad, search_radius_rad),
+        Some(_) if own_index.is_some() => {
+            if index_wcs.is_none() {
+                eprintln!("Blind index found no verified position. Falling back to hint.");
+            }
+            (ra_hint_rad, dec_hint_rad, search_radius_rad)
+        }
         Some(idx_root) => {
             let index_files = blind::collect_index_files(idx_root, fov_rad.to_degrees());
             if index_files.is_empty() {
@@ -309,25 +354,19 @@ fn main() {
         }
     };
 
-    let mut wcs = run_catalog_solve(
-        &unsolved,
-        &img,
-        &SolveParams {
-            ra_hint: ra,
-            dec_hint: dec,
-            fov: fov_rad,
-            search_radius,
-            quad_tolerance: quad_tol,
-            hfd_min,
-            max_stars,
-            db_path,
-            db_name,
-            binning,
-            method,
-            speed,
-            threads,
-        },
-    );
+    let mut wcs = match index_wcs {
+        Some(w) => w,
+        None => run_catalog_solve(
+            &unsolved,
+            &img,
+            &SolveParams {
+                ra_hint: ra,
+                dec_hint: dec,
+                search_radius,
+                ..template
+            },
+        ),
+    };
     if want_sip {
         wcs.sip = fit_sip(&wcs, image_w, image_h);
     }

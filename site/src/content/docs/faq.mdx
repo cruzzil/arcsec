@@ -86,6 +86,10 @@ run ASTAP's command-line solver may work too, since arcsec takes the same option
 writes the same files, but that is untested. If you try one, please
 [report how it went](https://github.com/cruzzil/arcsec/issues).
 
+[Siril](../siril/) has also been tested, in a different way: it has no setting for an
+external ASTAP solver, so you solve the image with `arcsec --update` and Siril reads the
+solution from the FITS header when it opens the file.
+
 ## Does it correct for lens distortion?
 
 Only if you ask for it. By default arcsec fits a linear (TAN) solution, which suits

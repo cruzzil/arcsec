@@ -92,8 +92,9 @@ false positive is a regression however many new solves it brings.
 `--astap ~/astap_cli` for ASTAP (with `--auto-db` it lets ASTAP pick its own database by
 field size; `--astap-db d80` pins one) and `--seiza <binary> --seiza-data <dir>` for
 [seiza](https://github.com/theatrus/seiza). Each gets the same position, field size and
-radius and is scored by the same rules, false positives included. `--blind <index dir>`
-compares blind solving (arcsec with astrometry.net indexes, seiza with its own index). For
+radius and is scored by the same rules, false positives included. `--blind-index <index>`
+compares blind solving (arcsec with its own index or Astrometry.net index files, seiza
+with its own index); `--blind` alone moves the hint to the antipode without adding `-i`. For
 timings use `--jobs 1`, alternate `--order` between rounds, and compare like with like:
 `--threads 1 --seiza-threads 1 --taskset <cpu>` pins all three to one core. The method and
 the latest numbers are in [docs/test-images.md §9](docs/test-images.md#9-results-arcsec-vs-astap-vs-seiza).

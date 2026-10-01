@@ -420,6 +420,11 @@ def run_one(entry, args):
     hint_dec = max(-89.9, min(89.9, cdec + ddec))
     fov_hint = fov_height_deg * float(opts.get("fov_scale", 1.0))
     radius = opts.get("radius", args.radius)
+    if args.blind:
+        # A hint at the antipode tells the solver nothing (and keeps it from
+        # falling back to the header's CRVAL); the position must come from -i.
+        hint_ra, hint_dec = cra + 180.0, -cdec
+        radius = args.radius
 
     out_base = os.path.join(args.workdir, iid)
     ctx = {"path": path, "hint_ra": hint_ra, "hint_dec": hint_dec, "fov_hint": fov_hint,
@@ -448,19 +453,18 @@ def run_arcsec(args, ctx):
     cmd = [args.arcsec, "-f", ctx["path"], "-d", args.db]
     if not args.auto_db:
         cmd += ["-D", args.db_name]
-    if args.blind:
-        # Blind: the index estimates the position. Should it fail, arcsec falls back to
-        # the hint, so the hint is the antipode of the truth with -r 0: a fallback can
-        # then never find the field.
-        hint_ra, hint_dec, radius = hint_ra + 180.0, -hint_dec, 0
-        cmd += ["-i", args.blind]
+    if args.blind_index:
+        # The hint is already the antipode of the truth (see --blind), so only the
+        # index can find the field.
+        cmd += ["-i", args.blind_index]
     cmd += [
         "--ra", f"{(hint_ra % 360.0) / 15.0:.9f}",
         "--spd", f"{hint_dec + 90.0:.9f}",
-        "--fov", f"{ctx['fov_hint']:.9f}",
         "-r", str(radius),
         "-o", out_base,
     ]
+    if not args.no_fov:
+        cmd += ["--fov", f"{ctx['fov_hint']:.9f}"]
     if args.method != "quads":
         cmd += ["--method", args.method]
     if args.stars:
@@ -605,6 +609,12 @@ def main():
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--offset-hint", type=float, default=0.0,
                     help="push the hint off truth by this many field widths")
+    ap.add_argument("--blind", action="store_true",
+                    help="hint at the antipode of the truth, so only a blind index "
+                         "(pass -i with --extra-arg) can find the field; -r still applies")
+    ap.add_argument("--no-fov", action="store_true",
+                    help="do not pass --fov: arcsec gets the pixel scale from the header "
+                         "(FOCALLEN/XPIXSZ) or not at all")
     ap.add_argument("--method", default="quads")
     ap.add_argument("--stars", type=int, default=None,
                     help="pass -s to arcsec (max detected stars)")
@@ -632,10 +642,10 @@ def main():
                     help="seiza's fractional pixel-scale tolerance (its default 0.2)")
     ap.add_argument("--seiza-threads", type=int, default=None,
                     help="limit seiza's thread pool (sets RAYON_NUM_THREADS)")
-    ap.add_argument("--blind", default=None, metavar="INDEX_DIR",
-                    help="blind mode: arcsec gets -i INDEX_DIR and a hint at the antipode with "
-                         "-r 0 (so only the index can find the field); seiza gets a blind "
-                         "request. Both keep the FOV/scale. Not for ASTAP")
+    ap.add_argument("--blind-index", default=None, metavar="INDEX",
+                    help="implies --blind; arcsec gets -i INDEX (an arcsec index or an "
+                         "Astrometry.net index directory) and seiza a blind request. Both keep "
+                         "the FOV/scale unless --no-fov. Not for ASTAP")
     ap.add_argument("--blind-scale-tol", type=float, default=0.2,
                     help="seiza's blind scale range is scale/(1+x) .. scale*(1+x)")
     ap.add_argument("--order", default="arcsec,astap,seiza",
@@ -664,6 +674,10 @@ def main():
                          "(default: tier,source,fov when the manifest has those columns)")
     ap.add_argument("--quiet", action="store_true", help="no per-image lines")
     args = ap.parse_args()
+    if args.blind_index:
+        args.blind = True
+    if args.blind and args.seiza and not (args.seiza_index or args.seiza_data):
+        ap.error("--blind with --seiza needs --seiza-index or --seiza-data (seiza's blind index)")
 
     if args.manifest is None:
         args.manifest = os.path.join(here, "corpus.tsv" if args.corpus else "test-images.tsv")
@@ -708,7 +722,8 @@ def main():
           f" installed: {','.join(sorted(args.dbs)) or 'none'})")
     print(f"images   : {len(entries)} from {args.images}")
     if args.blind:
-        print(f"hint     : BLIND - arcsec -i {args.blind} (antipodal hint, -r 0); FOV kept")
+        print(f"hint     : blind (antipode of the truth), -r {args.radius}"
+              + (f"; arcsec -i {args.blind_index}" if args.blind_index else ""))
     else:
         print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
     if args.astap:

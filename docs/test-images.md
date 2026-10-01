@@ -1772,7 +1772,7 @@ thread); the `neg_hint_*` controls cost the same in both.
 
 ### 9.6 Blind solving
 
-`--blind` gives arcsec `-i` and seiza a blind request against its own index. Neither gets
+`--blind-index <index>` gives arcsec `-i` and seiza a blind request against its own index. Neither gets
 a position. arcsec still needs a hint on its command line, for the ordinary search it
 falls back to when the index finds nothing, so the harness gives it the antipode of the
 true centre with `-r 0`: only the index can find the field. Both keep the field size

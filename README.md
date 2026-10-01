@@ -11,7 +11,7 @@ An astrometric plate solver written in Rust. Give it an astronomical image and i
 works out where the telescope was pointing, writing a WCS solution.
 
 **Website: [cruzzil.github.io/arcsec](https://cruzzil.github.io/arcsec/)** — downloads,
-setting up N.I.N.A., and [which catalogue you need](https://cruzzil.github.io/arcsec/which-catalogue/).
+setting up N.I.N.A. and Siril, and [which catalogue you need](https://cruzzil.github.io/arcsec/which-catalogue/).
 
 ```bash
 arcsec -f image.fits
@@ -31,7 +31,9 @@ arcsec -f image.fits
   from the file's contents, not its extension.
 - **Fields from 0.15° to 80°**, choosing the right database for the field size
   automatically.
-- **Blind solving** with Astrometry.net index files when there is no position hint.
+- **Blind solving** with no position hint — and no pixel scale either — using an index
+  that `arcsec catalog index build` makes from the star database you already have, in
+  minutes, with nothing to download. Astrometry.net index files work too.
 - **Catalogue management built in**: `arcsec catalog install d50` downloads and
   unpacks a star database into a directory the solver already knows about.
 
@@ -120,6 +122,24 @@ N.I.N.A.'s own settings - search radius, downsampling, maximum stars - are passe
 through as the corresponding ASTAP options. Its `-fov` is the image height, which is
 what arcsec takes it to be too.
 
+## Using arcsec from Siril
+
+[Siril](https://siril.org/) (tested with 1.4.4) cannot run ASTAP's command-line solver:
+its plate solver is its own, or a local Astrometry.net `solve-field`, which is given a
+star list rather than the image. Instead, solve the FITS file with arcsec and write the
+solution into its header, then open it in Siril:
+
+```bash
+arcsec -f M101_stacked.fit --update
+```
+
+Siril reads the solution when it loads the file and treats the image as plate solved
+(annotations, PCC/SPCC; `platesolve` reports it is already solved). To use Siril's
+astrometric registration, solve each frame this way before building the sequence, and
+let Siril's sequence plate solve skip the frames that are already solved. Siril needs
+the `CD` or `PC` matrix, which arcsec writes; SIP terms from `--sip` are applied too.
+See [Use with Siril](https://cruzzil.github.io/arcsec/siril/) for details.
+
 ## Solving
 
 arcsec needs a rough position and the field size. It takes the position from the
@@ -137,18 +157,24 @@ image height in degrees, and `-r` is the search radius around that position in d
 (default 180, the whole sky). Without `FOCALLEN`/`XPIXSZ` in the header, give `--fov`:
 otherwise arcsec assumes 1″ per pixel.
 
-Blind, with no position hint, using Astrometry.net index files:
+Blind, with no position hint, using arcsec's own index:
 
 ```bash
-arcsec catalog install anet-4100
-arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+arcsec catalog index build                       # once: ~2 min, ~290 MB from D80
+arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
 
-`-i` takes one index file or a directory of `index-*.fits` files, and picks the ones
-whose scale suits the field. The blind stage only estimates the position: the result is
-then refined against a star database as usual, so one must be installed as well. The
-`anet-4100` set covers fields of about 0.7° and wider; it installs into the catalogue
-directory, which `arcsec catalog path` prints.
+The index is built from the installed star database (fields 0.3°–30° by default;
+`--min-fov 0.15` for D80's narrowest), so nothing is downloaded. Every position it finds
+is verified by the ordinary solver before it is reported. With an index installed,
+searches of `-r` 10° or more that reach past five fields round the hint — N.I.N.A.'s
+blind mode sends `-r 180` — use it automatically once the first five fields have failed. See
+[docs/offline-index.md](docs/offline-index.md).
+
+`-i` also takes Astrometry.net index files (`arcsec catalog install anet-4100`, fields of
+about 0.7° and wider), or a directory of `index-*.fits`, and picks the ones whose scale
+suits the field. Those only estimate the position, which is then refined against the
+star database.
 
 Other useful flags:
 
@@ -214,7 +240,8 @@ On a successful solve arcsec writes, next to the image (or at `-o <base>`):
 When a solve fails, `<base>.ini` is still written, holding `PLTSOLVD=F` and the command
 line, as ASTAP does; tools that poll the `.ini` rely on it.
 
-With `--update` the same keywords are also written into the FITS image's own header.
+With `--update` the same keywords are also written into the FITS image's own header,
+after removing any `PC` matrix and SIP terms left there by an earlier solve.
 The report on stdout follows ASTAP's layout.
 
 ### Exit codes
@@ -237,8 +264,8 @@ As ASTAP's:
 - [docs/plate-solving.md](docs/plate-solving.md) — how plate solving works in general,
   and precisely what arcsec does, with flowcharts and the constants table.
 - [docs/test-images.md](docs/test-images.md) — the benchmark corpus and measured results.
-- [docs/offline-index.md](docs/offline-index.md) — design notes for a pre-computed quad
-  index.
+- [docs/offline-index.md](docs/offline-index.md) — arcsec's blind index: design, file
+  format and measured results.
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — building, testing, benchmarking and releasing.
 

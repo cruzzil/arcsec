@@ -75,6 +75,7 @@ export default defineConfig({
 			sidebar: [
 				{ label: 'Download and install', slug: 'getting-started' },
 				{ label: 'Use with N.I.N.A.', slug: 'nina' },
+				{ label: 'Use with Siril', slug: 'siril' },
 				{ label: 'Which catalogue do I need?', slug: 'which-catalogue' },
 				{ label: 'Catalogue guide', slug: 'catalogues' },
 				{ label: 'FAQ', slug: 'faq' },

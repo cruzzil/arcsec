@@ -13,6 +13,11 @@ one is called out as such.
 
 ### Added
 
+- Using arcsec with Siril: a README section and a website page,
+  [Use with Siril](https://cruzzil.github.io/arcsec/siril/). Siril 1.4 has no setting
+  for an external ASTAP solver, so the page covers solving with `--update` and letting
+  Siril read the solution from the header, for single images and for sequences; tested
+  with Siril 1.4.4 on Linux.
 - Distortion handling in the catalogue solve. Once a position verifies, the solver
   re-reads the catalogue about the image centre and fits a polynomial plate (up to
   cubic, order chosen by F-tests and frame coverage) by re-matching every catalogue
@@ -28,6 +33,25 @@ one is called out as such.
   unchanged.
 - A position whose quads agree strongly (≥ 50 pairs) but whose linear plate fails
   verification is retried with the distortion model before the search moves on.
+- **Blind index built from the installed star database.** `arcsec catalog index build`
+  writes `<db>.arcsecix` (fields 0.3°–30° by default, `--min-fov`/`--max-fov` to
+  choose; about 2 minutes and 290 MB from D80, nothing downloaded), and
+  `arcsec catalog index info` describes it; `catalog list` and `catalog verify` include
+  it. `-i` accepts it (a file, or a directory holding one) and solves blind: on the
+  benchmark corpus it finds 473 of the 558 fields the hinted solver finds with the true
+  centre (399 with the default 0.3° index, which drops the narrowest tier), typically
+  in half a second; on fields of 0.6° and wider the Astrometry.net 4100 series finds
+  70 of 254 to the index's 216, at 26 s against 0.8 s. Every position it reports passes the ordinary solver's star-level
+  verification. Without `--fov` or FOCALLEN/XPIXSZ it searches pixel scales of
+  0.3–60″/px instead of assuming 1″/px.
+- With an index installed, a search of `-r` 10° or more reaching more than five fields
+  from the hint (such as N.I.N.A.'s blind mode, `-r 180`) tries the index once the first
+  five fields have failed, and falls back to the full search if it finds nothing; below
+  10°, and within five fields, the result is unchanged. No new flags; the ASTAP-compatible command line is unchanged.
+- Library: `arcsec_core::index` (format, builder, `BlindIndex`) and
+  `pipeline::index_solve`; `catalog::for_each_star_in_dec_band`.
+- Benchmark tooling: `scripts/benchmark.py --blind` (hint at the antipode, so only a
+  blind index can find the field) and `--no-fov`.
 
 ### Changed
 
@@ -52,6 +76,10 @@ one is called out as such.
   `SolveParams::fov` is documented as the long side, which is what the CLI passes; the
   scale check relies on it.
 
+- The Astrometry.net blind path ranks its vote cells by (RA, Dec, ln scale) with the RA
+  bin widened by 1/cos δ, smooths each over its neighbours and verifies the medoid of
+  the strongest bucket rather than the first hypothesis of each cell.
+
 ### Fixed
 
 - The plate fit's similarity check compared the lengths of the matrix *rows*, which a
@@ -65,6 +93,12 @@ one is called out as such.
   the search abandoned the right position. The quad path now sigma-clips the matched
   quad centroids before fitting, as the triangle path already did. Nebulous and crowded fields (Coalsack, B68, M16), coarse DSS and SHASSA fields
   and TESS frames gain most.
+- `--update` now removes the `PC` matrix and SIP terms of an earlier solution before
+  writing its own. Left in place, a `PC` matrix takes precedence over the new `CD` matrix
+  in wcslib, astropy and most other readers, and combined with arcsec's `CDELT` it
+  described a mirrored field: re-solving an image Siril had already solved (Siril writes
+  `PC` + `CDELT` with SIP) put the corners of a 1° frame about a degree out for every
+  reader except Siril. `astap_cli -update` leaves these keywords behind too.
 
 ## [0.2.0] - 2026-10-01
 

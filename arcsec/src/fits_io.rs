@@ -452,6 +452,31 @@ pub fn write_unsolved_ini_file(path: &Path, cmdline: &str) -> std::io::Result<()
 /// `PLTSOLVD` comment, naming the version that wrote the solution.
 const SOLVED_BY: &str = concat!("Astrometric solved by arcsec ", env!("CARGO_PKG_VERSION"));
 
+/// Keywords of an earlier solution that `--update` removes before writing its own.
+///
+/// A `PCi_j` matrix takes precedence over `CDi_j` in wcslib (and so in astropy), so
+/// one left behind by an earlier solve - Siril writes `PC` + `CDELT` by default -
+/// would be combined with arcsec's `CDELT` into a different, possibly mirrored,
+/// solution. Old SIP terms of any order would likewise outlive a new linear or
+/// third-order solution. (`astap_cli -update` leaves both behind.)
+fn stale_wcs_keys() -> Vec<String> {
+    let mut keys: Vec<String> = [
+        "PC1_1", "PC1_2", "PC2_1", "PC2_2", "PC001001", "PC001002", "PC002001", "PC002002",
+    ]
+    .map(String::from)
+    .to_vec();
+    for prefix in ["A", "B", "AP", "BP"] {
+        keys.push(format!("{prefix}_ORDER"));
+        // SIP orders go up to 9 in practice (Siril writes up to 5).
+        for p in 0..=9 {
+            for q in 0..=(9 - p) {
+                keys.push(format!("{prefix}_{p}_{q}"));
+            }
+        }
+    }
+    keys
+}
+
 /// Write WCS keywords back into the FITS file header in-place (`--update` flag).
 pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
     // CFITSIO wants NUL-terminated strings; every literal here is ASCII without
@@ -464,6 +489,14 @@ pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
     let fp = f.fp();
     let mut status: c_int = 0;
     let decim: c_int = 12;
+
+    // Most of these are absent, which CFITSIO reports as KEY_NO_EXIST: each gets
+    // its own status so that is not mistaken for a failure.
+    for key in stale_wcs_keys() {
+        let key = c(&key);
+        let mut st: c_int = 0;
+        fits_delete_key(fp, cc(key.as_bytes_with_nul()), &mut st);
+    }
 
     // CFITSIO routines do nothing once `status` is non-zero, so the first failure
     // is the one reported, and the file is still closed on drop.
@@ -740,5 +773,70 @@ mod tests {
         assert!((tan.crpix1 - 1450.5).abs() < 1e-9);
         assert!((tan.cd[0][0] - wcs.cd1_1).abs() < 1e-15);
         assert!(tan.sip.is_none());
+    }
+
+    #[test]
+    fn update_removes_an_earlier_pc_matrix_and_sip() {
+        // The header Siril writes for its own solution: PC + CDELT, TAN-SIP of order 4.
+        let path = std::env::temp_dir().join(format!("arcsec_stale_{}.fits", std::process::id()));
+        let cards = [
+            "SIMPLE  =                    T",
+            "BITPIX  =                    8",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    4",
+            "NAXIS2  =                    4",
+            "CTYPE1  = 'RA---TAN-SIP'",
+            "CTYPE2  = 'DEC--TAN-SIP'",
+            "CDELT1  = -0.000344901485509448",
+            "CDELT2  = 0.000344824909792974",
+            "PC1_1   =    0.999999999745385",
+            "PC1_2   = -2.25661234897777E-05",
+            "PC2_1   = -6.75535802173187E-05",
+            "PC2_2   =    0.999999997718257",
+            "A_ORDER =                    4",
+            "A_4_0   =             1.0E-12",
+            "B_ORDER =                    4",
+            "B_0_4   =             1.0E-12",
+            "AP_ORDER=                    4",
+            "AP_0_0  =             1.0E-06",
+            "BP_ORDER=                    4",
+            "BP_1_3  =             1.0E-12",
+            "OBJECT  = 'M101    '",
+            "END",
+        ];
+        let mut bytes: Vec<u8> = cards
+            .iter()
+            .flat_map(|c| format!("{c:<80}").into_bytes())
+            .collect();
+        bytes.resize(2880, b' ');
+        bytes.resize(2 * 2880, 0);
+        std::fs::write(&path, bytes).unwrap();
+
+        update_fits_wcs(&path, &solution()).unwrap();
+        let header = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let keys: Vec<String> = header[..2880]
+            .chunks(80)
+            .map(|c| String::from_utf8_lossy(&c[..8]).trim().to_string())
+            .collect();
+        for gone in [
+            "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "A_4_0", "B_ORDER", "B_0_4", "AP_ORDER",
+            "AP_0_0", "BP_ORDER", "BP_1_3",
+        ] {
+            assert!(!keys.iter().any(|k| k == gone), "{gone} survived");
+        }
+        for kept in ["OBJECT", "CD1_1", "CDELT1", "CTYPE1", "PLTSOLVD"] {
+            assert!(keys.iter().any(|k| k == kept), "{kept} missing");
+        }
+        let text = String::from_utf8_lossy(&header[..2880]).to_string();
+        assert!(text.contains("'RA---TAN'"), "CTYPE now plain TAN");
+    }
+
+    #[test]
+    fn stale_keys_cover_every_sip_term_written() {
+        let stale = stale_wcs_keys();
+        for (key, _, _) in sip_keywords(&sip()) {
+            assert!(stale.contains(&key), "{key}");
+        }
     }
 }
