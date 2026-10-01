@@ -1,0 +1,133 @@
+---
+title: Use with Siril
+description: Solve images with arcsec and use the solution in Siril - for annotations, colour calibration and astrometric registration - and why arcsec cannot be set as Siril's plate solver.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+[Siril](https://siril.org/) has its own plate solver, and can also run a local
+Astrometry.net installation. Unlike N.I.N.A., it has no setting to run ASTAP's
+command-line solver, so arcsec cannot take a solver's place inside Siril. What does
+work is solving the file with arcsec first: arcsec writes the solution into the FITS
+header, and Siril reads it from there when it opens the image, exactly as it reads one
+of its own.
+
+<Aside>
+This was tested with Siril 1.4.4 on Linux: single images, Siril's own 32-bit and RGB
+FITS files, compressed `.fit.fz` files, and sequences. The header route does not depend
+on the operating system, but Siril on Windows and macOS has not been tried.
+</Aside>
+
+## Solving an image for Siril
+
+<Steps>
+
+1. **Install arcsec** and **a star catalogue** for your field of view, as described in
+   [Getting started](../getting-started/). [Which catalogue do I need?](../which-catalogue/)
+   picks the catalogue.
+
+2. **Solve the FITS file with `--update`**, which writes the solution into the file
+   itself:
+
+   ```bash
+   arcsec -f M101_stacked.fit --update
+   ```
+
+   arcsec takes the pointing from the `RA`/`DEC` keywords and the field size from
+   `FOCALLEN` and `XPIXSZ`, which most capture programs record. If the file lacks them,
+   give them on the command line, for example
+   `--ra 14.05 --spd 144.35 --fov 1.0` (RA in hours, south pole distance = 90 + Dec,
+   field **height** in degrees).
+
+3. **Open the file in Siril.** If it was already open, open it again: Siril reads the
+   header when it loads a file, not afterwards. The image is now plate solved: the
+   annotation buttons become available, the coordinates under the cursor are shown, and
+   tools that need a solution, such as photometric and spectrophotometric colour
+   calibration (PCC, SPCC), can run.
+
+</Steps>
+
+Siril accepts arcsec's solution as its own. Its `platesolve` command reports
+`Image is already plate solved. Nothing will be done.` unless you pass `-force`, and
+saving the image from Siril keeps the solution. With `--sip`, arcsec adds distortion
+terms when the field needs them, and Siril applies them too.
+
+## Solving a sequence
+
+To use Siril's astrometric registration, or to build a mosaic, solve every frame before
+Siril does. In a terminal, in the folder holding the frames:
+
+```bash
+for f in *.fit; do arcsec -f "$f" --update; done
+```
+
+or in PowerShell on Windows:
+
+```powershell
+Get-ChildItem *.fit | ForEach-Object { arcsec -f $_.FullName --update }
+```
+
+Then build the sequence in Siril and solve it with **Skip already solved images**
+ticked (the `seqplatesolve` command skips them by default). Siril keeps arcsec's
+solution for each frame, reporting for example `(3 were already solved and skipped)`,
+and still records the star measurements it needs for registration.
+
+Siril still prepares a star catalogue at the start of a sequence solve, even when it
+then skips every frame, so it needs its usual catalogue source for that step.
+
+Build the sequence from the FITS files themselves, as `convert` does by default. For
+a sequence converted into a single FITS cube (`-fitseq`), Siril solved the frames again
+instead of keeping arcsec's solutions.
+
+## What Siril reads
+
+Siril reads the solution with the same library most astronomy software uses, wcslib,
+and accepts it only when the header has a `CD` or `PC` matrix: `CDELT` and `CROTA2`
+alone are not enough. arcsec writes the full set: `CRVAL`, `CRPIX`, `CD`, `CDELT` and
+`CROTA`, plus SIP terms with `--sip`, and `PLTSOLVD = T`.
+
+Siril writes its own solutions as a `PC` matrix with `CDELT`. When arcsec updates a
+file that Siril (or another solver) solved before, it first removes the old `PC`
+matrix and SIP terms, so the header holds only the new solution.
+
+The `.wcs` and `.ini` files arcsec writes next to the image are for programs that
+drive ASTAP, such as N.I.N.A.; Siril does not use them.
+
+## Why not set arcsec as Siril's solver?
+
+Siril's **Image Plate Solver** (**Tools > Astrometry > Image Plate Solver**) offers two
+solvers: Siril's own, which matches the image against an online or local catalogue,
+and Astrometry.net's `solve-field`, set up under **Preferences > Astrometry**. There is
+no ASTAP option to point at arcsec.
+
+arcsec cannot stand in for `solve-field` either. Siril does not give `solve-field` the
+image, only a table of the stars it has detected, and expects Astrometry.net's own
+options, output messages and files back. arcsec solves images, not star lists.
+
+## Troubleshooting
+
+### Siril says the image is not plate solved
+
+- **Check that arcsec solved it.** arcsec prints `Solution found:` and exits with code
+  `0`; anything else means no solution was written. The
+  [exit code table](../reference/cli/#exit-codes) says why.
+- **Check `--update` was given.** Without it, arcsec writes the solution only to the
+  `.wcs` and `.ini` files, which Siril does not read.
+- **Open the file again** in Siril after solving it.
+- **The file is not FITS.** `--update` writes into FITS files only (`.fit`, `.fits`,
+  `.fts`, and tile-compressed `.fit.fz`). For an XISF or TIFF file, save it as FITS
+  from Siril first.
+
+### The solve fails or is slow
+
+- With no position in the header and none on the command line, arcsec searches the
+  whole sky, which can take several minutes. Give the position with `--ra` and `--spd`,
+  or install Astrometry.net index files for
+  [blind solving](../reference/cli/#blind-solving).
+- Check the field size: a wrong focal length or pixel size in the header is the most
+  common cause of a failed solve. `--fov` overrides it.
+- Check the catalogue covers your field: see [Which catalogue do I need?](../which-catalogue/).
+
+If a solve still fails, please
+[open an issue](https://github.com/cruzzil/arcsec/issues) with the command line, its
+output and, if you can share it, the image.

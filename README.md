@@ -11,7 +11,7 @@ An astrometric plate solver written in Rust. Give it an astronomical image and i
 works out where the telescope was pointing, writing a WCS solution.
 
 **Website: [cruzzil.github.io/arcsec](https://cruzzil.github.io/arcsec/)** — downloads,
-setting up N.I.N.A., and [which catalogue you need](https://cruzzil.github.io/arcsec/which-catalogue/).
+setting up N.I.N.A. and Siril, and [which catalogue you need](https://cruzzil.github.io/arcsec/which-catalogue/).
 
 ```bash
 arcsec -f image.fits
@@ -120,6 +120,24 @@ N.I.N.A.'s own settings - search radius, downsampling, maximum stars - are passe
 through as the corresponding ASTAP options. Its `-fov` is the image height, which is
 what arcsec takes it to be too.
 
+## Using arcsec from Siril
+
+[Siril](https://siril.org/) (tested with 1.4.4) cannot run ASTAP's command-line solver:
+its plate solver is its own, or a local Astrometry.net `solve-field`, which is given a
+star list rather than the image. Instead, solve the FITS file with arcsec and write the
+solution into its header, then open it in Siril:
+
+```bash
+arcsec -f M101_stacked.fit --update
+```
+
+Siril reads the solution when it loads the file and treats the image as plate solved
+(annotations, PCC/SPCC; `platesolve` reports it is already solved). To use Siril's
+astrometric registration, solve each frame this way before building the sequence, and
+let Siril's sequence plate solve skip the frames that are already solved. Siril needs
+the `CD` or `PC` matrix, which arcsec writes; SIP terms from `--sip` are applied too.
+See [Use with Siril](https://cruzzil.github.io/arcsec/siril/) for details.
+
 ## Solving
 
 arcsec needs a rough position and the field size. It takes the position from the
@@ -214,7 +232,8 @@ On a successful solve arcsec writes, next to the image (or at `-o <base>`):
 When a solve fails, `<base>.ini` is still written, holding `PLTSOLVD=F` and the command
 line, as ASTAP does; tools that poll the `.ini` rely on it.
 
-With `--update` the same keywords are also written into the FITS image's own header.
+With `--update` the same keywords are also written into the FITS image's own header,
+after removing any `PC` matrix and SIP terms left there by an earlier solve.
 The report on stdout follows ASTAP's layout.
 
 ### Exit codes

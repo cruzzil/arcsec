@@ -13,6 +13,11 @@ one is called out as such.
 
 ### Added
 
+- Using arcsec with Siril: a README section and a website page,
+  [Use with Siril](https://cruzzil.github.io/arcsec/siril/). Siril 1.4 has no setting
+  for an external ASTAP solver, so the page covers solving with `--update` and letting
+  Siril read the solution from the header, for single images and for sequences; tested
+  with Siril 1.4.4 on Linux.
 - Distortion handling in the catalogue solve. Once a position verifies, the solver
   re-reads the catalogue about the image centre and fits a polynomial plate (up to
   cubic, order chosen by F-tests and frame coverage) by re-matching every catalogue
@@ -65,6 +70,12 @@ one is called out as such.
   the search abandoned the right position. The quad path now sigma-clips the matched
   quad centroids before fitting, as the triangle path already did. Nebulous and crowded fields (Coalsack, B68, M16), coarse DSS and SHASSA fields
   and TESS frames gain most.
+- `--update` now removes the `PC` matrix and SIP terms of an earlier solution before
+  writing its own. Left in place, a `PC` matrix takes precedence over the new `CD` matrix
+  in wcslib, astropy and most other readers, and combined with arcsec's `CDELT` it
+  described a mirrored field: re-solving an image Siril had already solved (Siril writes
+  `PC` + `CDELT` with SIP) put the corners of a 1° frame about a degree out for every
+  reader except Siril. `astap_cli -update` leaves these keywords behind too.
 
 ## [0.2.0] - 2026-10-01
 
