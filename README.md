@@ -149,8 +149,8 @@ arcsec -f image.fits -i "$(arcsec catalog path)"
 The index is built from the installed star database (fields 0.3°–30° by default;
 `--min-fov 0.15` for D80's narrowest), so nothing is downloaded. Every position it finds
 is verified by the ordinary solver before it is reported. With an index installed,
-searches wider than five fields round the hint — N.I.N.A.'s blind mode sends `-r 180` —
-use it automatically once the first five fields have failed. See
+searches of `-r` 10° or more that reach past five fields round the hint — N.I.N.A.'s
+blind mode sends `-r 180` — use it automatically once the first five fields have failed. See
 [docs/offline-index.md](docs/offline-index.md).
 
 `-i` also takes Astrometry.net index files (`arcsec catalog install anet-4100`, fields of

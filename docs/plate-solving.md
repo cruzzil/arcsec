@@ -1444,7 +1444,7 @@ was removed once verification existed. See
 
 **Partly fixed 2026-10-02** for blind solving: with arcsec's blind index
 ([offline-index.md](offline-index.md)) and no `--fov` or FOCALLEN/XPIXSZ, the index
-searches 0.3–60″/px and solved 410 of 596 corpus images with no scale and no position.
+searches 0.3–60″/px and solved 436 of 596 corpus images with no scale and no position.
 The hinted (spiral) path still assumes 1″/px.
 
 The spiral **step size is the FOV**. If the FOV estimate is wrong by 2×, the steps are wrong
@@ -1551,8 +1551,8 @@ pixel-scale test exists). That comment has since been replaced by an accurate on
 ### 11.9 Search-cost scaling and thread usage
 
 **Mitigated 2026-10-02**: with a blind index installed (`arcsec catalog index build`), a
-search reaching past five fields from the hint consults the index after the first five
-fields, so `-r 180` with no useful hint (N.I.N.A.'s blind mode) takes 1–4 s instead of
+search of `-r` ≥ 10° reaching past five fields from the hint consults the index after the
+first five fields, so `-r 180` with no useful hint (N.I.N.A.'s blind mode) takes 1–4 s instead of
 minutes ([offline-index.md §7.3](offline-index.md)). Without an index the following
 still holds.
 

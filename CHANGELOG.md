@@ -33,16 +33,16 @@ one is called out as such.
   choose; about 2 minutes and 290 MB from D80, nothing downloaded), and
   `arcsec catalog index info` describes it; `catalog list` and `catalog verify` include
   it. `-i` accepts it (a file, or a directory holding one) and solves blind: on the
-  benchmark corpus it finds 436 of the 504 fields the hinted solver finds with the true
-  centre (368 with the default 0.3° index, which drops the narrowest tier), typically
-  in about a second; on fields of 0.6° and wider the Astrometry.net 4100 series finds
-  70 of 254 to the index's 188, at 25 s against 3 s. Every position it reports passes the ordinary solver's star-level
+  benchmark corpus it finds 473 of the 558 fields the hinted solver finds with the true
+  centre (399 with the default 0.3° index, which drops the narrowest tier), typically
+  in half a second; on fields of 0.6° and wider the Astrometry.net 4100 series finds
+  70 of 254 to the index's 216, at 26 s against 0.8 s. Every position it reports passes the ordinary solver's star-level
   verification. Without `--fov` or FOCALLEN/XPIXSZ it searches pixel scales of
   0.3–60″/px instead of assuming 1″/px.
-- With an index installed, a search reaching more than five fields from the hint (such
-  as N.I.N.A.'s blind mode, `-r 180`) tries the index once the first five fields have
-  failed, and falls back to the full search if it finds nothing; within five fields the
-  result is unchanged. No new flags; the ASTAP-compatible command line is unchanged.
+- With an index installed, a search of `-r` 10° or more reaching more than five fields
+  from the hint (such as N.I.N.A.'s blind mode, `-r 180`) tries the index once the first
+  five fields have failed, and falls back to the full search if it finds nothing; below
+  10°, and within five fields, the result is unchanged. No new flags; the ASTAP-compatible command line is unchanged.
 - Library: `arcsec_core::index` (format, builder, `BlindIndex`) and
   `pipeline::index_solve`; `catalog::for_each_star_in_dec_band`.
 - Benchmark tooling: `scripts/benchmark.py --blind` (hint at the antipode, so only a

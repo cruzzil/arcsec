@@ -13,14 +13,14 @@ design differs.
 **Status (2026-10-02): built, behind `--index` and an opt-in automatic fallback.**
 `arcsec catalog index build` writes `<db>.arcsecix` into the catalogue directory;
 `arcsec -i <file|dir>` solves blind with it; and when an index is installed, a search
-wider than five fields round the hint consults it after the first five fields of the
-spiral. On the 596-image corpus (tiers A/B/C/S) a blind solve finds 436 images
-(87 % of what the hinted solver finds with the true centre as its hint), in a
-median 0.4–3 s, with **no false position**: every reported solution passes the
-hinted solver's own star-level verification, and the only wrong answers are the four
-distorted wide fields the hinted solver also gets wrong. Astrometry.net's 4107–4119 on
-the same images: 70 of the 254 fields ≥ 0.6° against the index's 188,
-at 25 s against 3 s.
+of `-r` ≥ 10° reaching past five fields round the hint consults it after the first five
+fields of the spiral. On the 596-image corpus (tiers A/B/C/S), measured on main after the
+distortion and solver-robustness merge (#10), a blind solve finds 473 images (85 % of the
+558 the hinted solver finds with the true centre as its hint) in a median 0.5 s, with
+**no false position**: every reported solution passes the hinted solver's own
+star-level verification, and the only wrong answer is the one the hinted solver also
+gives (`wide_shassa_01`). Astrometry.net's 4107–4119 on the same images: 70 of the 254
+fields ≥ 0.6° against the index's 216, at 26 s against 0.8 s.
 
 ---
 
@@ -219,11 +219,13 @@ arcsec -f image.fits -i idx.arcsecix --fov 1.2                # blind, scale kno
   first, blind, whatever the hint and radius; if nothing verifies, the ordinary search
   runs from the hint, as with Astrometry.net files.
 * **Automatic, no `-i`**: when an index is installed in the catalogue directory (or
-  beside the star database) and `-r` reaches past five fields round the hint, the
+  beside the star database) and `-r` is at least 10° and reaches past five fields round
+  the hint, the
   spiral first searches those five fields (minimum 1°); only if that fails is the index
   consulted, restricted to `-r` (plus a field) round the hint unless `-r` covers the
   sky; if that fails too, the full spiral runs as before. Inside five fields the result
-  is therefore exactly the spiral's; see §7.5 for the measured effect.
+  is therefore exactly the spiral's, and below `-r` 10° nothing changes at all; see §7.5
+  for the measured effect and why the gate.
 * **N.I.N.A.** in blind mode passes `-r 180` and no `-ra`/`-spd`: with an index installed
   that is the automatic path, and the five-field first stage is skipped when there is no
   hint at all (no `-ra`/`-spd` and no RA/Dec in the header).
@@ -245,9 +247,11 @@ deferred (§8).
 
 All on the expanded corpus (docs/test-images.md §7), `scripts/benchmark.py --corpus
 --auto-db`, star databases D80, G05 and W08 in `~/star_database`, 24 cores shared with
-other benchmark jobs (load averages 50–150 throughout — **times are upper bounds**, with
-8 concurrent jobs). Blind runs use `--blind`, which puts the hint at the antipode of the
-truth with `-r 0`, so only the index can find the field.
+other benchmark jobs, 8 concurrent jobs. The numbers below are from 2026-10-02 after
+merging main's distortion handling and solver-robustness work (#10), at load averages of
+3–80; times are upper bounds. Blind runs use `--blind`, which puts the hint at the
+antipode of the truth with `-r 0`, so only the index can find the field. The first,
+pre-merge measurements (hinted baseline 504) are summarised at the end of §7.1.
 
 ### 7.1 Blind solve rate by field
 
@@ -257,22 +261,33 @@ The 0.15° index has all seven tiers (698 MB), the 0.3° index the default six (
 
 | FOV (long side) | n | hinted, true centre | blind, 0.15° index | blind, 0.3° index | blind, no scale (0.15° index) |
 |---|---|---|---|---|---|
-| < 0.15° | 6 | 4 | 0 | 0 | 0 |
-| 0.15–0.3° | 113 | 103 | 51 (0.5 s) | 2 | 43 |
-| 0.3–0.6° | 125 | 116 | 109 (0.6 s) | 94 | 102 |
-| 0.6–1.2° | 177 | 161 | 160 (1.2 s) | 156 | 157 |
-| 1.2–2.5° | 88 | 75 | 73 (2.8 s) | 73 | 74 |
-| 2.5–6° | 43 | 17 | 16 (0.5 s) | 16 | 13 |
-| 6–20° | 36 | 23 | 23 (1.3 s) | 23 | 21 |
-| > 20° | 8 | 5 | 4 (2.5 s) | 4 | 0 |
-| **all (A+B+C+S)** | **596** | **504** | **436** (1.0 s) | **368** | **410** |
-| tier A / B / C / S | | 206 / 206 / 38 / 54 | 192 / 154 / 36 / 54 | 177 / 107 / 31 / 53 | 183 / 140 / 34 / 53 |
+| < 0.15° | 6 | 5 | 0 | 0 | 0 |
+| 0.15–0.3° | 113 | 113 | 54 (0.26 s) | 2 | 43 |
+| 0.3–0.6° | 125 | 124 | 113 (0.39 s) | 95 | 107 |
+| 0.6–1.2° | 177 | 168 | 165 (0.57 s) | 161 | 163 |
+| 1.2–2.5° | 88 | 79 | 76 (0.77 s) | 76 | 77 |
+| 2.5–6° | 43 | 27 | 24 (0.64 s) | 24 | 21 |
+| 6–20° | 36 | 34 | 34 (1.2 s) | 34 | 25 |
+| > 20° | 8 | 8 | 7 (1.1 s) | 7 | 0 |
+| **all (A+B+C+S)** | **596** | **558** | **473** (0.50 s) | **399** | **436** (1.1 s) |
+| tier A / B / C / S | | 221 / 230 / 42 / 65 | 202 / 166 / 40 / 65 | 185 / 118 / 32 / 64 | 188 / 145 / 38 / 65 |
+| false positives (A–S) | | 1 | 1 | 1 | 0 |
 
-From 0.3° up the blind solve finds 385 of the hinted solver's 397. Every accepted
-hypothesis was the top-ranked one in 452 of 455 index solves (rank ≤ 2 in all), and none
-needed a second hinted solve. The index stage itself takes a median 0.9 s; the slowest
-solves (30–60 s) are images where *detection* takes 20–40 s, which the hinted
-verification then repeats.
+From 0.3° up the blind solve finds 419 of the hinted solver's 440. The accepted
+hypothesis was the top-ranked one in 475 of 478 index solves (rank ≤ 2 in all), and none
+needed a second hinted solve. The slowest solves (30–60 s) are images where *detection*
+takes 20–40 s, which the hinted verification then repeats.
+
+Since the merge the hinted solver accepts sparse images on fewer than 30 matched stars
+if the solved scale matches the one the hint implies. In a blind solve that hint scale
+is the hypothesis' own, so `index_solve` accepts a result below 30 matched stars only if
+the caller's scale range is a real estimate (at most 1.5 wide) and contains the solved
+scale. In the scale-given blind run this never had to refuse anything; in the scale-free
+run it is what keeps sparse fields out.
+
+Before the merge (same index, same corpus): hinted 504, blind 436 (0.15° index) / 368
+(0.3°) / 410 (no scale), the same false positives as the hinted solver (four, three of
+them distorted TESS frames the merge's distortion handling now solves).
 
 ### 7.2 Against Astrometry.net 4107–4119
 
@@ -281,14 +296,17 @@ runs were made under load averages of 60–200, so their times are inflated, but
 halved they are an order of magnitude slower: each process loads and sorts its index
 files (~35 s each, two in parallel) before matching.
 
-| FOV | n | anet 4107–4119 before §9.1 | anet after §9.1 | arcsec index |
-|---|---|---|---|---|
-| 0.6–1.2° | 79 | 15 (71 s) | 16 | 72 (3.3 s) |
-| 1.2–2.5° | 88 | 24 (18 s) | 25 | 73 (2.8 s) |
-| 2.5–6° | 43 | 12 (52 s) | 10* | 16 (0.5 s) |
-| 6–20° | 36 | 17 (15 s) | 16 | 23 (1.3 s) |
-| > 20° | 8 | 2 | 3 | 4 |
-| **all** | **254** | **70** (26 s) | **70*** | **188** (2.7 s) |
+| FOV | n | anet 4107–4119 before §9.1 | anet after §9.1 | arcsec index (pre-merge) | arcsec index (post-merge) |
+|---|---|---|---|---|---|
+| 0.6–1.2° | 79 | 15 (71 s) | 16 | 72 (3.3 s) | 75 (0.6 s) |
+| 1.2–2.5° | 88 | 24 (18 s) | 25 | 73 (2.8 s) | 76 (0.8 s) |
+| 2.5–6° | 43 | 12 (52 s) | 10* | 16 (0.5 s) | 24 (0.6 s) |
+| 6–20° | 36 | 17 (15 s) | 16 | 23 (1.3 s) | 34 (1.2 s) |
+| > 20° | 8 | 2 | 3 | 4 | 7 |
+| **all** | **254** | **70** (26 s) | **70*** | **188** (2.7 s) | **216** (0.8 s) |
+
+The Astrometry.net runs are pre-merge; the merge does not change what they find (the
+position estimate is theirs), only what the follow-up solve accepts.
 
 \* Two of those were 300 s timeouts under a load average near 200; re-run with a longer
 timeout they solve, giving 72 (§9.1). On the original 103-image set the 4100 series finds
@@ -301,45 +319,64 @@ corpus images, hint at the antipode, `-r 180`, two at a time:
 
 | | correct | time |
 |---|---|---|
-| spiral only (0.2.0) | 1 of 8, **plus one false position** (`rnd_022`, 155° off), 5 timeouts at 900 s | 269 s for the one |
-| index installed, automatic (no `-i`) | 7 of 8 | 1.0–4.1 s each |
+| spiral only, pre-merge (0.2.0 + Step 0) | 1 of 8 **plus one false position** (`rnd_022`, 155° off); 5 timeouts at 900 s | 269 s for the one |
+| spiral only, main after #10 | 4 of 8 **plus the same false position** (`rnd_022`, 149° off); 2 timeouts at 900 s | 50–361 s |
+| index installed, automatic (no `-i`), post-merge | 7 of 8, no false position | 1.1–4.1 s each |
 
-(The spiral run overlapped a load average of 100–200; the Siril work measured 76–418 s
-per image for the same mode on a quiet machine.) The eighth, `wide_dss_01`, fails both
-ways. With the antipodal hint the automatic path first spends ~1 s on the five-field
-spiral; with no hint at all (N.I.N.A.'s real case when the header has no RA/Dec) that
-stage is skipped. The spiral's false position is worth noting on its own: a whole-sky
-spiral verifies tens of thousands of positions, and one passed.
+(Spiral runs overlapped load averages of 25–200; the Siril work measured 76–418 s per
+image for the same mode on a quiet machine.) The eighth, `wide_dss_01`, fails every way.
+With the antipodal hint the automatic path first spends ~1 s on the five-field spiral;
+with no hint at all (N.I.N.A.'s real case when the header has no RA/Dec) that stage is
+skipped. The spiral's false position is worth noting on its own: a whole-sky spiral
+verifies tens of thousands of positions, and one passes; the index answers before the
+spiral gets there.
 
 ### 7.4 No pixel scale at all
 
 `--blind --no-fov`: no `--fov`, and the corpus headers carry no FOCALLEN/XPIXSZ, so the
-index searches 0.3–60″/px. 410 correct against 436 with the scale given (table in §7.1),
-median 0.9 s: it misses 35 that the scale-given run finds (mostly narrow survey frames,
-where the wider search admits more competing hypotheses) and finds 9 that it misses. Fields above
+index searches 0.3–60″/px. 436 correct against 473 with the scale given (table in §7.1),
+median 1.1 s, and no false positive — the one the other modes share is refused here,
+because it verifies on fewer than 30 stars with no scale to confirm it. Mostly it misses
+narrow survey frames, where the wider search admits more competing hypotheses. Fields above
 20° fail because their scale is above 60″/px. Before the chance-corrected score (§2.6
 step 5) this mode found almost nothing: a hypothesis at 20–50″/px projected hundreds of
 stars into the frame and outscored the truth on raw counts.
 
 ### 7.5 Hinted solves with an index installed
 
-The automatic path changes nothing a five-field spiral would solve. Corpus, true-centre
-hint, `-r 5`, index installed: **504 → 504, identical statuses on all 635 entries**. With
-the hint 0.3 fields off: **459 → 462** (`ls_big`, `ps1v2_07`, `sv_sdssr` gained, none
-lost, same false positives).
+The automatic path changes nothing a five-field spiral would solve. Post-merge corpus,
+index installed, `-r 5` (the benchmark default) — run before the 10° gate below, so the
+index *was* consulted on every failure:
 
-The cost is on images that solve nowhere: the five-field spiral, the index, then the full
-spiral, which repeats the first stage. Eight such images, `--jobs 1`, quiet machine (load
-4), two rounds: 1.1–6.2 s → 1.9–10.5 s, about 1.7× (solved images unchanged, 0.13–0.15 s).
-Before the index checked its leading hypotheses against the star database (§2.6 step 6)
-a wrong hypothesis cost a full hinted solve, and some no-solves grew by 15–30 s.
+* true-centre hint: **558 → 558, identical status, centre and corner error on all 635
+  entries** (and tier D unchanged: the four `stress_fov` alias entries, `expect=any`,
+  return as before);
+* hint 0.3 fields off: **537 → 537, likewise identical on all 635**. (Pre-merge the
+  index had gained three here, `ls_big`, `ps1v2_07`, `sv_sdssr`; main now solves them
+  itself.)
+
+**No-solve overhead, and the 10° gate.** Seven images (five that solve nowhere, two that
+solve), `--jobs 1`, two rounds each, no-solve times:
+
+| `-r` | main | index, auto at any radius | index, auto only at `-r` ≥ 10° |
+|---|---|---|---|
+| 5° (load 2–6) | wise_16 1.2 s, neg_fake_narrow 3.6 s, neg_noise_a 0.07 s, neg_fake_300 0.26 s | 2.5 s, 4.3 s, 0.15 s, 0.26 s | 1.2 s, 3.7 s, 0.07 s, 0.26 s |
+| 30° (load 8–22) | wise_16 27 s, neg_fake_narrow 110 s, neg_fake_300 4.4 s | 28–31 s, 109–118 s, 4.8–5.2 s | the same as "any radius" |
+
+Solved images: 0.12–0.30 s in every column. At small radii consulting the index roughly
+doubles a failure that costs about a second anyway, and gains nothing measurable on the
+corpus; at wide radii it adds a few percent to a failure the spiral makes slow, and turns
+the N.I.N.A. case from minutes into seconds. So the automatic path is now **gated on
+`-r` ≥ 10°** (`AUTO_MIN_RADIUS` in `arcsec/src/blind.rs`): below that an installed index
+is never consulted unless `-i` names it, so every `-r` < 10° solve is exactly main's.
 
 ### 7.6 False positives
 
-* Tiers A/B/C/S: the same four as the hinted solver — `wide_shassa_01` (31″ at the
-  corners, just over the 1-pixel threshold) and `tess_03`, `tess_25`, `tess_32` (12° TESS
-  FFIs with 1000″ of distortion, where any linear plate is wrong at the edges). They are
-  the hinted solver's acceptance, reached from a different start.
+* Tiers A/B/C/S: only the one the hinted solver also reports, `wide_shassa_01` (31″ at
+  the corners, just over the 1-pixel threshold) — the hinted solver's acceptance, reached
+  from a different start; the no-scale mode refuses even that. (Pre-merge there were also
+  three distorted 12° TESS FFIs, `tess_03`, `tess_25`, `tess_32`, again the hinted
+  solver's own; main's distortion handling now solves them.)
 * Tier D: `neg_hint_1`, `_5`, `_7`, `_8` are reported, correctly placed (0.04–0.24″).
   Those controls are real images given a *wrong hint and a small radius*; they must fail
   only because the field lies outside `-r`. A blind solve ignores the hint by design, so
@@ -350,8 +387,8 @@ a wrong hypothesis cost a full hinted solve, and some no-solves grew by 15–30 
 
 ### 7.7 Where blind solving still fails
 
-* **Deep survey frames, 0.15–0.3°** (SDSS 8/33, Pan-STARRS 9/20, SkyMapper 5/15, Legacy
-  Survey 26/40, against 33, 20, 8 and 37 hinted): the
+* **Deep survey frames, 0.15–0.3°** (pre-merge: SDSS 8/33, Pan-STARRS 9/20, SkyMapper
+  5/15, Legacy Survey 26/40, against 33, 20, 8 and 37 hinted): the
   0.06° tier's anchors are mag 12–15 stars, which saturate or are masked in these
   surveys, so the groups cannot be rebuilt. A tier that skips stars brighter than a
   saturation limit, or 6-star groups in the deep tiers (×3 the size), would address it.
@@ -359,7 +396,7 @@ a wrong hypothesis cost a full hinted solve, and some no-solves grew by 15–30 
 * **The hinted solver's own failures** (dense, nebulous, bright-object fields; distorted
   TESS frames): the index finds some of these fields, but acceptance is the hinted
   solver's, so they fail as before.
-* The 0.3° default index loses most of the 0.15–0.3° band (2 of 113 against 51); that is
+* The 0.3° default index loses most of the 0.15–0.3° band (2 of 113 against 54); that is
   the 410 MB the 0.06° tier costs.
 
 ---

@@ -155,9 +155,9 @@ With it installed:
 * `arcsec -f image.fits -i "$(arcsec catalog path)"` solves with no position at all,
   typically in a second or two, and with no pixel scale either if `--fov` and the
   header's FOCALLEN/XPIXSZ are missing.
-* Without `-i`, a search wider than five fields round the hint (N.I.N.A.'s blind mode
-  sends `-r 180`) tries the index once the first five fields have failed, instead of
-  spiralling over the whole sky.
+* Without `-i`, a search of `-r` 10° or more that reaches past five fields round the hint
+  (N.I.N.A.'s blind mode sends `-r 180`) tries the index once the first five fields have
+  failed, instead of spiralling over the whole sky.
 
 Design and measurements: [offline-index.md](offline-index.md). Generating the star
 catalogue itself from Gaia is not possible; `arcsec catalog install` is the supported
