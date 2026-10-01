@@ -31,7 +31,9 @@ arcsec -f image.fits
   from the file's contents, not its extension.
 - **Fields from 0.15° to 80°**, choosing the right database for the field size
   automatically.
-- **Blind solving** with Astrometry.net index files when there is no position hint.
+- **Blind solving** with no position hint — and no pixel scale either — using an index
+  that `arcsec catalog index build` makes from the star database you already have, in
+  minutes, with nothing to download. Astrometry.net index files work too.
 - **Catalogue management built in**: `arcsec catalog install d50` downloads and
   unpacks a star database into a directory the solver already knows about.
 
@@ -137,18 +139,24 @@ image height in degrees, and `-r` is the search radius around that position in d
 (default 180, the whole sky). Without `FOCALLEN`/`XPIXSZ` in the header, give `--fov`:
 otherwise arcsec assumes 1″ per pixel.
 
-Blind, with no position hint, using Astrometry.net index files:
+Blind, with no position hint, using arcsec's own index:
 
 ```bash
-arcsec catalog install anet-4100
-arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+arcsec catalog index build                       # once: ~2 min, ~290 MB from D80
+arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
 
-`-i` takes one index file or a directory of `index-*.fits` files, and picks the ones
-whose scale suits the field. The blind stage only estimates the position: the result is
-then refined against a star database as usual, so one must be installed as well. The
-`anet-4100` set covers fields of about 0.7° and wider; it installs into the catalogue
-directory, which `arcsec catalog path` prints.
+The index is built from the installed star database (fields 0.3°–30° by default;
+`--min-fov 0.15` for D80's narrowest), so nothing is downloaded. Every position it finds
+is verified by the ordinary solver before it is reported. With an index installed,
+searches wider than five fields round the hint — N.I.N.A.'s blind mode sends `-r 180` —
+use it automatically once the first five fields have failed. See
+[docs/offline-index.md](docs/offline-index.md).
+
+`-i` also takes Astrometry.net index files (`arcsec catalog install anet-4100`, fields of
+about 0.7° and wider), or a directory of `index-*.fits`, and picks the ones whose scale
+suits the field. Those only estimate the position, which is then refined against the
+star database.
 
 Other useful flags:
 
@@ -237,8 +245,8 @@ As ASTAP's:
 - [docs/plate-solving.md](docs/plate-solving.md) — how plate solving works in general,
   and precisely what arcsec does, with flowcharts and the constants table.
 - [docs/test-images.md](docs/test-images.md) — the benchmark corpus and measured results.
-- [docs/offline-index.md](docs/offline-index.md) — design notes for a pre-computed quad
-  index.
+- [docs/offline-index.md](docs/offline-index.md) — arcsec's blind index: design, file
+  format and measured results.
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — building, testing, benchmarking and releasing.
 

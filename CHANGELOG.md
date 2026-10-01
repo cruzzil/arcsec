@@ -11,6 +11,34 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **Blind index built from the installed star database.** `arcsec catalog index build`
+  writes `<db>.arcsecix` (fields 0.3°–30° by default, `--min-fov`/`--max-fov` to
+  choose; about 2 minutes and 290 MB from D80, nothing downloaded), and
+  `arcsec catalog index info` describes it; `catalog list` and `catalog verify` include
+  it. `-i` accepts it (a file, or a directory holding one) and solves blind: on the
+  benchmark corpus it finds 436 of the 504 fields the hinted solver finds with the true
+  centre (368 with the default 0.3° index, which drops the narrowest tier), typically
+  in about a second; on fields of 0.6° and wider the Astrometry.net 4100 series finds
+  70 of 254 to the index's 188, at 25 s against 3 s. Every position it reports passes the ordinary solver's star-level
+  verification. Without `--fov` or FOCALLEN/XPIXSZ it searches pixel scales of
+  0.3–60″/px instead of assuming 1″/px.
+- With an index installed, a search reaching more than five fields from the hint (such
+  as N.I.N.A.'s blind mode, `-r 180`) tries the index once the first five fields have
+  failed, and falls back to the full search if it finds nothing; within five fields the
+  result is unchanged. No new flags; the ASTAP-compatible command line is unchanged.
+- Library: `arcsec_core::index` (format, builder, `BlindIndex`) and
+  `pipeline::index_solve`; `catalog::for_each_star_in_dec_band`.
+- Benchmark tooling: `scripts/benchmark.py --blind` (hint at the antipode, so only a
+  blind index can find the field) and `--no-fov`.
+
+### Changed
+
+- The Astrometry.net blind path ranks its vote cells by (RA, Dec, ln scale) with the RA
+  bin widened by 1/cos δ, smooths each over its neighbours and verifies the medoid of
+  the strongest bucket rather than the first hypothesis of each cell.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added
