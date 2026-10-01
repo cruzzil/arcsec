@@ -61,6 +61,11 @@ const CHECK_TOP: usize = 24;
 const MIN_CHECK: usize = 5;
 /// Catalogue stars read for that check.
 const CHECK_STARS: usize = 300;
+/// The hinted solver's standard verification count; below it see
+/// [`sparse_acceptable`].
+const STRICT_MATCHES: usize = 30;
+/// Widest scale range (hi/lo) that counts as a real scale estimate.
+const MAX_KNOWN_SCALE_RATIO: f64 = 1.5;
 
 /// Parameters for [`index_solve`].
 #[derive(Debug, Clone)]
@@ -444,6 +449,24 @@ fn score(
         ..*h
     };
     (significance(n2, in2, r2), refined)
+}
+
+/// Whether a hinted solve with few matched stars may be accepted.
+///
+/// Below [`STRICT_MATCHES`] matched stars the hinted solver accepts a sparse image
+/// only if its fitted scale agrees with the scale the hint implies. Here the hint's
+/// scale is the hypothesis' own, so that check proves nothing; it is replaced by
+/// one against the caller's scale range, which must be a real estimate (at most
+/// [`MAX_KNOWN_SCALE_RATIO`] wide) rather than the scale-free sweep.
+fn sparse_acceptable(wcs: &WcsSolution, params: &IndexSolveParams, binning: usize) -> bool {
+    if wcs.stars_matched >= STRICT_MATCHES {
+        return true;
+    }
+    // The solution is in original pixels; the range is per solved (binned) pixel.
+    let scale = wcs.cdelt2.abs() * 3600.0 * binning.max(1) as f64;
+    params.scale_hi / params.scale_lo <= MAX_KNOWN_SCALE_RATIO
+        && scale >= params.scale_lo / 1.02
+        && scale <= params.scale_hi * 1.02
 }
 
 /// Significance of a hypothesis against the star database: its brightest
@@ -861,6 +884,12 @@ pub fn index_solve(
             ..template.clone()
         };
         match solve_image(img, &p) {
+            Ok(wcs) if !sparse_acceptable(&wcs, params, template.binning) => {
+                log::info!(
+                    "Index: {} matched stars and no independent pixel scale to confirm it; refused.",
+                    wcs.stars_matched
+                );
+            }
             Ok(wcs) => {
                 stats.accepted_rank = Some(rank);
                 stats.best_score = sc;
