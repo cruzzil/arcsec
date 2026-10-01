@@ -388,6 +388,11 @@ pub struct WcsSolution {
     pub raw_matches: usize,
     /// The star pairs the final fit was verified on: each detected star with the
     /// catalogue star it was identified as. What [`crate::wcs::sip::fit_sip`] fits.
+    ///
+    /// For a field the solver found distorted, these are the pairs its distortion
+    /// model verified, over the whole frame: they agree with that model to the
+    /// verification radius, not with the linear CD matrix, which is the closest
+    /// linear approximation to it.
     pub matched_stars: Vec<MatchedStar>,
     /// SIP distortion polynomials on top of the linear solution, if fitted.
     ///
