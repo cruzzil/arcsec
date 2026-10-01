@@ -776,7 +776,7 @@ def main():
                                           and r["status"] in ("OK", "INEXACT"))
 
     if args.csv:
-        cols = ["id", "tier", "source", "dataset", "sets", "truth_q", "status", "fov_deg",
+        cols = ["id", "tier", "source", "dataset", "sets", "truth_q", "expect", "status", "fov_deg",
                 "pixscale_as", "cat_ok", "lin_floor", "err_centre", "err_corner",
                 "scale_err_pct", "rot_err_deg", "nstars", "nquads", "secs", "note",
                 "astap_status", "astap_centre", "astap_corner", "astap_scale_err",
