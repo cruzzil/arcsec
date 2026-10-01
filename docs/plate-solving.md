@@ -556,14 +556,20 @@ so tolerates an arbitrary inlier fraction; its cost is `O(k)` model fits where
 
 ### 6.4 Bijectivity and sigma clipping
 
-Two cheap add-ons arcsec uses on the triangle path:
+Two cheap add-ons arcsec uses: the bijective filter on the triangle path, sigma clipping
+on both:
 
 * **Bijective filter** — a true correspondence set is one-to-one. Reject any image feature
   matching several catalogue features and vice versa; keep only mutual best matches.
 * **Iterative sigma clipping** — fit, compute residuals, drop everything beyond `k·RMS`,
   refit, repeat until stable. arcsec's `sigma_clip_pairs` uses a generous absolute cut
   (10 px in catalogue arcsec) on the first pass to kill gross outliers, then `3σ`
-  thereafter, for at most 10 iterations.
+  thereafter, for at most 10 iterations. The first fit is unchecked (`fit_affine`): the
+  outliers it exists to remove can skew that fit past the similarity check. Until
+  2026-10 only the triangle path clipped; on the quad path a few wrong quads in the
+  winning vote cell could make the plate fit fail the similarity check and abandon the
+  right position (`obj_coalsack`: the plain fit of the first position's quads was
+  refused; clipped, it verified 91 stars).
 
 ---
 
@@ -1005,6 +1011,9 @@ The blind front-end still applies it.
   │        if matches < min_quads = 3 + n/140:  next position                │
   │                                                                          │
   │        extract_star_pairs(): (image quad centroid, catalogue centroid)   │
+  │        sigma_clip_pairs(): drop pairs off the consensus (first pass 10 px │
+  │           or 3 × 1.48 MAD, then 3σ); if fewer than min_quads remain:     │
+  │           next position                                                  │
   │        solve_plate_constants(): Givens-rotation LSQ, 6 constants;        │
   │           refused unless a similarity (singular-value ratio ≤ 1.08)      │
   │        verify_and_refit(): project every catalogue star through the      │
@@ -1020,7 +1029,7 @@ The blind front-end still applies it.
 
 The `--method tetra` variant replaces build/match/filter with `build_triangles`,
 `find_triangle_matches` (tolerance × 0.3), `bijective_filter`,
-`filter_triangles_by_scale`, and `sigma_clip_pairs`; the plate fit and `verify_and_refit`
+and `filter_triangles_by_scale`; the clipping, the plate fit and `verify_and_refit`
 are shared.
 
 The reported `RMS` is the per-star residual of the final `verify_and_refit` pass, and the

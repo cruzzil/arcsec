@@ -85,7 +85,7 @@ pub struct SolveParams {
 /// re-fit until stable or fewer than `min_count` pairs remain.
 ///
 /// First pass uses a 10-pixel absolute threshold (in catalog arcsec) to cut the
-/// large residuals of false-positive triangle matches. Subsequent passes apply
+/// large residuals of false pattern matches. Subsequent passes apply
 /// `sigma × rms` clipping until the set is stable.
 fn sigma_clip_pairs(
     mut img_pos: Vec<(f64, f64)>,
@@ -145,6 +145,31 @@ fn sigma_clip_pairs(
         cat_pos = new_cat;
     }
     (img_pos, cat_pos)
+}
+
+/// Fit the plate to the matched pattern centroids, sigma-clipping them first.
+///
+/// Returns the plate and the number of pairs it was fitted to, or `None` if fewer
+/// than `min_count` survive the clipping or the fit is not a similarity.
+///
+/// The clipping matters for both methods. A few wrong patterns that land in the
+/// winning vote cell drag the unweighted fit far enough that the similarity check
+/// refuses it, and the position is abandoned although most patterns agree. On the
+/// Coalsack (`obj_coalsack`) the first position, the right one, kept 18 quads whose
+/// plain fit was refused; clipped, the fit verified 91 stars. With no wrong pairs
+/// the clipping removes little, and the star-level refit that follows makes the
+/// difference immaterial.
+fn fit_pattern_pairs(
+    img_pos: Vec<(f64, f64)>,
+    cat_pos: Vec<(f64, f64)>,
+    min_count: usize,
+) -> Option<(PlateConstants, usize)> {
+    let (img_pos, cat_pos) = sigma_clip_pairs(img_pos, cat_pos, 3.0, min_count);
+    if img_pos.len() < min_count {
+        return None;
+    }
+    let plate = solve_plate_constants(&img_pos, &cat_pos).ok()?;
+    Some((plate, img_pos.len()))
 }
 
 /// Minimum number of individually matched stars required to believe a solution.
@@ -459,7 +484,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         outcome: None,
     };
 
-    let (img_pos, cat_pos, n_matched, n_raw) = match params.method {
+    let (img_pos, cat_pos, n_raw) = match params.method {
         SolveMethod::Quads => {
             let mut cat_quads = build_quads_presorted(&cat_star_list, ctx.nrstars_image);
             if cat_quads.is_empty() {
@@ -480,7 +505,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
                 return failed;
             }
             let (ip, cp) = extract_star_pairs(ctx.img_quads, &cat_quads, &filtered);
-            (ip, cp, filtered.len(), n_raw)
+            (ip, cp, n_raw)
         }
         SolveMethod::Tetra => {
             let cat_tris = build_triangles(&cat_star_list);
@@ -497,16 +522,11 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
                 return failed;
             }
             let (ip, cp) = extract_triangle_pairs(ctx.img_tris, &cat_tris, &filtered);
-            let (ip, cp) = sigma_clip_pairs(ip, cp, 3.0, ctx.min_quads);
-            if ip.len() < ctx.min_quads {
-                return failed;
-            }
-            let n_clean = ip.len();
-            (ip, cp, n_clean, n_raw)
+            (ip, cp, n_raw)
         }
     };
 
-    let Ok(plate) = solve_plate_constants(&img_pos, &cat_pos) else {
+    let Some((plate, n_matched)) = fit_pattern_pairs(img_pos, cat_pos, ctx.min_quads) else {
         return failed;
     };
 
@@ -1204,9 +1224,9 @@ mod tests {
     /// on the contaminated set. Five gross outliers in 45 pairs are enough to skew
     /// that fit past the similarity check in `solve_plate_constants`
     /// (`BadSolution`), so nothing is clipped and all 45 come
-    /// back. In `try_position` the Tetra path then refits the same contaminated set,
-    /// fails the same check, and abandons a position whose 40 good pairs would
-    /// have solved it. The clipper does not work in exactly the case it exists for.
+    /// back. `try_position` would then refit the same contaminated set, fail the
+    /// same check, and abandon a position whose 40 good pairs would have solved it.
+    /// So the clipper's first fit must be unchecked.
     #[test]
     fn sigma_clip_pairs_rejects_gross_outliers() {
         let (img, cat) =
@@ -1217,6 +1237,25 @@ mod tests {
         ));
         let (ci, _) = sigma_clip_pairs(img, cat, 3.0, 3);
         assert_eq!(ci.len(), 40, "the five gross outliers should be clipped");
+    }
+
+    /// The pattern-pair fit of both methods: a set whose plain fit is refused
+    /// (gross outliers skew it off a similarity) still yields the true plate, from
+    /// the 40 good pairs; one with too few good pairs left yields nothing.
+    #[test]
+    fn fit_pattern_pairs_recovers_a_plate_the_plain_fit_refuses() {
+        let (img, cat) =
+            pairs_with_outliers(|k, _| (1000.0 + 150.0 * k as f64, -900.0 + 70.0 * k as f64));
+        assert!(solve_plate_constants(&img, &cat).is_err());
+        let (plate, n) = fit_pattern_pairs(img.clone(), cat.clone(), 3).expect("clipped fit");
+        assert_eq!(n, 40);
+        assert!(plate_close(&plate, &known_plate(), 1e-6), "{plate:?}");
+        // Clean pairs: nothing to clip, the same plate as a plain fit.
+        let (plate, n) = fit_pattern_pairs(img[..40].to_vec(), cat[..40].to_vec(), 3).unwrap();
+        assert_eq!(n, 40);
+        assert!(plate_close(&plate, &known_plate(), 1e-6));
+        // More pairs demanded than survive the clipping.
+        assert!(fit_pattern_pairs(img, cat, 41).is_none());
     }
 
     #[test]

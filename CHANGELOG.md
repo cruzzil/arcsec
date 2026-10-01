@@ -20,6 +20,11 @@ one is called out as such.
   `MAX_PLATE_ANISOTROPY`); the largest on any correct corpus solve is 1.027.
   `ArcsecError::BadSolution::ratio` now carries that singular-value ratio rather than
   the squared row-norm ratio, and its message changes accordingly.
+- A few wrong quads in the winning vote could drag the plate fit off a similarity, and
+  the search abandoned the right position. The quad path now
+  sigma-clips the matched quad centroids before fitting, as the triangle path already
+  did. Nebulous and crowded fields (Coalsack, B68, M16), coarse DSS and SHASSA fields
+  and TESS frames gain most.
 
 ## [0.2.0] - 2026-10-01
 
