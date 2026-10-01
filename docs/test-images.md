@@ -905,7 +905,8 @@ scripts/benchmark.py --auto-db --astap ~/astap_cli --radius 3 --jobs 1   # for t
 Measured 2026-10-01 on the code after the catalogue-read fix (§7.7, unreleased), against
 the 0.1.2 release binary as "before" (the numbers this section showed until then).
 `--auto-db` (d80 0.15°–6°, g05 3°–20°, w08 20°–80° installed), true centre as the hint,
-`-r 5`, 12 jobs:
+`-r 5`, 12 jobs. Four solver changes since then raise the counts to 540 correct (true
+centre) and 493 (offset hint); §7.8 has those results and every status change.
 
 ```bash
 scripts/benchmark.py --corpus --auto-db --by tier,source,dataset,fov,set --csv run.csv
@@ -1019,6 +1020,9 @@ went, `s_tess_b_pincush` (279″, now no solve) and `s_tess_c_flipx` (12.2″, n
 *distorted* cases: once the fit residuals show structure, a linear plate should be
 refused — or a distortion model fitted — rather than reported as a solve.
 
+*Update (§7.9):* the distortion model now reports the TESS frames correctly (corners at
+the ~1000″ linear floor) and `s_tess_b_pincush` too; only `wide_shassa_01` remains.
+
 ### 7.4 Failure categories that point at solver work
 
 1. **Native wide-field camera data: TESS FFIs 9/42** (4/42 in 0.1.2). 21″/px, a PSF of 1–2 pixels, and
@@ -1029,11 +1033,14 @@ refused — or a distortion model fitted — rather than reported as a solve.
    handling of undersampled stars (`Minimum star size: 1.5″`, HFD). This is the closest
    thing in the corpus to a camera-lens frame, and the clearest case for
    [plate-solving.md §12.4](plate-solving.md#124-fit-sip-distortion-and-honour---sip).
+   *Update (§7.9):* the distortion model makes every TESS frame that solves correct
+   (23/42 centre, 16/42 offset); those still failing are the correspondence problem.
 2. **Lens distortion (tier S): 3/10 correct, 5 inexact, 1 false positive.** arcsec's
    corners come out *worse than the best linear plate* (for example 28″ against a 16.5″
    floor): the star-level refit keeps only matches within 2 px, so the edges, where the
    distortion is largest, drop out and the plate is fitted to the centre. WISE shows the
-   same pattern.
+   same pattern. *Update (§7.9):* fixed — 10/10, and WISE 20/25 with either
+   hint.
 3. **2.5°–6° is the weakest band (17/43, 9/43 in 0.1.2).** It is where d80 hands over
    to g05 and pixel scales pass 10″/px; most entries are TESS (FFI or HiPS) or coarse DSS.
 4. **Real-telescope misses (LCO 37/42).** M43 (bright nebula), two frames with FWHM 6–7″
@@ -1156,6 +1163,240 @@ even. Over the whole corpus it was a wash — true-centre hint 506 correct / 5 f
 positives against the file-order cut's 504 / 4, offset hint 458 / 6 against 459 / 4, the
 false-positive differences all in distorted TESS fields — so the simpler file-order cut,
 which is also what a single-tile read has always done, was kept.
+
+### 7.8 Solver robustness (2026-10-01)
+
+Four changes after 0.2.0, from a diagnosis of the remaining failures, each measured on
+the whole corpus (both hints, `--auto-db`, 12 jobs) against the 0.2.0 release and against
+the change before it. Cumulative, in the order they were committed:
+
+| | true-centre hint: correct / FP / inexact | offset hint: correct / FP / inexact | tier D FP | v1 (centre / offset) |
+|---|---|---|---|---|
+| 0.2.0 | 504 / 4 / 11 | 459 / 4 / 39 | 0 / 0 | 92 / 86 |
+| 1. similarity check by singular values | 504 / 4 / 11 | 460 / 4 / 39 | 0 / 0 | 92 / 86 |
+| 2. sigma-clip the quad pairs | 525 / 7 / 12 | 475 / 6 / 38 | 0 / 0 | 92 / 89 |
+| 3. database limit on image stars | 528 / 7 / 12 | 479 / 6 / 38 | 0 / 0 | 92 / 90 |
+| 4. sparse images | **540 / 7 / 12** | **493 / 6 / 38** | **0 / 0** | 92 / 90 |
+
+By tier, true-centre hint, 0.2.0 → now: A 206 → 221, B 206 → 220, C 38 → 42, S 54 → 57;
+offset hint: A 199 → 209, B 173 → 187, C 39 → 42, S 48 → 55. No image that 0.2.0 solved
+correctly is lost in either run. `stress_fov_3` (tier D, `expect=any`) now solves,
+correctly. Of the 507 images both versions solve with the true-centre hint none moved more
+than 0.2″ closer to or further from the truth at the worst corner except `tess_24` (49.1″
+→ 50.1″, linear floor 42″); with the offset hint 12 moved closer and one further
+(`type_m45`, 2.9″ → 3.6″).
+
+**1. Plate similarity by singular values** ([plate-solving.md §7.2](plate-solving.md#72-the-six-plate-constants)).
+`solve_plate_constants` compared the two *row* norms of the plate, which a sheared matrix
+passes; in 0.1.2 the tier-D control `neg_hint_3` (offset hint) solved to a plate with rows
+2.73 and 2.64 long and singular values in the ratio 3.03. It now requires σmax/σmin ≤ 1.08;
+the largest on any correct solve is 1.027 (TESS FFIs), every other ≤ 1.0066. No status
+change with the true-centre hint; with the offset hint `obj_heart` solves (its first
+neighbouring position's quad fit was anisotropic past the old row check but well inside
+1.08, and verified). The blind front-end's estimates on v1 (14 images it places, hint two
+fields off, `-i` with the 4107–4119 indexes) were unchanged, score for score.
+
+**2. Sigma-clipping the quad pairs.** The triangle path clipped its pattern pairs before
+the fit; the quad path did not, so a few wrong quads in the winning vote cell could drag
+the fit past the similarity check and the right position was abandoned. Clipping always
+and clipping only after a refused fit (or a failed verification) gave identical statuses;
+always was kept, as it costs no second fit-and-verify on positions that fail.
+
+* Newly correct, true-centre hint (21): `cam_dss_c`, `s_dss_c_f64`, `s_dss_c_xisf`,
+  `cam_tess_c`, `s_tess_c_flipy`, `obj_b68`, `obj_coalsack`, `obj_m16`, `rnd_012`,
+  `rnd_049`, `lco_09`, `sv2_07`, `tess_09`, `tess_16`, `tess_27`, `tess_39`,
+  `wide_shassa_04`/`05`/`08`, `wide_tess_09`/`10`. `s_tess_b_pincush` inexact (221″,
+  synthetic pincushion).
+* Newly correct, offset hint (15): `fov_10p0`, `ls_big`, `obj_coalsack`, `obj_veil_e`,
+  `s_dss_c_flipx`, `s_dss_c_xisf`, `s_tess_b_xisf`, `s_tess_c_rot270`, `s_tess_c_trail`,
+  `s_ztf_a_clouds`, `sv_sdssr`, `tess_22` (from inexact), `wide_dss_05`, `wide_tess_01`,
+  and `s_tess_a_flipy` from a false positive.
+* **New false positives: 12° TESS FFI crops only** — `tess_10`, `tess_18`, `tess_41`
+  (true-centre hint) and `tess_03`, `tess_25`, `tess_32` (offset hint), all from no solve.
+  They are the class §7.3 already lists (`tess_03`/`25`/`32` were false positives with
+  the true-centre hint before): ~1000″ of SIP distortion, the right field found, a linear
+  plate reported 2000–2500″ out at the corners. All have 30–54 verified stars of 500
+  (under 11 %) at 1.0–1.3 px rms, but so do correct solves of crowded nebulae
+  (`dens_carina`: 6 %, 1.0 px), so no threshold on those separates them; they need the
+  structured-residual test or the distortion model of §7.3, not a tighter count.
+
+**3. Database limit.** ASTAP caps the image stars it uses at the database's density times
+the field's area. arcsec now does the same (plate-solving.md §10.2): with d80 it binds
+below ~0.25° (45 images). Correct: `rnd_080` (973 detections, d80 holds 378 in the
+window; capped at 344 it verifies 132), `ls2_02`, `ls2_21` (true-centre hint);
+`rnd_080`, `ls2_02`, `ps1v2_07`, `stress_narrow` (offset hint). Nothing lost, no new false
+positive. Verifying against every detection rather than the capped list gave identical
+results.
+
+**4. Sparse images.** Two parts, which pay mostly together (alone, +5 and +1 with the
+true-centre hint; together +12):
+
+* When the image has fewer stars than it may use, the catalogue read is denser than the
+  image; the window's brightest `k = n · oversize² · long/short` catalogue stars, the
+  image's density, now add their quads to the full-depth ones, provided the read holds at
+  least 2.5 k stars. (Long over short: the window is square on the long side, so on a
+  landscape frame `H/W` would halve the density.) Every image this solves had a read at
+  least 3.7 times `k` (`lco_38`; the SkyMapper frames 4.7–7.3, `rnd_027` 18).
+* The verified-star minimum is `min(30, max(10, ⌈0.15 n⌉))`, so unchanged from 194
+  detections. Below 30 the plate scale must be within 10 % of the hint's and the
+  star-level rms at most 0.5 px. The accepted relaxed solves have 16–28 stars, scales
+  within 0.2 % of the hint and 0.16–0.46 px rms. Without the gate `ls2_25` (0.09°, Legacy
+  Surveys) is accepted, with 12 stars at 1.36 times the hint's scale and 2.9 px rms, 5°
+  from the truth: a false positive in both runs, and the only difference the gate makes.
+
+Correct: `lco_20`, `lco_25`, `lco_38`, `rnd_027`, `rnd_044`, and seven of SkyMapper's
+0.17° frames, `smss_01`/`02`/`03`/`05`/`06`/`10`/`15` (with the offset hint also `ls2_21`
+and `ps1v2_14`). SkyMapper native now solves 15/15 and LCO 42/42 with the true-centre
+hint.
+
+**Speed.** v1 subset, `--jobs 1 --threads 1`, alternating builds, two rounds: total
+62.6 s → 60.4 s and 62.6 s → 60.1 s, median 0.18 s → 0.18 s and 0.19 s → 0.18 s.
+Full-spiral controls run alone (all cores), two runs each, 0.2.0 → now: `neg_hint_1`
+26.6 → 26.7 s, `neg_hint_2` 12.7 → 12.9 s, `neg_hint_5` 6.3 → 6.2 s, `neg_shuffle_1`
+0.7 → 0.7 s (6.8 → 6.3 s with `--threads 1`), but `neg_hint_3` 13.8 → 20.3 s: a
+90-star image whose catalogue read is 3.4 times the image-density count, so the
+density-matched quads are added, and matched, at each of its 6300 spiral positions. That
+is the cost of the sparse-image change on a search that fails everywhere; a solve that
+succeeds pays it only at the positions it visits. In the 12-job corpus runs the eight
+`neg_hint_*` controls take 42–86 s (0.2.0: 45–89 s), well inside the harness's 300 s,
+and no image timed out.
+
+**Negative results.**
+
+* *Reading the catalogue at the image's depth instead of adding its quads.* In the
+  diagnosis (against 0.1.2), switching the read wholesale to the density-matched depth
+  gained 11 images and lost 27, those whose faint detections are real and match the
+  deeper catalogue. Hence the additive form.
+* *Adding the density-matched quads whenever the image is short of stars.* The same
+  statuses as with the 2.5× condition, but the extra quads are matched at every spiral
+  position, and on searches that fail everywhere on images of 90–180 stars, where the
+  read is only about twice `k`, they made the search 50 % slower: `neg_hint_2` (159
+  stars) 6.7 s → 10.0 s with `-r 2 --threads 1`, and 12.7 s → 20.6 s for the whole
+  search; matching is 58 % of that profile and scales with the catalogue quad count.
+* *A count floor without the scale and rms gate.* A Poisson chance-match floor of 10 in
+  the diagnosis let four tier-D controls verify; the relaxed count alone admits `ls2_25`
+  (above).
+* *Clipping only on failure* (after a refused fit, or also after a failed verification):
+  the same statuses as clipping always, with a second fit-and-verify at every failing
+  position.
+
+### 7.9 Distortion (2026-10-02)
+
+The solver-robustness changes (§7.8) found more fields, and among them three more
+12° TESS frames reported with a linear plate 2000–2800″ out at the corners: six false
+positives per run, all of the class §7.3 describes. The fix is a distortion model fitted
+inside the solve ([plate-solving.md §10.3b](plate-solving.md#103b-distortion-pipelinedistortionrs)):
+once a position verifies, the catalogue is re-read about the image centre, a polynomial
+plate (up to cubic) is fitted by re-matching every catalogue star as it improves, and the
+linear plate closest to it over the frame is reported; a strong distortion the model
+cannot follow over the frame is refused. The WCS written stays linear unless `--sip` is
+given. Whole corpus, both hints, `--auto-db`, 12 jobs; correct / false positive /
+inexact over tiers A, B, C and S (596 images):
+
+| | true-centre hint | offset hint | `--sip`, true-centre | `--sip`, offset |
+|---|---|---|---|---|
+| 0.2.0 | 504 / 4 / 11 | 459 / 4 / 39 | 512 / 5 / 2 | 465 / 4 / 33 |
+| solver robustness (§7.8) | 540 / 7 / 12 | 493 / 6 / 38 | 549 / 8 / 2 | 499 / 6 / 32 |
+| **+ distortion model** | **558 / 1 / 0** | **537 / 1 / 1** | **557 / 2 / 0** | **537 / 1 / 1** |
+
+Tier D: no control solves in any run. v1 subset: 92 / 90 (centre / offset), as §7.8.
+No image correct in 0.2.0 or after §7.8 is lost, in either run, with or without `--sip`.
+
+| tier (centre hint) | 0.2.0 | §7.8 | now | | tier (offset hint) | 0.2.0 | §7.8 | now |
+|---|---|---|---|---|---|---|---|---|
+| A | 206/1/0 | 221/1/0 | 221/1/0 | | A | 199/1/0 | 209/1/0 | 210/1/0 |
+| B | 206/3/4 | 220/6/4 | 230/0/0 | | B | 173/2/30 | 187/5/29 | 221/0/1 |
+| C | 38/0/0 | 42/0/0 | 42/0/0 | | C | 39/0/0 | 42/0/0 | 42/0/0 |
+| S | 54/0/7 | 57/0/8 | 65/0/0 | | S | 48/1/9 | 55/0/9 | 64/0/0 |
+
+By source the changes are all in TESS (centre hint 9/3/4 → 13/6/4 → 23/0/0; offset
+1/2/11 → 2/5/10 → 16/0/1), WISE (offset 1/0/19 → 20/0/0; centre 20/25 throughout, worst
+corners 7.8–9.5″ → 7.0–7.8″), the synthetic distortion set (3 → 10 of 10 centre, 2 → 10
+offset), and with the offset hint `ls2_06` and `wide_shassa_02` (the second chance). By
+field size: 2.5–6° 17 → 22 → 27 (offset 9 → 13 → 24), 6–20° 23/4/2 → 25/7/3 → 34/1/0
+(offset 20/3/3 → 24/5/3 → 31/1/0), 0.6–1.2° with the offset hint 141/0/22 → 144/0/22 →
+166/0/0 (WISE). No band loses anything.
+
+**Status changes against §7.8 (PR #10).** True-centre hint: from false positive to
+correct `tess_03`, `tess_10`, `tess_18`, `tess_25`, `tess_32`, `tess_41`; from inexact to
+correct `tess_12`, `tess_15`, `tess_21`, `tess_23` and the eight synthetic distortion
+frames `s_des_a_worst`, `s_dss_a_pincush`, `s_dss_d_lens`, `s_ps1_b_lens`,
+`s_tess_a_lens`, `s_tess_b_lens`, `s_tess_b_pincush`, `s_tess_c_pincush`. Offset hint:
+false positive to correct `tess_03`, `tess_25`, `tess_32`, `tess_41`, `tess_43`; inexact
+to correct 37 (the same eight synthetic frames and `s_ps1_a_lens`; `tess_07`/`12`/`13`/`15`/`19`/`23`/`24`/`33`/`44`; and 19 WISE
+frames, `wise_02`–`25`); no solve to correct
+`ls2_06`, `wide_shassa_02`. Nothing moves the other way. Against 0.2.0 the list is §7.8's
+plus these: every 0.2.0 false positive and inexact solve except `wide_shassa_01` (both
+hints) and `tess_34` (offset, inexact) is now correct.
+
+**The ten false positives.** Of 0.2.0's four with the true-centre hint, `tess_03`,
+`tess_25` and `tess_32` are correct (corners 990–1002″ against linear floors of
+988–999″); `wide_shassa_01` remains, unchanged and not a distortion case: a 15° SHASSA
+HiPS cutout, TAN, every star fitted to 0.6 px, but 16.8″ (0.64 px) from the truth at the
+centre and 31″ at a corner against a 26″ limit — the survey's own astrometry or the
+cutout, not the solve. Of 0.2.0's offset-hint four, `tess_41` and `tess_43` are correct,
+`s_tess_a_flipy` was already fixed by §7.8, and `wide_shassa_01` is as above. The six
+§7.8 added (`tess_10`, `tess_18`, `tess_41` centre; `tess_03`, `tess_25`, `tess_32`
+offset) are all correct. With `--sip` one more remains in both 0.2.0 and §7.8 and now:
+`wide_shassa_07`, a 47° SHASSA field whose model is not significant (F 3.7) and which
+`fit_sip`, on its own F-test at 4, fits a cubic to that moves the corners from 29″ to
+122″ out.
+
+**`--sip`.** The model's pairs reach the corners, so `fit_sip` (unchanged) now fits
+distorted frames over the whole field. Worst corners: 12° TESS 15–41″ (linear floor
+~1000″), 5.8° TESS 8–51″, 2.9° TESS 6.5–55″, WISE 1.6–2.8″ (floor 5.5″), the synthetic
+set 0.35–10″. Without `--sip` they sit at the linear floor: TESS 12° 990–1004″, WISE
+7.0–7.8″.
+
+**What was tried, and what decided the constants.**
+
+* *Fitting from the spiral position's catalogue only.* With the offset hint a third of
+  the frame has no catalogue stars, the pairs reach 3–6 of the 9 cells, and the model
+  cannot be used: the 12° frames stayed false positives and the WISE frames inexact. The
+  full-frame re-read fixed all of them (offset 517 → 536 correct, 6 → 1 false positives).
+* *Without the quad seeds* `tess_03` stayed a false positive: its verified stars sit in
+  one corner, and the quadratic grown from them never reaches the far third; the quad
+  centroids, spread wider, pull the cubic there.
+* *A quadratic gate on the cubic.* Testing the cubic only after a quadratic beat the
+  linear plate kept every synthetic radial lens linear: radial distortion about the centre
+  has no quadratic part.
+* *Reporting the model whenever its F-test passes at 4.* Survey images with no
+  distortion reach F = 4–24 on the final pairs (catalogue and centroid systematics), and
+  the frame-wide plate then moved some corners: `sdss_d` 0.33″ → 3.2″, `ls2_27`
+  0.10″ → 1.09″, `sv2_01` 0.86″ → 3.2″, a dozen others by 0.1–0.4″. None became wrong,
+  but nothing gained either. At `MIN_REPORT_F` = 30 those keep their plate; the only
+  distorted frame below 30 whose status depended on the model is `tess_34` with the
+  offset hint (F = 7, inexact as in §7.8). ZTF has real sub-pixel distortion (F up to 47,
+  floors 0.2–0.65″): `MIN_DEPARTURE_PX` = 1 leaves those plates alone.
+* *The second chance without the full-frame read.* It turned `wide_shassa_02` (offset)
+  into a false positive from a model fitted to part of the frame; with the re-read and the
+  coverage requirement it is correct.
+* *Refusal on the fraction or rms of verified stars* (§7.8's negative result) stays
+  rejected; the refusal rule uses the model instead, and no corpus solve comes near it
+  (largest wide-pair cubic F 21 among unused models 2 px or more from the plate; the rule
+  needs 100 and 3 px).
+
+**Speed.** The machine was shared with other benchmark runs throughout (load 50–170 on
+24 cores), so wall-clock times are unreliable; these are CPU times (user + system) per
+process. v1 subset, `--threads 1`, each image run with all three builds in turn:
+0.2.0 69.9 s, §7.8 66.2 s, now 66.5 s in total (medians 0.21 / 0.22 / 0.22 s) in the
+quieter round; 140.9 / 134.7 / 138.3 s in a round under twice the load. The model costs
+one catalogue read and a few milliseconds of matching and small Cholesky fits per solve
+(a few per cent of a 0.2 s solve in a profile, after replacing the Givens solver with normal
+equations for it; with Givens it was about 10 %). Full-spiral no-solve controls (all
+threads, CPU seconds, 0.2.0 / §7.8 / now): `neg_hint_1` 700 / 587 / 545, `neg_hint_2`
+245 / 234 / 240, `neg_hint_3` 216 / 312 / 307, `neg_hint_5` 99 / 96 / 97,
+`neg_shuffle_1` 9.7 / 10.2 / 9.9. A search that never verifies never fits the model,
+and no control reached the second chance, so these differ only by noise; `neg_hint_3`'s
+increase is §7.8's. No harness timeout (300 s) in any run; the slowest image in the
+corpus runs was 186 s (`neg_orion_2massk`, offset hint, at the heaviest load; in the other
+runs the slowest took 82–112 s).
+
+**Still failing.** 19 TESS frames (2.2–5.9°) do not solve at all: §7.4's correspondence
+problem (few detections have a Gaia counterpart at 21″/px in the TESS band), not
+distortion — `tess_05` finds 614 quad references at the right position and keeps too few
+consistent ones to fit. `tess_34` (2.2°) with the offset hint is inexact: its distortion
+is real but weak on the pairs (F = 7).
 
 ## 8. Licensing and attribution
 

@@ -536,26 +536,26 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
         log::debug!("Code range: lo={code_lo:.6}, scale={code_scale:.3e}");
 
         // ── Read star positions from "kdtree_data_stars" ──────────────────────────
-        move_to_hdu(fp, b"kdtree_data_stars\0").map_err(&io_err)?;
-        let n_star_rows = get_num_rows(fp).map_err(&io_err)?;
-        let star_col = get_colnum(fp, b"kdtree_data_stars\0").map_err(&io_err)?;
-        let star_bytes = read_raw_bytes(fp, star_col, n_star_rows * 12).map_err(&io_err)?;
+        move_to_hdu(fp, b"kdtree_data_stars\0").map_err(io_err)?;
+        let n_star_rows = get_num_rows(fp).map_err(io_err)?;
+        let star_col = get_colnum(fp, b"kdtree_data_stars\0").map_err(io_err)?;
+        let star_bytes = read_raw_bytes(fp, star_col, n_star_rows * 12).map_err(io_err)?;
         let stars = parse_stars(&star_bytes);
 
         // ── Read quad star indices from "quads" ───────────────────────────────────
-        move_to_hdu(fp, b"quads\0").map_err(&io_err)?;
-        let n_quad_rows = get_num_rows(fp).map_err(&io_err)?;
-        let quad_col = get_colnum(fp, b"quads\0").map_err(&io_err)?;
+        move_to_hdu(fp, b"quads\0").map_err(io_err)?;
+        let n_quad_rows = get_num_rows(fp).map_err(io_err)?;
+        let quad_col = get_colnum(fp, b"quads\0").map_err(io_err)?;
         let row_bytes = dim_quads * 4;
-        let quad_bytes = read_raw_bytes(fp, quad_col, n_quad_rows * row_bytes).map_err(&io_err)?;
+        let quad_bytes = read_raw_bytes(fp, quad_col, n_quad_rows * row_bytes).map_err(io_err)?;
         let quad_indices = parse_quad_indices(&quad_bytes);
 
         // ── Read codes from "kdtree_data_codes" ──────────────────────────────────
-        move_to_hdu(fp, b"kdtree_data_codes\0").map_err(&io_err)?;
-        let n_code_rows = get_num_rows(fp).map_err(&io_err)?;
-        let code_col = get_colnum(fp, b"kdtree_data_codes\0").map_err(&io_err)?;
+        move_to_hdu(fp, b"kdtree_data_codes\0").map_err(io_err)?;
+        let n_code_rows = get_num_rows(fp).map_err(io_err)?;
+        let code_col = get_colnum(fp, b"kdtree_data_codes\0").map_err(io_err)?;
         let code_bytes =
-            read_raw_bytes(fp, code_col, n_code_rows * n_code_dims * 2).map_err(&io_err)?;
+            read_raw_bytes(fp, code_col, n_code_rows * n_code_dims * 2).map_err(io_err)?;
         let codes = parse_codes(&code_bytes, n_code_dims, code_lo, code_scale);
 
         Ok(AnetParts {

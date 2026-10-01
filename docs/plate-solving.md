@@ -556,14 +556,20 @@ so tolerates an arbitrary inlier fraction; its cost is `O(k)` model fits where
 
 ### 6.4 Bijectivity and sigma clipping
 
-Two cheap add-ons arcsec uses on the triangle path:
+Two cheap add-ons arcsec uses: the bijective filter on the triangle path, sigma clipping
+on both:
 
 * **Bijective filter** — a true correspondence set is one-to-one. Reject any image feature
   matching several catalogue features and vice versa; keep only mutual best matches.
 * **Iterative sigma clipping** — fit, compute residuals, drop everything beyond `k·RMS`,
   refit, repeat until stable. arcsec's `sigma_clip_pairs` uses a generous absolute cut
   (10 px in catalogue arcsec) on the first pass to kill gross outliers, then `3σ`
-  thereafter, for at most 10 iterations.
+  thereafter, for at most 10 iterations. The first fit is unchecked (`fit_affine`): the
+  outliers it exists to remove can skew that fit past the similarity check. Until
+  2026-10 only the triangle path clipped; on the quad path a few wrong quads in the
+  winning vote cell could make the plate fit fail the similarity check and abandon the
+  right position (`obj_coalsack`: the plain fit of the first position's quads was
+  refused; clipped, it verified 91 stars).
 
 ---
 
@@ -624,11 +630,21 @@ The `(a,b,d,e)` sub-matrix carries scale, rotation and parity:
     parity   = sign(a·e − b·d)                                [flipped if < 0]
 ```
 
-arcsec sanity-checks the solution by requiring the two scales to agree:
+arcsec sanity-checks the solution by requiring it to be a similarity transform: the
+two singular values of the `(a,b,d,e)` matrix must agree.
 
 ```
-    0.9 ≤ (a² + b²) / (d² + e²) ≤ 1.1        else  ArcsecError::BadSolution
+    q = ½·√((a+e)² + (d−b)²)      r = ½·√((a−e)² + (d+b)²)
+    σmax / σmin = (q + r) / |q − r|  ≤  1.08      else  ArcsecError::BadSolution
 ```
+
+(`math::lsq::plate_anisotropy`, `MAX_PLATE_ANISOTROPY`.) Until 2026-10 the check
+compared the two *row* norms, `0.9 ≤ (a² + b²)/(d² + e²) ≤ 1.1`, which a sheared matrix
+passes: the tier-D false positive `neg_hint_3` (offset hint, 0.1.2) had
+`a, b, d, e = 0.78, −2.62, −0.90, −2.48`, rows 2.73 and 2.64 long but columns 1.19
+and 3.61, a singular-value ratio of 3.03. On the corpus the largest ratio of any correct
+solve is 1.027 (TESS FFIs, whose distortion the linear plate absorbs as a little
+anisotropy); every other correct solve is at most 1.0066.
 
 The FITS `CD` matrix is the same thing in degrees:
 
@@ -756,10 +772,21 @@ matches exceeds a fixed or star-count-scaled threshold. arcsec uses
 
 ```
     catalogue path:  min_quads = 3 + n_stars_image / 140 agreeing quads to attempt a fit,
-                     then ≥ MIN_VERIFIED_STARS = 30 individually matched stars spanning
-                     ≥ MIN_VERIFY_SPREAD = 0.20 of the image half-diagonal to accept
+                     then ≥ min(30, max(10, ⌈0.15·n_stars_image⌉)) individually matched
+                     stars spanning ≥ MIN_VERIFY_SPREAD = 0.20 of the image
+                     half-diagonal to accept; below 30, also a plate scale within 10 %
+                     of the hint's and a star-level rms ≤ 0.5 px
     blind path:      MIN_VERIFY_SCORE = 18 verified stars, EARLY_STOP_SCORE = 20
 ```
+
+The relaxed count is for sparse images (≥ 194 detections keep 30), and it is not safe on
+its own. A Poisson chance-match floor in its place let four tier-D controls verify, and
+the relaxed count without the scale and rms gate accepts a wrong solution for a sparse
+0.09° Legacy Surveys frame (`ls2_25`): 12 stars at 1.36 times the hint's scale with a
+2.9 px rms, 5° from the truth
+([test-images.md §7.8](test-images.md#78-solver-robustness-2026-10-01)). A handful of
+coincidences can be fitted by some plate at some scale; they are not fitted at the scale
+the optics give, to half a pixel.
 
 Both paths are now genuinely verified — they project catalogue or index stars into the
 image and count agreement. The catalogue path gained this on 2026-09-02; before that it
@@ -946,17 +973,31 @@ alternative **triangle** matcher (§4.1).
              └─ sort by SNR, keep the top `-s` (default 500)
 ```
 
-The detected list is not trimmed further. A brightest-half trim (`max(max_stars/2, 50)`)
+The detected list is not trimmed to a fraction. A brightest-half trim (`max(max_stars/2, 50)`)
 used to guard the 3-nearest-neighbour quads against faint stars missing from the
 catalogue; with 9-NN redundancy and star-level verification it only halved the quad
 count, and removing it took tier B to 34/34 (see [test-images.md §6.2](test-images.md#62-what-moved-the-numbers)).
 The blind front-end still applies it.
 
+It is trimmed to the **database limit**, as ASTAP does: the catalogue is
+density-limited, so the field cannot hold more than `density × area` catalogue stars,
+and image stars beyond that only build quads the catalogue cannot match. The catalogue
+spiral keeps the brightest `min(-s, density × area)` detections, with `area = FOV² ×
+short/long` and the density read from the database name as ASTAP reads it
+(`catalog::database_density`: two digits × 100 per deg², so d80 8000, d50 5000, d20
+2000, d05/v05/g05 500, v50 5000; `w08`, whose digits are a magnitude, holds 1 per deg²).
+With d80 it binds below ~0.25° fields; with g05 below ~1°, so never in g05's own range;
+with w08 on fields up to ~22°. On `rnd_080` (0.21°, galactic bulge) detection finds 973
+stars and keeps 500 where d80 holds 378 in the whole search window; capped at 344 it
+solves, verifying 132.
+
 ### 10.3 The catalogue spiral solve (`pipeline/solver.rs`)
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │ A. DETECT              up to `-s` stars (default 500), no further trim   │
+  │ A. DETECT              up to `-s` stars (default 500); keep the          │
+  │                        brightest min(-s, density × area), the database   │
+  │                        limit                                             │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ B. BUILD IMAGE QUADS   build_quads(): each star plus its nearest         │
   │                        neighbours, all 4-subsets of that group           │
@@ -984,6 +1025,9 @@ The blind front-end still applies it.
   │                                                                          │
   │        project catalogue → tangent plane (arcsec), sort by x             │
   │        build_quads_presorted() with the *image* star count               │
+  │        if n < min(-s, database limit) and the read holds ≥ 2.5 × that    │
+  │           many: add the quads of the brightest k = n · oversize² ·       │
+  │           long/short catalogue stars (the image's density), deduped      │
   │        sort_catalog_quads(): sort by ratios[INDEX_RATIO = 4]             │
   │                                                                          │
   │        find_matches_sorted(): binary-search ±t on ratios[4] over a       │
@@ -995,12 +1039,24 @@ The blind front-end still applies it.
   │        if matches < min_quads = 3 + n/140:  next position                │
   │                                                                          │
   │        extract_star_pairs(): (image quad centroid, catalogue centroid)   │
-  │        solve_plate_constants(): Givens-rotation LSQ, 6 constants         │
+  │        sigma_clip_pairs(): drop pairs off the consensus (first pass      │
+  │           10 px or 3 × 1.48 MAD, then 3σ); if fewer than min_quads       │
+  │           remain: next position                                          │
+  │        solve_plate_constants(): Givens-rotation LSQ, 6 constants;        │
+  │           refused unless a similarity (singular-value ratio ≤ 1.08)      │
   │        verify_and_refit(): project every catalogue star through the      │
   │           plate, pair it with the nearest unused detected star within    │
   │           6 → 3 → 2 px, re-fit on those pairs at each radius             │
-  │        reject unless ≥ 30 stars matched and their spread ≥ 0.20 of the   │
-  │           image half-diagonal:  next position                            │
+  │        reject unless ≥ min(30, max(10, ⌈0.15·n⌉)) stars matched and      │
+  │           their spread ≥ 0.20 of the image half-diagonal; below 30       │
+  │           also unless the plate scale is within 10% of FOV/long side     │
+  │           and the rms ≤ 0.5 px:  if ≥ 50 quads agreed, second chance     │
+  │           with the distortion model (§10.3b), else next position         │
+  │        recentre(): refit in the tangent plane at the image centre        │
+  │        distortion model (§10.3b): re-read the catalogue about the        │
+  │           image centre, fit a polynomial plate by re-matching; report    │
+  │           the linear plate closest to it over the frame, keep the        │
+  │           verified plate, or refuse the solve                            │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ D. OUTPUT              derive_wcs(): tangent-plane inverse at the image  │
   │                        centre; un-scale CRPIX and CD/CDELT for binning   │
@@ -1009,12 +1065,88 @@ The blind front-end still applies it.
 
 The `--method tetra` variant replaces build/match/filter with `build_triangles`,
 `find_triangle_matches` (tolerance × 0.3), `bijective_filter`,
-`filter_triangles_by_scale`, and `sigma_clip_pairs`; the plate fit and `verify_and_refit`
+and `filter_triangles_by_scale`; the clipping, the plate fit and `verify_and_refit`
 are shared.
 
 The reported `RMS` is the per-star residual of the final `verify_and_refit` pass, and the
 count written as `NQUADS` in the `.ini` (and "`n` of `m` quads selected" on stdout) is the
 number of verified stars, not quads.
+
+### 10.3b Distortion (`pipeline/distortion.rs`)
+
+The verification above is linear: its last pass keeps the stars within 2 px of a linear
+plate. Where the optics distort the field by more than that, it keeps only the region
+the plate happens to fit, and the refit is made to that region alone. On a 12° TESS
+frame (about 1000″, ~50 px, between the best linear plate and the truth at the
+corners) that left 30–54 of 500 stars, all in one part of the frame, and a plate
+2000–2800″ out at the corners; on the synthetic lenses and the WISE frames the corners
+came out 1.5–2 times further from the truth than the best linear plate. So, once a
+position has verified, `model_distortion` fits a distortion model, astrometry.net
+`tweak` style:
+
+1. **A full-frame catalogue.** The spiral position's catalogue window need not cover the
+   image (with the hint 0.3 fields off, 30 % of the frame has no catalogue star), so the
+   catalogue is read again about the image centre the verified plate gives, a square
+   `FOV · diagonal/long side` across (the corners at any rotation), at the same density.
+2. **Seeds.** The matched quad centroids of the position are correspondences wherever
+   they fall, whatever the linear plate does there; they join every fit below. On
+   `tess_03` they are what lets the model reach the far third of the frame.
+3. **Re-match and refit** (`distortion::refine`, up to 10 rounds, until the model moves
+   less than 0.05 px): pair every catalogue star with the nearest detection within a
+   *wide* radius under the current model, one-to-one, brightest first; fit a
+   polynomial plate (pixel → standard coordinates, each axis over the ten SIP terms
+   `uᵖvᵠ`, p + q ≤ 3, of `u, v` scaled to ±1) with outliers clipped at
+   `max(2 px, 3 × 1.4826 × median residual)`. The wide radius is set by the image's
+   star density, so that on average 0.1 unrelated detections fall within it of a
+   catalogue star: `√(0.1 / (π ρ))`, clamped to 4–24 px (16 px on a 500-star TESS
+   frame).
+4. **The order** is the highest the pairs support: a quadratic only if its pairs reach
+   7 of the 9 cells of a 3×3 grid over the frame, a cubic 7 while bootstrapping and all 9
+   in the end, and each only if it beats the best lower order by an F-test at 4. A
+   quadratic need not beat the linear plate for the cubic to be tried (radial
+   distortion about the centre is all cubic).
+5. **Final pairs** are those within the tight radius (2 px) of the model.
+
+What is reported:
+
+* **The linear plate closest to the model over the frame**, when the model is a
+  quadratic or cubic whose pairs cover the frame (9 cells for a cubic, 7 for a
+  quadratic), significant on the final pairs (F ≥ `MIN_REPORT_F` = 30 over a linear
+  fit), different from the verified plate somewhere by `MIN_DEPARTURE_PX` = 1 px or
+  more, and pairing at least 90 % as many stars as it. That plate is the least-squares
+  linear fit to the model on a 9 × 9 grid over the frame, in the tangent plane at the
+  image centre (`distortion::best_linear`) — the definition of the benchmark's linear
+  floor. The WCS stays linear and ASTAP-compatible (`RA---TAN`, no SIP cards; N.I.N.A.
+  reads CRVAL, CRPIX and CD from the `.ini`); it is the frame-average plate rather than
+  the centre's tangent, because the centre-tangent plate puts the corners up to twice
+  as far out, and a solver consumer that frames, centres or stacks uses the whole
+  field. The model's pairs become `WcsSolution::matched_stars` (they reach the corners,
+  so `--sip` now fits SIP to them, `fit_sip` unchanged), and `RMS` is the model's.
+* **The verified plate, unchanged**, otherwise. Undistorted fields land here, so their
+  solutions are bit-identical to before.
+* **No solution** (exit 1, as any failed solve) when the model cannot be used but the
+  field is plainly and strongly distorted where it has stars: a cubic fitted to the
+  wide-radius pairs regardless of coverage beats a linear fit with F ≥ `REFUSE_F` = 100
+  and is `REFUSE_DEPARTURE_PX` = 3 px or more from the verified plate at those pairs.
+  That plate then fits part of the frame, and its corners cannot be known. The search
+  stops there rather than moving on to a neighbouring position. No corpus solve comes
+  near the rule (the largest F among unused models 2 px or more off is 21); a synthetic
+  frame with 10–60 px of radial distortion and its right third empty reaches F 600–47 000
+  at 3.8–11.6 px, and is refused rather than reported 70–500″ out at the corners
+  (`strong_distortion_that_cannot_be_modelled_over_the_frame_is_refused`).
+
+**Second chance.** A position whose quads agree strongly (≥ `STRONG_VOTE` = 50 pairs
+after clipping) but whose linear plate fails verification is given the same model,
+started from the quad plate. It is accepted by the same rules as a linear plate (count,
+spread, and below 30 stars the scale and rms checks) on the model's 2 px pairs, and
+only if those pairs cover the frame as above. Two corpus images use it (`ls2_06`, a
+0.13° Legacy Surveys frame, and `wide_shassa_02`, a 20° SHASSA field, both with the
+offset hint); before the full-frame catalogue read it also turned `wide_shassa_02` into
+a false positive, from a window covering only part of the frame.
+
+Cost: one extra catalogue read and a few hundred star pairings and small least-squares
+fits per solve ([test-images.md §7.9](test-images.md#79-distortion-2026-10-02) has the timing); the model is never fitted at
+positions that fail.
 
 ### 10.4 The blind solve (`pipeline/blind.rs`)
 
@@ -1071,6 +1203,7 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 |---|---|---|---|
 | `quad_tolerance` | 0.007 | `-t` | per-ratio match tolerance |
 | `max_stars` | 500 | `-s` | detection cap; also sets catalogue depth |
+| database limit | `min(-s, density × FOV² × short/long)` | `solver.rs` `density_star_limit` | image stars kept for matching; density from the database name (`catalog::database_density`) |
 | `hfd_min` | 1.5″ | `-m` | minimum star size; converted to binned pixels, floor 0.8 px |
 | `search_radius` | 180° | `-r` | spiral radius |
 | binning | `round(1/arcsec_per_px)`, ≤ 16 | `-z` absent or 0 | auto downsample when `arcsec/px < 1`; any factor is capped so the binned image keeps ≥ 2 px a side |
@@ -1079,8 +1212,20 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `min_quads` | `3 + n/140` | `solver.rs` | agreeing quads needed to attempt a fit |
 | `oversize` | 2.0 → 1.0 | `solver.rs` | catalogue window vs FOV |
 | `VERIFY_RADII` | 6, 3, 2 px | `solver.rs` | star-level verification match radii |
-| `MIN_VERIFIED_STARS` | 30 | `solver.rs` | stars that must agree to accept a position |
+| `MIN_VERIFIED_STARS` | 30 | `solver.rs` | stars that must agree to accept a position, for an image with ≥ 194 detections |
+| `min_verified_stars(n)` | `min(30, max(10, ⌈0.15·n⌉))` | `solver.rs` | the same for `n` detections: relaxed for sparse images |
+| `RELAXED_SCALE_TOL` | 10 % | `solver.rs` | below 30 matches, the plate scale must be this close to the hint's (`FOV / long side`) |
+| `RELAXED_MAX_RMS_PX` | 0.5 px | `solver.rs` | below 30 matches, the largest star-level rms |
+| `DENSITY_MATCH_MIN_RATIO` | 2.5 | `solver.rs` | density-matched catalogue quads are added only when the catalogue read holds at least this many times the image-density count |
 | `MIN_VERIFY_SPREAD` | 0.20 | `solver.rs` | spread of those stars, fraction of the half-diagonal |
+| `MIN_REPORT_F` | 30 | `solver.rs` | F of the distortion model over a linear plate needed to change the reported plate (§10.3b) |
+| `MIN_DEPARTURE_PX` | 1 px | `solver.rs` | ... and how far the model must be from the verified plate somewhere in the frame |
+| `REFUSE_F` / `REFUSE_DEPARTURE_PX` | 100 / 3 px | `solver.rs` | an unusable model this significant and this far from the plate where it has stars refuses the solve |
+| `STRONG_VOTE` | 50 | `solver.rs` | clipped quad pairs for the distortion-model second chance |
+| `CHANCE_MATCHES` | 0.1 | `distortion.rs` | the wide matching radius admits this many unrelated detections per catalogue star on average; clamped to `WIDE_RADIUS_PX` = 4–24 px |
+| `TWEAK_ROUNDS` | 10 | `distortion.rs` | re-match/refit rounds at most |
+| `MIN_DISTORTION_F` | 4 | `distortion.rs` | F a higher polynomial order must reach over the best lower one while the model is built |
+| `MAX_PLATE_ANISOTROPY` | 1.08 | `math/lsq.rs` | largest singular-value ratio σmax/σmin of a plate fit's linear part; every fit through `solve_plate_constants` (quad, star-level, blind) must be this close to a similarity |
 | `TETRA_TOL_FACTOR` | 0.3 | `quads/tetra.rs` | triangle tolerance scaling |
 | `SCALE_STEP` / `ANGLE_STEP` | 0.05 / 10° | `quads/vote.rs` | vote bin sizes |
 | `BAND_OVERLAP` | 90 rows | `detection/stars.rs` | overlap between parallel detection bands |
@@ -1357,6 +1502,11 @@ third-order SIP polynomials to the verified star pairs, which `solve_image` now 
 `WcsSolution::matched_stars`. See §12.4 for the method and the measurements. The default
 solve is still linear, as ASTAP's is.
 
+**Fixed** for the default solve too (2026-10-01): the solver fits a distortion model
+internally and reports the linear plate closest to it over the frame, or refuses a
+strongly distorted field it cannot model (§10.3b). The written WCS stays linear unless
+`--sip` is given.
+
 ### 11.6 Several CLI flags are accepted and ignored — FIXED
 
 This used to read "accepted and ignored": a script that passed `--analyse 10` got a full
@@ -1583,10 +1733,13 @@ truth then being TAN plus that SIP — it is found with F from 18 to 225:
 | `ra065` | 8 px | 6.13″ | 1.23″ | 6.92″ | 8.95″ |
 | `type_m101` | 20 px | 15.53″ | 2.21″ | 15.76″ | 1.52″ |
 
-(worst-corner error against the truth; grid RMS falls from 1.2–6.6″ to 0.8″.) Still open:
-astrometry.net's `tweak2` shape — re-match with the improved WCS, then raise the order —
-would find more stars in a strongly distorted field's corners, where the linear WCS
-misses them by more than the 2 px verification radius.
+(worst-corner error against the truth; grid RMS falls from 1.2–6.6″ to 0.8″.)
+
+**Done since** (§10.3b): astrometry.net's `tweak2` shape — re-match with the improved
+model, then raise the order — now runs inside the solve, so the pairs `fit_sip` receives
+reach a strongly distorted field's corners. With `--sip` the 12° TESS frames' worst
+corner is 15–41″ (it was 2000–2800″, wrong), the 5.8° ones 8–50″, WISE 1.6–2.8″ (11–14″
+before), and the synthetic lenses 0.7–15″.
 
 ### 12.5 Make quad selection robust to differing star sets
 

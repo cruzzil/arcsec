@@ -30,9 +30,11 @@ pub enum ArcsecError {
         /// Minimum required.
         required: usize,
     },
-    /// The plate fit's X and Y scales disagree by more than 10%.
+    /// The plate fit is not a similarity transform: it stretches or shears the
+    /// image by more than [`crate::math::lsq::MAX_PLATE_ANISOTROPY`].
     BadSolution {
-        /// Ratio of the squared X scale to the squared Y scale.
+        /// Ratio of the larger to the smaller singular value of the plate's linear
+        /// part ([`crate::math::lsq::plate_anisotropy`]); 1 for a similarity.
         ratio: f64,
     },
     /// The star database directory does not contain the named database.
@@ -56,7 +58,8 @@ impl fmt::Display for ArcsecError {
             Self::BadSolution { ratio } => {
                 write!(
                     f,
-                    "bad solution: xy scale ratio {ratio:.4} not in [0.9, 1.1]"
+                    "bad solution: plate singular-value ratio {ratio:.4} exceeds {}",
+                    crate::math::lsq::MAX_PLATE_ANISOTROPY
                 )
             }
             Self::CatalogNotFound(p) => write!(f, "catalog not found: {}", p.display()),
@@ -110,7 +113,7 @@ mod tests {
             ),
             (
                 ArcsecError::BadSolution { ratio: 1.23456 },
-                "bad solution: xy scale ratio 1.2346 not in [0.9, 1.1]",
+                "bad solution: plate singular-value ratio 1.2346 exceeds 1.08",
             ),
             (
                 ArcsecError::CatalogNotFound(std::path::PathBuf::from("/db")),

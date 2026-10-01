@@ -13,6 +13,21 @@ one is called out as such.
 
 ### Added
 
+- Distortion handling in the catalogue solve. Once a position verifies, the solver
+  re-reads the catalogue about the image centre and fits a polynomial plate (up to
+  cubic, order chosen by F-tests and frame coverage) by re-matching every catalogue
+  star as the model improves, astrometry.net `tweak` style. When the field is
+  measurably distorted (F ≥ 30 over a linear fit, a pixel or more of difference, the
+  pairs covering the frame) the reported plate is the linear plate closest to the model
+  over the whole frame instead of the one the centre's stars give, and the model's star
+  pairs, which reach the corners, become `WcsSolution::matched_stars`. The written WCS
+  stays linear and ASTAP-compatible; `--sip` now fits its SIP terms to those pairs. On
+  the 635-image corpus: TESS 9 → 23 of 42 correct (the 12° frames' corners from
+  2000–2800″ off to the ~1000″ linear floor; with `--sip` 15–41″), WISE with the offset
+  hint 1 → 20 of 25, the synthetic lens set 3 → 10 of 10. Undistorted fields are
+  unchanged.
+- A position whose quads agree strongly (≥ 50 pairs) but whose linear plate fails
+  verification is retried with the distortion model before the search moves on.
 - **Blind index built from the installed star database.** `arcsec catalog index build`
   writes `<db>.arcsecix` (fields 0.3°–30° by default, `--min-fov`/`--max-fov` to
   choose; about 2 minutes and 290 MB from D80, nothing downloaded), and
@@ -35,9 +50,44 @@ one is called out as such.
 
 ### Changed
 
+- A strongly distorted field that the model cannot follow over the whole frame (a
+  significant cubic 3 px or more from the verified plate where there are stars, but
+  too little of the frame covered to fit it there) is now refused (exit 1, no
+  solution) rather than reported with a linear plate fitted to part of it. No corpus
+  image is affected.
+
+- The catalogue solve uses at most as many image stars as the database can hold in the
+  field, its density times the field's area (ASTAP's "database limit"): the brightest
+  `min(-s, density × area)` detections. Small, crowded fields with d80 (below ~0.25°)
+  no longer build their quads from stars the catalogue does not have. Library:
+  `catalog::database_density`.
+- Sparse images solve. When the image yields fewer stars than it may use, the catalogue
+  read is denser than the image; when it is at least 2.5 times denser, the catalogue
+  spiral now also builds quads from the catalogue's brightest stars at the image's
+  density and adds them to the full-depth ones. And an image with fewer than 194 detections needs fewer than 30 matched stars,
+  15 % of its detections but at least 10; below 30 the solution must also have the
+  pixel scale the hint implies (within 10 %) and a star-level rms of at most 0.5 px.
+  Narrow SkyMapper frames and LCO frames with few stars gain most.
+  `SolveParams::fov` is documented as the long side, which is what the CLI passes; the
+  scale check relies on it.
+
 - The Astrometry.net blind path ranks its vote cells by (RA, Dec, ln scale) with the RA
   bin widened by 1/cos δ, smooths each over its neighbours and verifies the medoid of
   the strongest bucket rather than the first hypothesis of each cell.
+
+### Fixed
+
+- The plate fit's similarity check compared the lengths of the matrix *rows*, which a
+  sheared plate passes: a tier-D control solved to a plate stretching the image three
+  times more one way than the other. `solve_plate_constants` now requires the ratio of
+  the plate's two singular values to be at most 1.08 (`math::lsq::plate_anisotropy`,
+  `MAX_PLATE_ANISOTROPY`); the largest on any correct corpus solve is 1.027.
+  `ArcsecError::BadSolution::ratio` now carries that singular-value ratio rather than
+  the squared row-norm ratio, and its message changes accordingly.
+- A few wrong quads in the winning vote could drag the plate fit off a similarity, and
+  the search abandoned the right position. The quad path now sigma-clips the matched
+  quad centroids before fitting, as the triangle path already did. Nebulous and crowded fields (Coalsack, B68, M16), coarse DSS and SHASSA fields
+  and TESS frames gain most.
 
 ## [0.2.0] - 2026-10-01
 
