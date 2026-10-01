@@ -11,6 +11,16 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Fixed
+
+- The plate fit's similarity check compared the lengths of the matrix *rows*, which a
+  sheared plate passes: a tier-D control solved to a plate stretching the image three
+  times more one way than the other. `solve_plate_constants` now requires the ratio of
+  the plate's two singular values to be at most 1.08 (`math::lsq::plate_anisotropy`,
+  `MAX_PLATE_ANISOTROPY`); the largest on any correct corpus solve is 1.027.
+  `ArcsecError::BadSolution::ratio` now carries that singular-value ratio rather than
+  the squared row-norm ratio, and its message changes accordingly.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added

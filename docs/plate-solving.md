@@ -624,11 +624,21 @@ The `(a,b,d,e)` sub-matrix carries scale, rotation and parity:
     parity   = sign(a·e − b·d)                                [flipped if < 0]
 ```
 
-arcsec sanity-checks the solution by requiring the two scales to agree:
+arcsec sanity-checks the solution by requiring it to be a similarity transform: the
+two singular values of the `(a,b,d,e)` matrix must agree.
 
 ```
-    0.9 ≤ (a² + b²) / (d² + e²) ≤ 1.1        else  ArcsecError::BadSolution
+    q = ½·√((a+e)² + (d−b)²)      r = ½·√((a−e)² + (d+b)²)
+    σmax / σmin = (q + r) / |q − r|  ≤  1.08      else  ArcsecError::BadSolution
 ```
+
+(`math::lsq::plate_anisotropy`, `MAX_PLATE_ANISOTROPY`.) Until 2026-10 the check
+compared the two *row* norms, `0.9 ≤ (a² + b²)/(d² + e²) ≤ 1.1`, which a sheared matrix
+passes: the tier-D false positive `neg_hint_3` (offset hint, 0.1.2) had
+`a, b, d, e = 0.78, −2.62, −0.90, −2.48`, rows 2.73 and 2.64 long but columns 1.19
+and 3.61, a singular-value ratio of 3.03. On the corpus the largest ratio of any correct
+solve is 1.027 (TESS FFIs, whose distortion the linear plate absorbs as a little
+anisotropy); every other correct solve is at most 1.0066.
 
 The FITS `CD` matrix is the same thing in degrees:
 
@@ -995,7 +1005,8 @@ The blind front-end still applies it.
   │        if matches < min_quads = 3 + n/140:  next position                │
   │                                                                          │
   │        extract_star_pairs(): (image quad centroid, catalogue centroid)   │
-  │        solve_plate_constants(): Givens-rotation LSQ, 6 constants         │
+  │        solve_plate_constants(): Givens-rotation LSQ, 6 constants;        │
+  │           refused unless a similarity (singular-value ratio ≤ 1.08)      │
   │        verify_and_refit(): project every catalogue star through the      │
   │           plate, pair it with the nearest unused detected star within    │
   │           6 → 3 → 2 px, re-fit on those pairs at each radius             │
@@ -1075,6 +1086,7 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `VERIFY_RADII` | 6, 3, 2 px | `solver.rs` | star-level verification match radii |
 | `MIN_VERIFIED_STARS` | 30 | `solver.rs` | stars that must agree to accept a position |
 | `MIN_VERIFY_SPREAD` | 0.20 | `solver.rs` | spread of those stars, fraction of the half-diagonal |
+| `MAX_PLATE_ANISOTROPY` | 1.08 | `math/lsq.rs` | largest singular-value ratio σmax/σmin of a plate fit's linear part; every fit through `solve_plate_constants` (quad, star-level, blind) must be this close to a similarity |
 | `TETRA_TOL_FACTOR` | 0.3 | `quads/tetra.rs` | triangle tolerance scaling |
 | `SCALE_STEP` / `ANGLE_STEP` | 0.05 / 10° | `quads/vote.rs` | vote bin sizes |
 | `BAND_OVERLAP` | 90 rows | `detection/stars.rs` | overlap between parallel detection bands |

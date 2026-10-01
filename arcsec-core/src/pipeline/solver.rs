@@ -99,7 +99,7 @@ fn sigma_clip_pairs(
             break;
         }
         // Unchecked: the first fit is made on the contaminated set, and gross
-        // outliers can skew it past solve_plate_constants' scale check even though
+        // outliers can skew it past solve_plate_constants' similarity check even though
         // clipping them is exactly what would fix it.
         let Ok(plate) = fit_affine(&img_pos, &cat_pos) else {
             break;
@@ -1202,8 +1202,8 @@ mod tests {
 
     /// `sigma_clip_pairs` gives up as soon as a fit fails, and the first fit is made
     /// on the contaminated set. Five gross outliers in 45 pairs are enough to skew
-    /// that fit past the 10% x/y scale check in `solve_plate_constants`
-    /// (`BadSolution`, ratio 1.135 here), so nothing is clipped and all 45 come
+    /// that fit past the similarity check in `solve_plate_constants`
+    /// (`BadSolution`), so nothing is clipped and all 45 come
     /// back. In `try_position` the Tetra path then refits the same contaminated set,
     /// fails the same check, and abandons a position whose 40 good pairs would
     /// have solved it. The clipper does not work in exactly the case it exists for.

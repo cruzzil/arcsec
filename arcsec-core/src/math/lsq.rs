@@ -87,8 +87,41 @@ pub fn lsq_fit(a_matrix: &[Vec<f64>], b_matrix: &[f64]) -> Result<Vec<f64>> {
     Ok(x)
 }
 
-/// Solves for all 6 plate constants by calling `lsq_fit` for each axis.
-/// Validates that the X and Y pixel scales are within 10% of each other.
+/// Largest singular-value ratio σmax/σmin of the plate's linear part accepted by
+/// [`solve_plate_constants`].
+///
+/// A plate maps pixels to the sky by a rotation, a possible flip and one scale, so
+/// its 2×2 linear part `[[a, b], [d, e]]` has two equal singular values. Over the
+/// 635-image corpus the largest ratio on any correct solve was 1.027 (TESS FFIs,
+/// whose distortion a linear plate absorbs as a little anisotropy) and every other
+/// correct solve was at most 1.0066; a sheared false positive came out at 3.03.
+pub const MAX_PLATE_ANISOTROPY: f64 = 1.08;
+
+/// Ratio σmax/σmin of the singular values of the plate's 2×2 linear part
+/// `[[a, b], [d, e]]`: 1 for a similarity transform (rotation, flip, one scale),
+/// larger the more the plate stretches or shears; infinite if it is singular.
+///
+/// This is the measure of non-conformality that cannot be fooled. Comparing the
+/// norms of the two *rows* (the scale along each sky axis) is not enough: a
+/// sheared matrix can have rows of equal length and still map a square to a
+/// long thin parallelogram.
+#[must_use]
+pub fn plate_anisotropy(plate: &PlateConstants) -> f64 {
+    let (a, b, d, e) = (plate.a, plate.b, plate.d, plate.e);
+    // Split M into a similarity and an anti-similarity part: σ = q ± r. This is
+    // exact for a similarity (r = 0), where the eigenvalues of MᵀM cancel badly.
+    let q = (0.5 * (a + e)).hypot(0.5 * (d - b));
+    let r = (0.5 * (a - e)).hypot(0.5 * (d + b));
+    let small = (q - r).abs();
+    if small > 0.0 {
+        (q + r) / small
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// Solves for all 6 plate constants by calling `lsq_fit` for each axis, and
+/// checks that the result is a similarity transform.
 ///
 /// `img_xy[i]` and `ref_xy[i]` must be the same star; at least three pairs are needed.
 ///
@@ -96,26 +129,24 @@ pub fn lsq_fit(a_matrix: &[Vec<f64>], b_matrix: &[f64]) -> Result<Vec<f64>> {
 ///
 /// - [`ArcsecError::Singular`] if the slices differ in length, hold fewer than three
 ///   pairs, or the points are degenerate (e.g. collinear).
-/// - [`ArcsecError::BadSolution`] if the X and Y scales disagree by more than 10%.
+/// - [`ArcsecError::BadSolution`] if the plate's singular-value ratio
+///   ([`plate_anisotropy`]) exceeds [`MAX_PLATE_ANISOTROPY`]: the fit stretches or
+///   shears the image, which no real optical system does at this level.
 pub fn solve_plate_constants(
     img_xy: &[(f64, f64)],
     ref_xy: &[(f64, f64)],
 ) -> Result<PlateConstants> {
     let plate = fit_affine(img_xy, ref_xy)?;
-
-    // Check that X and Y pixel scales agree within 10% (a larger disagreement means the fit is not a similarity transform)
-    let xy_sqr_ratio =
-        (plate.a.powi(2) + plate.b.powi(2)) / (1e-8 + plate.d.powi(2) + plate.e.powi(2));
-    if !(0.9..=1.1).contains(&xy_sqr_ratio) {
-        return Err(ArcsecError::BadSolution {
-            ratio: xy_sqr_ratio,
-        });
+    let ratio = plate_anisotropy(&plate);
+    // A NaN ratio (from non-finite input) is rejected too.
+    if ratio.is_nan() || ratio > MAX_PLATE_ANISOTROPY {
+        return Err(ArcsecError::BadSolution { ratio });
     }
     Ok(plate)
 }
 
 /// The least-squares affine fit behind [`solve_plate_constants`], without its
-/// scale-agreement check.
+/// similarity check.
 ///
 /// For outlier rejection, where the first fit is made on contaminated pairs and
 /// can be skewed past that check even though clipping would recover it.
@@ -231,7 +262,7 @@ mod tests {
     /// Bad scale ratio → `BadSolution` error
     #[test]
     fn bad_solution_ratio() {
-        // X scale = 1, Y scale = 10 → ratio = 0.01 → out of [0.9, 1.1]
+        // X scale = 1, Y scale = 10 → singular-value ratio 10
         let img: Vec<(f64, f64)> = (0..10)
             .map(|i| (i as f64 * 50.0 + 1.0, i as f64 * 3.0 + 1.0))
             .collect();
@@ -240,6 +271,89 @@ mod tests {
             solve_plate_constants(&img, &rf),
             Err(ArcsecError::BadSolution { .. })
         ));
+    }
+
+    /// The plate of a tier-D false positive (`neg_hint_3`, offset hint): rows of
+    /// nearly equal length, so the old row-norm check (squared ratio 1.07, inside
+    /// 0.9-1.1) passed it, but the columns are 1.19 and 3.61 long and it maps a
+    /// square to a parallelogram three times longer than it is wide.
+    #[test]
+    fn a_sheared_plate_with_equal_row_norms_is_rejected() {
+        let p = PlateConstants {
+            a: 0.78,
+            b: -2.62,
+            c: 0.0,
+            d: -0.90,
+            e: -2.48,
+            f: 0.0,
+        };
+        let row_sq = (p.a * p.a + p.b * p.b) / (p.d * p.d + p.e * p.e);
+        assert!((0.9..=1.1).contains(&row_sq), "row ratio {row_sq}");
+        let r = plate_anisotropy(&p);
+        assert!((r - 3.03).abs() < 0.01, "singular-value ratio {r}");
+
+        // The same matrix produced by a fit is refused, with the ratio reported.
+        let img = grid_stars();
+        let cat: Vec<(f64, f64)> = img
+            .iter()
+            .map(|&(x, y)| (p.a * x + p.b * y + 7.0, p.d * x + p.e * y - 3.0))
+            .collect();
+        match solve_plate_constants(&img, &cat) {
+            Err(ArcsecError::BadSolution { ratio }) => assert!((ratio - r).abs() < 1e-6),
+            other => panic!("expected BadSolution, got {other:?}"),
+        }
+
+        // A pure shear with rows of exactly equal length: [[1, s], [s, 1]].
+        let s = 0.2;
+        let cat: Vec<(f64, f64)> = img.iter().map(|&(x, y)| (x + s * y, s * x + y)).collect();
+        assert!(matches!(
+            solve_plate_constants(&img, &cat),
+            Err(ArcsecError::BadSolution { .. })
+        ));
+    }
+
+    /// Every similarity passes - any rotation, either parity, any scale - and so
+    /// does the slight anisotropy a distorted wide field leaves in a linear plate.
+    #[test]
+    fn similarities_are_accepted_at_any_rotation_and_parity() {
+        let img = grid_stars();
+        for flip in [1.0, -1.0] {
+            for k in 0..12 {
+                let (sc, r) = (0.37 + 1.9 * k as f64, k as f64 * 0.53);
+                let (cs, sn) = (sc * r.cos(), sc * r.sin());
+                let cat: Vec<(f64, f64)> = img
+                    .iter()
+                    .map(|&(x, y)| (flip * cs * x - sn * y + 11.0, flip * sn * x + cs * y - 5.0))
+                    .collect();
+                let p = solve_plate_constants(&img, &cat).unwrap();
+                assert!((plate_anisotropy(&p) - 1.0).abs() < 1e-9);
+                assert_close(p.a, flip * cs, 1e-9);
+                assert_close(p.b, -sn, 1e-9);
+            }
+        }
+        // 3% stretch along a 30-degree axis (TESS-like): accepted. 10%: refused.
+        for (stretch, ok) in [(1.03, true), (1.10, false)] {
+            let (s, c) = core::f64::consts::FRAC_PI_6.sin_cos();
+            let cat: Vec<(f64, f64)> = img
+                .iter()
+                .map(|&(x, y)| {
+                    let (u, v) = (c * x + s * y, -s * x + c * y);
+                    let u = u * stretch;
+                    (c * u - s * v, s * u + c * v)
+                })
+                .collect();
+            assert_eq!(solve_plate_constants(&img, &cat).is_ok(), ok, "{stretch}");
+        }
+        // A singular plate is infinitely anisotropic.
+        let zero = PlateConstants {
+            a: 1.0,
+            b: 2.0,
+            c: 0.0,
+            d: 2.0,
+            e: 4.0,
+            f: 0.0,
+        };
+        assert!(plate_anisotropy(&zero).is_infinite());
     }
 
     /// `lsq_fit` directly: simple 1-unknown system ax = b → x = b/a
