@@ -187,6 +187,12 @@ pub const AUTO_SPIRAL_FIELDS: f64 = 5.0;
 /// The smallest stage-one spiral radius, radians (1°).
 const AUTO_SPIRAL_MIN: f64 = 1.0 * core::f64::consts::PI / 180.0;
 
+/// Smallest `-r` at which an installed index is consulted automatically, radians
+/// (10°). Below it a failed search is cheap anyway (about a second on the corpus),
+/// and consulting the index roughly doubled it for nothing; above it the spiral's
+/// cost dominates and the index adds a few percent to a failure.
+const AUTO_MIN_RADIUS: f64 = 10.0 * core::f64::consts::PI / 180.0;
+
 /// An arcsec index to use, and whether the user named it.
 pub struct OwnIndex {
     path: PathBuf,
@@ -194,8 +200,9 @@ pub struct OwnIndex {
 }
 
 /// The arcsec index for this solve: the one `--index` names, if it names one;
-/// otherwise, when the search radius reaches past [`AUTO_SPIRAL_FIELDS`] fields,
-/// one installed in the catalogue directory or beside the star database.
+/// otherwise, when the search radius reaches past [`AUTO_SPIRAL_FIELDS`] fields and
+/// is at least 10°, one installed in the catalogue directory or beside the star
+/// database.
 pub fn arcsec_index_for(
     explicit: Option<&PathBuf>,
     template: &arcsec_core::pipeline::SolveParams,
@@ -206,7 +213,9 @@ pub fn arcsec_index_for(
             explicit: true,
         });
     }
-    if template.search_radius <= stage_one_radius(template) {
+    if template.search_radius <= stage_one_radius(template)
+        || template.search_radius < AUTO_MIN_RADIUS
+    {
         return None;
     }
     find_arcsec_index(&crate::catalog_cmd::default_dir())
