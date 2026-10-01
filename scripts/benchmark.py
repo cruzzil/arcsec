@@ -15,13 +15,23 @@ Usage:
                          [--workdir /tmp/arcsec_bench_out] [--radius 5] [--timeout 300]
                          [--offset-hint 0.0] [--method quads|tetra] [--stars N]
                          [--max-corner-err 5] [--tier A] [--id foo] [--csv out.csv]
-                         [--astap ~/astap_cli] [--by source,tier,fov]
+                         [--astap ~/astap_cli] [--astap-db auto|d80]
+                         [--seiza seiza] [--seiza-data DIR] [--seiza-mode hinted|astap]
+                         [--seiza-threads N] [--blind INDEX_DIR] [--order a,b,c]
+                         [--taskset CPUS] [--by source,tier,fov]
 
 --corpus switches to the expanded corpus (scripts/corpus.tsv, images in
 resources/corpus). --tier, --id, --set, --source and --dataset are repeatable; --id
 takes precedence over the rest, which combine with AND. --auto-db omits -D so arcsec
-picks the database from the field size. --astap also solves every image with ASTAP (-D
-from --db-name) and prints a head-to-head. Use --jobs 1 for meaningful timings.
+picks the database from the field size. --astap also solves every image with ASTAP and
+prints a head-to-head; ASTAP gets -D from --astap-db, which defaults to `auto` (no -D,
+ASTAP chooses by field size) with --auto-db and to --db-name otherwise. --seiza does
+the same for seiza (https://github.com/theatrus/seiza), with the same position, scale
+and radius; see run_seiza for how it is driven. Every solver is scored by the same
+rules. Use --jobs 1 for meaningful timings, and alternate --order between rounds.
+
+--blind INDEX_DIR compares blind solving: arcsec with -i INDEX_DIR (astrometry.net
+index files) and seiza against its prebuilt index (--seiza-index). Both keep the scale.
 
 A reported solve whose worst corner error exceeds --max-corner-err arcsec (or
 --max-corner-px pixels, whichever is larger) counts as a false positive. When the truth has SIP or TPV distortion, the linear plate model arcsec
@@ -44,6 +54,7 @@ No third-party dependencies (no astropy/numpy).
 
 import argparse
 import concurrent.futures
+import json
 import math
 import os
 import re
@@ -136,30 +147,64 @@ def score(truth, sol, naxis1, naxis2):
     return errs
 
 
-def run_astap(args, path, hint_ra, hint_dec, fov_deg, radius, out_base, truth, naxis1,
-              naxis2, limit):
+# Result keys per solver. arcsec's keep their historical (unprefixed) names so CSVs
+# from earlier runs stay comparable.
+SOLVERS = ("arcsec", "astap", "seiza")
+LABEL = {"arcsec": "arcsec", "astap": "ASTAP", "seiza": "seiza"}
+KEYS = {
+    "arcsec": {"status": "status", "secs": "secs", "centre": "err_centre",
+               "corner": "err_corner", "scale": "scale_err_pct", "note": "note"},
+    "astap": {"status": "astap_status", "secs": "astap_secs", "centre": "astap_centre",
+              "corner": "astap_corner", "scale": "astap_scale_err", "note": "astap_note"},
+    "seiza": {"status": "seiza_status", "secs": "seiza_secs", "centre": "seiza_centre",
+              "corner": "seiza_corner", "scale": "seiza_scale_err", "note": "seiza_note"},
+}
+
+
+def solver_cmd(args, cmd):
+    """Prefix a solver command line with `taskset` when --taskset is given."""
+    return (["taskset", "-c", args.taskset] + cmd) if args.taskset else cmd
+
+
+def score_into(r, name, sol, truth, naxis1, naxis2, limit):
+    """Score solution `sol` for solver `name` into result dict `r` (OK or WRONG;
+    INEXACT is decided later, once the linear floor is known to apply)."""
+    k = KEYS[name]
+    errs = score(truth, sol, naxis1, naxis2)
+    r[k["centre"]] = round(errs[0], 3)
+    r[k["corner"]] = round(max(errs[1:]), 3)
+    r[k["scale"]] = round(abs(sol.pixscale() - truth.pixscale()) / truth.pixscale() * 100.0, 5)
+    r[k["status"]] = "WRONG" if r[k["corner"]] > limit else "OK"
+    return errs
+
+
+def run_astap(args, ctx):
     """Solve with astap_cli and score it the same way. Returns a dict."""
     r = {"astap_status": "", "astap_secs": 0.0, "astap_centre": None,
          "astap_corner": None, "astap_scale_err": None}
+    out_base = ctx["out_base"] + "_astap"
     for ext in (".wcs", ".ini"):
         try:
             os.remove(out_base + ext)
         except OSError:
             pass
-    cmd = [args.astap, "-f", path, "-d", args.db, "-D", args.db_name,
-           "-ra", f"{(hint_ra % 360.0) / 15.0:.9f}",
-           "-spd", f"{hint_dec + 90.0:.9f}",
-           "-fov", f"{fov_deg:.9f}",
-           "-r", str(radius),
-           "-o", out_base]
-    t0 = time.time()
+    cmd = [args.astap, "-f", ctx["path"], "-d", args.db]
+    if args.astap_db != "auto":
+        cmd += ["-D", args.astap_db]
+    cmd += ["-ra", f"{(ctx['hint_ra'] % 360.0) / 15.0:.9f}",
+            "-spd", f"{ctx['hint_dec'] + 90.0:.9f}",
+            "-fov", f"{ctx['fov_hint']:.9f}",
+            "-r", str(ctx["radius"]),
+            "-o", out_base]
+    t0 = time.perf_counter()
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+        subprocess.run(solver_cmd(args, cmd), capture_output=True, text=True,
+                       timeout=args.timeout)
     except subprocess.TimeoutExpired:
         r["astap_status"] = "TIMEOUT"
-        r["astap_secs"] = round(time.time() - t0, 2)
+        r["astap_secs"] = round(time.perf_counter() - t0, 3)
         return r
-    r["astap_secs"] = round(time.time() - t0, 2)
+    r["astap_secs"] = round(time.perf_counter() - t0, 3)
 
     ini = parse_astap_ini(out_base + ".ini")
     if not ini.get("PLTSOLVD"):
@@ -169,11 +214,135 @@ def run_astap(args, path, hint_ra, hint_dec, fov_deg, radius, out_base, truth, n
     if sol is None:
         r["astap_status"] = "BAD_WCS"
         return r
-    errs = score(truth, sol, naxis1, naxis2)
-    r["astap_centre"] = round(errs[0], 3)
-    r["astap_corner"] = round(max(errs[1:]), 3)
-    r["astap_scale_err"] = round(abs(sol.pixscale() - truth.pixscale()) / truth.pixscale() * 100.0, 5)
-    r["astap_status"] = "WRONG" if r["astap_corner"] > limit else "OK"
+    score_into(r, "astap", sol, ctx["truth"], ctx["naxis1"], ctx["naxis2"], ctx["limit"])
+    return r
+
+
+def seiza_wcs_header(w):
+    """A seiza worker `wcs` object as FITS-style header keys (CRPIX is 1-based)."""
+    h = {"CRVAL1": w["crval"][0], "CRVAL2": w["crval"][1],
+         "CRPIX1": w["crpix"][0] + (1 - int(w.get("pixelOrigin", 1))),
+         "CRPIX2": w["crpix"][1] + (1 - int(w.get("pixelOrigin", 1))),
+         "CD1_1": w["cd"][0][0], "CD1_2": w["cd"][0][1],
+         "CD2_1": w["cd"][1][0], "CD2_2": w["cd"][1][1],
+         "CTYPE1": "RA---TAN", "CTYPE2": "DEC--TAN"}
+    sip = w.get("sip")
+    if sip:
+        h["CTYPE1"], h["CTYPE2"] = "RA---TAN-SIP", "DEC--TAN-SIP"
+        h["A_ORDER"] = h["B_ORDER"] = sip.get("order", 0)
+        for name, key in (("a", "A"), ("b", "B")):
+            for p, q, v in sip.get(name, []):
+                h[f"{key}_{p}_{q}"] = v
+    return h
+
+
+def run_seiza(args, ctx):
+    """Solve with seiza and score it the same way. Returns a dict.
+
+    --seiza-mode hinted (default) drives seiza's native hinted solver through a one-shot
+    `seiza worker` process: the same `seiza::solve::solve` call `seiza solve` makes, but
+    with the WCS returned at full precision as JSON (`seiza solve` prints only a rounded
+    summary). --blind sends a blind request against the prebuilt index instead.
+    --seiza-mode astap runs seiza's ASTAP-compatible command line, as N.I.N.A. would;
+    that mode clamps the radius to 0.5-3 deg and falls back to a blind solve when the
+    hinted one fails."""
+    r = {"seiza_status": "", "seiza_secs": 0.0, "seiza_centre": None, "seiza_corner": None,
+         "seiza_scale_err": None, "seiza_note": "", "seiza_core_secs": None,
+         "seiza_load_ms": None, "seiza_detect_ms": None, "seiza_solve_ms": None}
+    env = dict(os.environ)
+    if args.seiza_threads is not None:
+        env["RAYON_NUM_THREADS"] = str(args.seiza_threads)
+    scale = ctx["fov_hint"] * 3600.0 / ctx["naxis2"]
+    out_base = ctx["out_base"] + "_seiza"
+    stdin = None
+
+    if args.seiza_mode == "astap":
+        try:
+            os.remove(out_base + ".ini")
+        except OSError:
+            pass
+        if args.seiza_data:
+            env["SEIZA_CATALOG_DIR"] = args.seiza_data
+        cmd = [args.seiza, "-f", ctx["path"], "-fov", f"{ctx['fov_hint']:.9f}"]
+        if args.blind:
+            cmd += ["-r", "180"]
+        else:
+            cmd += ["-ra", f"{(ctx['hint_ra'] % 360.0) / 15.0:.9f}",
+                    "-spd", f"{ctx['hint_dec'] + 90.0:.9f}", "-r", str(ctx["radius"])]
+        cmd += ["-o", out_base]
+    else:
+        cmd = [args.seiza, "worker"]
+        if args.seiza_data:
+            cmd += ["--data", args.seiza_data]
+        if args.blind:
+            cmd += ["--index", args.seiza_index or args.seiza_data]
+            tol = 1.0 + args.blind_scale_tol
+            params = {"imagePath": ctx["path"], "mode": "blind",
+                      "blind": {"minScaleArcsecPerPixel": scale / tol,
+                                "maxScaleArcsecPerPixel": scale * tol}}
+        else:
+            params = {"imagePath": ctx["path"], "mode": "hinted",
+                      "hint": {"centerRaDeg": ctx["hint_ra"] % 360.0,
+                               "centerDecDeg": ctx["hint_dec"],
+                               "radiusDeg": float(ctx["radius"]),
+                               "scaleArcsecPerPixel": scale,
+                               "scaleTolerance": args.seiza_scale_tol},
+                      "detection": {"maxStars": args.seiza_stars}}
+        stdin = (json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                             "params": {"protocolVersion": 1,
+                                        "clientName": "arcsec-benchmark"}}) + "\n"
+                 + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "solve",
+                               "params": params}) + "\n")
+
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(solver_cmd(args, cmd), input=stdin, capture_output=True,
+                              text=True, timeout=args.timeout, env=env)
+    except subprocess.TimeoutExpired:
+        r["seiza_status"] = "TIMEOUT"
+        r["seiza_secs"] = round(time.perf_counter() - t0, 3)
+        return r
+    r["seiza_secs"] = round(time.perf_counter() - t0, 3)
+
+    if args.seiza_mode == "astap":
+        ini = parse_astap_ini(out_base + ".ini")
+        if not ini.get("PLTSOLVD"):
+            r["seiza_status"] = "NO_SOLVE"
+            r["seiza_note"] = str(ini.get("ERROR", f"exit={proc.returncode}"))[:80]
+            return r
+        sol = Wcs.from_header(ini)
+    else:
+        resp = None
+        for line in proc.stdout.splitlines():
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == 2:
+                resp = msg
+        if resp is None:
+            r["seiza_status"] = "ERROR"
+            r["seiza_note"] = (proc.stderr.strip().splitlines() or [f"exit={proc.returncode}"])[-1][:80]
+            return r
+        if "error" in resp:
+            msg = str(resp["error"].get("message", ""))
+            # An input it cannot read (e.g. tile-compressed .fits.fz) is not a search
+            # failure; report it separately.
+            r["seiza_status"] = "UNREADABLE" if "failed to open" in msg else "NO_SOLVE"
+            r["seiza_note"] = msg[-120:] if r["seiza_status"] == "UNREADABLE" else msg[:80]
+            return r
+        res = resp["result"]
+        t = res.get("timings", {})
+        r["seiza_core_secs"] = round(t.get("totalMs", 0.0) / 1000.0, 3)
+        r["seiza_load_ms"] = round(t.get("loadMs", 0.0), 1)
+        r["seiza_detect_ms"] = round(t.get("detectMs", 0.0), 1)
+        r["seiza_solve_ms"] = round(t.get("solveMs", 0.0), 1)
+        r["seiza_note"] = f"matched={res.get('matchedStars')} rms={res.get('rmsArcsec', 0):.2f}"
+        sol = Wcs.from_header(seiza_wcs_header(res["wcs"]), keep_sip_constant=True)
+    if sol is None:
+        r["seiza_status"] = "BAD_WCS"
+        return r
+    score_into(r, "seiza", sol, ctx["truth"], ctx["naxis1"], ctx["naxis2"], ctx["limit"])
     return r
 
 
@@ -253,19 +422,42 @@ def run_one(entry, args):
     radius = opts.get("radius", args.radius)
 
     out_base = os.path.join(args.workdir, iid)
+    ctx = {"path": path, "hint_ra": hint_ra, "hint_dec": hint_dec, "fov_hint": fov_hint,
+           "radius": radius, "out_base": out_base, "truth": truth, "naxis1": naxis1,
+           "naxis2": naxis2, "limit": limit}
+    runners = {"arcsec": run_arcsec, "astap": run_astap, "seiza": run_seiza}
+    res["order"] = ",".join(args.order)
+    for name in args.order:
+        res.update(runners[name](args, ctx))
+    return res
+
+
+def run_arcsec(args, ctx):
+    """Solve with arcsec and score it. Returns a dict of arcsec's (unprefixed) keys."""
+    res = {"status": "", "secs": 0.0, "err_centre": None, "err_corner": None,
+           "scale_err_pct": None, "rot_err_deg": None, "nstars": None, "nquads": None,
+           "note": ""}
+    out_base = ctx["out_base"]
     for ext in (".wcs", ".ini", ".log"):
         try:
             os.remove(out_base + ext)
         except OSError:
             pass
 
-    cmd = [args.arcsec, "-f", path, "-d", args.db]
+    hint_ra, hint_dec, radius = ctx["hint_ra"], ctx["hint_dec"], ctx["radius"]
+    cmd = [args.arcsec, "-f", ctx["path"], "-d", args.db]
     if not args.auto_db:
         cmd += ["-D", args.db_name]
+    if args.blind:
+        # Blind: the index estimates the position. Should it fail, arcsec falls back to
+        # the hint, so the hint is the antipode of the truth with -r 0: a fallback can
+        # then never find the field.
+        hint_ra, hint_dec, radius = hint_ra + 180.0, -hint_dec, 0
+        cmd += ["-i", args.blind]
     cmd += [
         "--ra", f"{(hint_ra % 360.0) / 15.0:.9f}",
         "--spd", f"{hint_dec + 90.0:.9f}",
-        "--fov", f"{fov_hint:.9f}",
+        "--fov", f"{ctx['fov_hint']:.9f}",
         "-r", str(radius),
         "-o", out_base,
     ]
@@ -277,43 +469,33 @@ def run_one(entry, args):
         cmd += ["--threads", str(args.threads)]
     cmd += args.extra_arg
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+        proc = subprocess.run(solver_cmd(args, cmd), capture_output=True, text=True,
+                              timeout=args.timeout)
         rc = proc.returncode
     except subprocess.TimeoutExpired:
         res["status"] = "TIMEOUT"
-        res["secs"] = round(time.time() - t0, 2)
+        res["secs"] = round(time.perf_counter() - t0, 3)
         return res
-    res["secs"] = round(time.time() - t0, 2)
-
-    def with_astap(r):
-        if args.astap:
-            r.update(run_astap(args, path, hint_ra, hint_dec, fov_hint, radius,
-                               out_base + "_astap", truth, naxis1, naxis2, limit))
-        return r
+    res["secs"] = round(time.perf_counter() - t0, 3)
 
     if rc != 0 or not os.path.exists(out_base + ".wcs"):
         res["status"] = "NO_SOLVE"
         res["note"] = f"exit={rc}"
-        return with_astap(res)
+        return res
 
     sol_h = parse_wcs_file(out_base + ".wcs")
     # A solution's SIP terms are read as written (see fitslite.Wcs.from_header).
     sol = Wcs.from_header(sol_h, keep_sip_constant=True)
     if sol is None:
         res["status"] = "BAD_WCS"
-        return with_astap(res)
+        return res
 
-    errs = score(truth, sol, naxis1, naxis2)
-    res["status"] = "OK"
-    res["err_centre"] = round(errs[0], 3)
-    res["err_corner"] = round(max(errs[1:]), 3)
-    res["scale_err_pct"] = round(abs(sol.pixscale() - ps_deg) / ps_deg * 100.0, 5)
+    score_into(res, "arcsec", sol, ctx["truth"], ctx["naxis1"], ctx["naxis2"], ctx["limit"])
+    truth = ctx["truth"]
     dr = abs(sol.rotation() - truth.rotation()) % 360.0
     res["rot_err_deg"] = round(min(dr, 360.0 - dr), 4)
-
-    with_astap(res)
 
     ini = out_base + ".ini"
     if os.path.exists(ini):
@@ -430,6 +612,37 @@ def main():
                     help="pass --threads to arcsec (0 = one per core)")
     ap.add_argument("--astap", default=None,
                     help="path to astap_cli; when given, solve each image with both and compare")
+    ap.add_argument("--astap-db", default=None,
+                    help="ASTAP database: a name for -D, or 'auto' to omit -D and let ASTAP "
+                         "choose by field size (default: auto with --auto-db, else --db-name)")
+    ap.add_argument("--seiza", default=None,
+                    help="path to the seiza binary; when given, solve each image with seiza too")
+    ap.add_argument("--seiza-data", default=None,
+                    help="seiza catalogue directory or file (default: seiza's own lookup, "
+                         "e.g. SEIZA_CATALOG_DIR)")
+    ap.add_argument("--seiza-index", default=None,
+                    help="seiza blind index for --blind (default: --seiza-data)")
+    ap.add_argument("--seiza-mode", choices=("hinted", "astap"), default="hinted",
+                    help="hinted: seiza's native hinted (or, with --blind, blind) solver via a "
+                         "one-shot `seiza worker`; astap: its ASTAP-compatible command line, "
+                         "which falls back to a blind solve when the hinted one fails")
+    ap.add_argument("--seiza-stars", type=int, default=200,
+                    help="detected stars seiza uses (200 is what `seiza solve` requests)")
+    ap.add_argument("--seiza-scale-tol", type=float, default=0.2,
+                    help="seiza's fractional pixel-scale tolerance (its default 0.2)")
+    ap.add_argument("--seiza-threads", type=int, default=None,
+                    help="limit seiza's thread pool (sets RAYON_NUM_THREADS)")
+    ap.add_argument("--blind", default=None, metavar="INDEX_DIR",
+                    help="blind mode: arcsec gets -i INDEX_DIR and a hint at the antipode with "
+                         "-r 0 (so only the index can find the field); seiza gets a blind "
+                         "request. Both keep the FOV/scale. Not for ASTAP")
+    ap.add_argument("--blind-scale-tol", type=float, default=0.2,
+                    help="seiza's blind scale range is scale/(1+x) .. scale*(1+x)")
+    ap.add_argument("--order", default="arcsec,astap,seiza",
+                    help="order in which the solvers run on each image (alternate it "
+                         "between rounds for timing)")
+    ap.add_argument("--taskset", default=None, metavar="CPUS",
+                    help="pin every solver process to these CPUs (taskset -c), e.g. 3")
     ap.add_argument("--max-corner-px", type=float, default=1.0,
                     help="the false-positive corner threshold is at least this many "
                          "pixels (matters only above 5\"/px)")
@@ -460,6 +673,17 @@ def main():
     args.images = os.path.abspath(args.images)
     args.dbs = installed_dbs(args.db)
     os.makedirs(args.workdir, exist_ok=True)
+    if args.astap_db is None:
+        args.astap_db = "auto" if args.auto_db else args.db_name
+    if args.seiza:
+        args.seiza = os.path.abspath(os.path.expanduser(args.seiza))
+    if args.blind and args.astap:
+        print("--blind compares arcsec and seiza only; drop --astap", file=sys.stderr)
+        return 2
+    enabled = {"arcsec": True, "astap": bool(args.astap), "seiza": bool(args.seiza)}
+    args.order = [n.strip() for n in args.order.split(",") if enabled.get(n.strip())]
+    args.order += [n for n in SOLVERS if enabled[n] and n not in args.order]
+    others = [n for n in args.order if n != "arcsec"]
 
     entries = load_manifest(args.manifest, args.images)
     if args.id:
@@ -483,38 +707,49 @@ def main():
     print(f"database : {args.db} ({'auto' if args.auto_db else args.db_name};"
           f" installed: {','.join(sorted(args.dbs)) or 'none'})")
     print(f"images   : {len(entries)} from {args.images}")
-    print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
+    if args.blind:
+        print(f"hint     : BLIND - arcsec -i {args.blind} (antipodal hint, -r 0); FOV kept")
+    else:
+        print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
+    if args.astap:
+        print(f"ASTAP    : {args.astap} (-D {args.astap_db})")
+    if args.seiza:
+        print(f"seiza    : {args.seiza} ({args.seiza_mode}{', blind' if args.blind else ''};"
+              f" data {args.seiza_data or 'default lookup'}; {args.seiza_stars} stars;"
+              f" threads {args.seiza_threads if args.seiza_threads is not None else 'default'})")
+    print(f"order    : {','.join(args.order)}"
+          + (f"   taskset -c {args.taskset}" if args.taskset else ""))
     print()
 
     results = []
 
     def astap_tag(r):
-        if not args.astap:
-            return ""
-        st = r.get("astap_status", "")
-        if st == "OK":
-            return f"   | ASTAP OK  centre={r['astap_centre']:.3f}\""
-        if st == "WRONG":
-            return f"   | ASTAP WRONG corner={r['astap_corner']:.1f}\""
-        return f"   | ASTAP {st or '-'}"
+        out = ""
+        for n in others:
+            k = KEYS[n]
+            st = r.get(k["status"], "")
+            if st == "OK":
+                out += f"   | {LABEL[n]} OK  centre={r[k['centre']]:.3f}\" {r[k['secs']]:.2f}s"
+            elif st in ("WRONG", "INEXACT"):
+                out += f"   | {LABEL[n]} {st} corner={r[k['corner']]:.1f}\""
+            else:
+                out += f"   | {LABEL[n]} {st or '-'}"
+        return out
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
         futs = {ex.submit(run_one, e, args): e for e in entries}
         for fut in concurrent.futures.as_completed(futs):
             r = fut.result()
             results.append(r)
-            if (r.get("astap_status") == "WRONG" and r["lin_floor"] is not None
-                    and r["astap_centre"] <= max(args.max_corner_err, 10.0, 2.0 * r["pixscale_as"])):
-                r["astap_status"] = "INEXACT"
-            if r["status"] == "OK" and r["err_corner"] > r.get("limit", args.max_corner_err):
+            for n in args.order:
+                k = KEYS[n]
                 # Distorted truth, right place, corners beyond what a linear plate can
                 # reach even allowing for the best linear fit: not a false positive,
-                # not a success either.
-                if r["lin_floor"] is not None and \
-                        r["err_centre"] <= max(args.max_corner_err, 10.0, 2.0 * r["pixscale_as"]):
-                    r["status"] = "INEXACT"
-                else:
-                    r["status"] = "WRONG"
+                # not a success either. Applied to every solver alike.
+                if (r.get(k["status"]) == "WRONG" and r["lin_floor"] is not None
+                        and r[k["centre"]] <= max(args.max_corner_err, 10.0,
+                                                  2.0 * r["pixscale_as"])):
+                    r[k["status"]] = "INEXACT"
             if args.quiet:
                 continue
             if r["status"] == "WRONG":
@@ -545,7 +780,9 @@ def main():
                 "pixscale_as", "cat_ok", "lin_floor", "err_centre", "err_corner",
                 "scale_err_pct", "rot_err_deg", "nstars", "nquads", "secs", "note",
                 "astap_status", "astap_centre", "astap_corner", "astap_scale_err",
-                "astap_secs"]
+                "astap_secs", "seiza_status", "seiza_centre", "seiza_corner",
+                "seiza_scale_err", "seiza_secs", "seiza_core_secs", "seiza_load_ms",
+                "seiza_detect_ms", "seiza_solve_ms", "seiza_note", "order"]
         with open(args.csv, "w") as f:
             f.write(",".join(cols) + "\n")
             for r in results:
@@ -625,7 +862,8 @@ def main():
         print("\n" + "-" * 78)
         print(f" BY {dim.upper()}   (tiers A/B/C/S and expect=any controls)")
         print(f"   {'':<22}{'n':>5}{'correct':>9}{'rate':>7}{'FP':>5}{'inexact':>8}{'nocat':>7}"
-              f"{'ctr med':>9}{'crn med':>9}{'t med':>8}")
+              f"{'ctr med':>9}{'crn med':>9}{'t med':>8}"
+              + "".join(f"{LABEL[n] + ' ok/FP':>14}" for n in others))
         order = sorted(groups)
         if dim == "fov":
             bands = ["<0.15", "0.15-0.3", "0.3-0.6", "0.6-1.2", "1.2-2.5", "2.5-6", "6-20", ">20", "?"]
@@ -639,61 +877,103 @@ def main():
             med = lambda v: sorted(v)[len(v) // 2] if v else float("nan")
             print(f"   {g:<22}{len(rs):>5}{len(ok):>9}{100.0 * len(ok) / len(rs):>6.0f}%{len(fp):>5}{len(ie):>8}"
                   f"{len(nc):>7}{med([r['err_centre'] for r in ok]):>8.2f}\""
-                  f"{med([r['err_corner'] for r in ok]):>8.2f}\"{med([r['secs'] for r in ok]):>7.2f}s")
+                  f"{med([r['err_corner'] for r in ok]):>8.2f}\"{med([r['secs'] for r in ok]):>7.2f}s"
+                  + "".join(f"{sum(r.get(KEYS[n]['status']) == 'OK' for r in rs):>9}"
+                            f"/{sum(r.get(KEYS[n]['status']) == 'WRONG' for r in rs):<4}"
+                            for n in others))
 
-    if args.astap:
+    if others:
+        names = args.order
         pv = [r for r in results if r["tier"] in ("A", "B", "C", "S")]
-        p_ok = [r for r in pv if r["status"] == "OK"]
-        p_wr = [r for r in pv if r["status"] == "WRONG"]
-        a_ok = [r for r in pv if r.get("astap_status") == "OK"]
-        a_wr = [r for r in pv if r.get("astap_status") == "WRONG"]
-        both = [r for r in pv if r["status"] == "OK" and r.get("astap_status") == "OK"]
-        only_p = [r for r in pv if r["status"] == "OK" and r.get("astap_status") != "OK"]
-        only_a = [r for r in pv if r["status"] != "OK" and r.get("astap_status") == "OK"]
-        neither = [r for r in pv if r["status"] != "OK" and r.get("astap_status") != "OK"]
-        d_astap = [r for r in tierd if r.get("astap_status") == "WRONG"
-                   or (r["expect"] == "nosolve" and r.get("astap_status") == "OK")]
+        st = lambda r, n: r.get(KEYS[n]["status"])
+        ok = {n: [r for r in pv if st(r, n) == "OK"] for n in names}
 
+        def tierd_fp(n):
+            return [r for r in tierd if st(r, n) == "WRONG"
+                    or (r["expect"] == "nosolve" and st(r, n) in ("OK", "INEXACT"))]
+
+        def pct(v, q):
+            v = sorted(v)
+            return v[min(len(v) - 1, int(q * len(v)))] if v else float("nan")
+
+        cols = "".join(f"{LABEL[n]:>12}" for n in names)
         print("\n" + "=" * 78)
-        print(" HEAD TO HEAD vs ASTAP  (tiers A/B/C/S, n=%d)" % len(pv))
+        print(" HEAD TO HEAD  (tiers A/B/C/S, n=%d)" % len(pv))
         print("=" * 78)
-        print(f"  {'':<22}{'arcsec':>12}{'ASTAP':>12}")
-        print(f"  {'correct':<22}{len(p_ok):>12}{len(a_ok):>12}")
-        print(f"  {'false positives':<22}{len(p_wr):>12}{len(a_wr):>12}")
-        print(f"  {'no solve':<22}{len(pv)-len(p_ok)-len(p_wr):>12}{len(pv)-len(a_ok)-len(a_wr):>12}")
+        print(f"  {'':<26}{cols}")
+        print(f"  {'correct':<26}" + "".join(f"{len(ok[n]):>12}" for n in names))
+        print(f"  {'false positives':<26}"
+              + "".join(f"{sum(st(r, n) == 'WRONG' for r in pv):>12}" for n in names))
+        print(f"  {'inexact (distortion)':<26}"
+              + "".join(f"{sum(st(r, n) == 'INEXACT' for r in pv):>12}" for n in names))
+        print(f"  {'no solve / error':<26}"
+              + "".join(f"{sum(st(r, n) not in ('OK', 'WRONG', 'INEXACT') for r in pv):>12}"
+                        for n in names))
         if tierd:
-            print(f"  {'tier D false pos.':<22}{len([r for r in tierd if is_fp(r)]):>12}{len(d_astap):>12}")
+            print(f"  {'tier D false positives':<26}"
+                  + "".join(f"{len(tierd_fp(n)):>12}" for n in names))
 
-        def stat(rs, kc, kk, ks, kt):
-            if not rs:
-                return None
-            m = lambda k: sorted(x[k] for x in rs if x.get(k) is not None)
-            c, kk_, ss, tt = m(kc), m(kk), m(ks), m(kt)
-            md = lambda v: v[len(v) // 2] if v else float("nan")
-            return md(c), md(kk_), md(ss), md(tt), (sum(tt) if tt else 0.0)
+        # Accuracy on the images every solver got right.
+        common = [r for r in pv if all(st(r, n) == "OK" for n in names)]
+        if common:
+            print(f"\n  On the {len(common)} images ALL solved correctly (medians):")
+            print(f"  {'':<26}{cols}")
+            for label, key, fmt in (("centre err (\")", "centre", ".3f"),
+                                    ("corner err (\")", "corner", ".3f"),
+                                    ("scale err (%)", "scale", ".4f"),
+                                    ("time (s)", "secs", ".3f")):
+                print(f"  {label:<26}" + "".join(
+                    f"{pct([r[KEYS[n][key]] for r in common], 0.5):>12{fmt}}" for n in names))
 
-        ps = stat(both, "err_centre", "err_corner", "scale_err_pct", "secs")
-        as_ = stat(both, "astap_centre", "astap_corner", "astap_scale_err", "astap_secs")
-        if ps and as_ and both:
-            print(f"\n  On the {len(both)} images BOTH solved correctly (medians):")
-            print(f"  {'':<22}{'arcsec':>12}{'ASTAP':>12}")
-            print(f"  {'centre err (\")':<22}{ps[0]:>12.3f}{as_[0]:>12.3f}")
-            print(f"  {'corner err (\")':<22}{ps[1]:>12.3f}{as_[1]:>12.3f}")
-            print(f"  {'scale err (%)':<22}{ps[2]:>12.4f}{as_[2]:>12.4f}")
-            print(f"  {'time (s)':<22}{ps[3]:>12.3f}{as_[3]:>12.3f}")
-            if as_[3] > 0:
-                print(f"  {'speedup':<22}{as_[3]/max(ps[3],1e-6):>11.2f}x{'':>12}")
+        # Wall time over every image (solved or not), then split by outcome.
+        allr = [r for r in results]
+        print(f"\n  Wall time per image, all {len(allr)} images incl. tier D (s):")
+        print(f"  {'':<26}{cols}")
+        for label, sel in (("all: median", None), ("all: mean", "mean"), ("all: p90", 0.9),
+                           ("all: total", "sum")):
+            vals = {n: [r[KEYS[n]["secs"]] for r in allr if r.get(KEYS[n]["secs"]) is not None]
+                    for n in names}
+            if sel is None:
+                f = lambda v: pct(v, 0.5)
+            elif sel == "mean":
+                f = lambda v: sum(v) / len(v) if v else float("nan")
+            elif sel == "sum":
+                f = lambda v: sum(v)
+            else:
+                f = lambda v, q=sel: pct(v, q)
+            print(f"  {label:<26}" + "".join(f"{f(vals[n]):>12.3f}" for n in names))
+        for label, want in (("solved (any answer)", True), ("not solved", False)):
+            vals = {n: [r[KEYS[n]["secs"]] for r in allr
+                        if (st(r, n) in ("OK", "WRONG", "INEXACT")) == want] for n in names}
+            print(f"  {label + ': n':<26}" + "".join(f"{len(vals[n]):>12}" for n in names))
+            print(f"  {'   median':<26}" + "".join(f"{pct(vals[n], 0.5):>12.3f}" for n in names))
+            print(f"  {'   total':<26}" + "".join(f"{sum(vals[n]):>12.2f}" for n in names))
 
-        print(f"\n  both correct: {len(both)}   arcsec only: {len(only_p)}   "
-              f"ASTAP only: {len(only_a)}   neither: {len(neither)}")
-        if only_p and len(only_p) <= 60:
-            print("  arcsec solved, ASTAP did not:")
-            for r in only_p:
-                print(f"    + {r['id']:<22} {r.get('astap_status','-')}")
-        if only_a:
-            print("  ASTAP solved, arcsec did not:")
-            for r in only_a:
-                print(f"    - {r['id']:<22} arcsec={r['status']}")
+        # Who solves what the others do not.
+        for n in names:
+            rest = [m for m in names if m != n]
+            only = [r for r in pv if st(r, n) == "OK" and all(st(r, m) != "OK" for m in rest)]
+            missed = [r for r in pv if st(r, n) != "OK" and all(st(r, m) == "OK" for m in rest)]
+            print(f"\n  only {LABEL[n]} correct: {len(only)}"
+                  f"    all but {LABEL[n]} correct: {len(missed)}")
+            if len(only) <= 80:
+                for r in only:
+                    print(f"    + {r['id']:<22} "
+                          + "  ".join(f"{LABEL[m]}={st(r, m)}" for m in rest))
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                ab = sum(st(r, a) == "OK" and st(r, b) != "OK" for r in pv)
+                ba = sum(st(r, b) == "OK" and st(r, a) != "OK" for r in pv)
+                both = sum(st(r, a) == "OK" and st(r, b) == "OK" for r in pv)
+                print(f"\n  {LABEL[a]} vs {LABEL[b]}: both {both}, {LABEL[a]} only {ab},"
+                      f" {LABEL[b]} only {ba}")
+        for n in names:
+            wr = [r for r in pv if st(r, n) == "WRONG"] + tierd_fp(n)
+            if wr:
+                print(f"\n  {LABEL[n]} false positives:")
+                for r in wr:
+                    print(f"    !! {r['id']:<22} {r['tier']} fov={r.get('fov_deg')}"
+                          f"  centre={r.get(KEYS[n]['centre'])}\"  corner={r.get(KEYS[n]['corner'])}\"")
         print("=" * 78)
 
     # Non-zero when arcsec reported any wrong solution, so a script or CI step can
