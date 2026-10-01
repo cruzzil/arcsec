@@ -75,20 +75,3 @@ Unzip the archive and keep `arcsec` (`arcsec.exe` on Windows) in a folder of you
 choice. [Download and install](getting-started/) walks through it for each system.
 For other platforms, checksums and building from source, see
 [For developers](developers/).
-
-## Built on ASTAP
-
-arcsec would not exist without [ASTAP](https://www.hnsky.org/astap.htm) by Han Kleijn,
-and owes it two things in particular:
-
-- **The method.** ASTAP's way of recognising stars, describing each group of four by
-  the ratios of the distances between them, which stay the same however the image is
-  rotated, scaled or flipped, is the idea arcsec is built on. Kleijn describes it
-  openly in
-  [ASTAP star pattern recognition algorithm and astrometric (plate) solving](https://www.hnsky.org/astap_astrometric_solving.htm).
-- **The catalogues.** arcsec reads ASTAP's star catalogue files, so the same
-  catalogues serve both programs.
-
-ASTAP is licensed under the Mozilla Public License 2.0. arcsec is an independent
-program and contains no ASTAP code. ASTAP does much more than plate solving: if you
-use its viewer, stacking or photometry, keep it.
