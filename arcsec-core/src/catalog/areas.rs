@@ -153,6 +153,20 @@ pub fn area_and_boundaries_1476(ra: f64, dec: f64) -> AreaBounds {
     }
 }
 
+/// Every 1476 area whose declination ring overlaps `[dec_lo, dec_hi]` (radians):
+/// whole rings, in ascending area order. For reading a declination band of the
+/// whole sky, as the blind-index builder does.
+#[must_use]
+pub fn areas_in_dec_band_1476(dec_lo: f64, dec_hi: f64) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (ring, &(n_ra, base)) in RING_TABLE.iter().enumerate() {
+        if DEC_BOUNDARIES_1476[ring + 1] >= dec_lo && DEC_BOUNDARIES_1476[ring] <= dec_hi {
+            out.extend(base..base + n_ra);
+        }
+    }
+    out
+}
+
 /// Return the filename segment for a 1476 area number (e.g. area 1 → "0101.1476").
 /// Filename format: `{ring:02}{cell:02}.1476` where ring and cell are 1-based.
 #[must_use]

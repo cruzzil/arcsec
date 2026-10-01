@@ -77,6 +77,19 @@ pub fn area_nr_290(ra: f64, dec: f64) -> usize {
     RING_BASE_290[ring] + (rot.floor() as usize).min(n_ra - 1)
 }
 
+/// Every 290 area whose declination ring overlaps `[dec_lo, dec_hi]` (radians):
+/// whole rings, in ascending area order.
+#[must_use]
+pub fn areas_in_dec_band_290(dec_lo: f64, dec_hi: f64) -> Vec<usize> {
+    let mut out = Vec::new();
+    for ring in 0..18 {
+        if DEC_BOUNDARIES_290[ring + 1] >= dec_lo && DEC_BOUNDARIES_290[ring] <= dec_hi {
+            out.extend(RING_BASE_290[ring]..RING_BASE_290[ring] + RING_N_290[ring]);
+        }
+    }
+    out
+}
+
 /// Filename segment for a 290 area number (e.g. area 1 → `"0101.290"`).
 ///
 /// Format is `{ring:02}{cell:02}.290`, both 1-based — the same shape the 1476 grid
