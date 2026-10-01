@@ -145,6 +145,12 @@ pub(crate) struct TruthWcs {
     pub(crate) width: usize,
     /// Rows.
     pub(crate) height: usize,
+    /// Radial distortion about the frame centre, in the SIP sense (pixel → sky):
+    /// the pixel `ρ` from the centre sees the sky the linear WCS puts at
+    /// `ρ (1 + radial ρ²)`. Positive: the field's edges are squeezed (barrel);
+    /// negative: stretched (pincushion); 0 is a pure TAN. A cubic in pixels, so
+    /// SIP and arcsec's distortion model can represent it exactly.
+    pub(crate) radial: f64,
 }
 
 impl TruthWcs {
@@ -169,7 +175,17 @@ impl TruthWcs {
             cd: [px * s * cos_r, s * sin_r, -px * s * sin_r, s * cos_r],
             width,
             height,
+            radial: 0.0,
         }
+    }
+
+    /// The same WCS with radial distortion of `corner_px` pixels at the frame's
+    /// corners (barrel if positive).
+    pub(crate) fn with_corner_distortion(mut self, corner_px: f64) -> Self {
+        let (cx, cy) = self.centre();
+        let r = cx.hypot(cy);
+        self.radial = corner_px / (r * r * r);
+        self
     }
 
     fn centre(&self) -> (f64, f64) {
@@ -183,6 +199,8 @@ impl TruthWcs {
     pub(crate) fn pixel_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
         let (cx, cy) = self.centre();
         let (dx, dy) = (x - cx, y - cy);
+        let f = 1.0 + self.radial * (dx * dx + dy * dy);
+        let (dx, dy) = (dx * f, dy * f);
         let xi = (self.cd[0] * dx + self.cd[1] * dy).to_radians();
         let eta = (self.cd[2] * dx + self.cd[3] * dy).to_radians();
         inverse_gnomonic(self.ra0, self.dec0, xi, eta)
@@ -195,8 +213,63 @@ impl TruthWcs {
         let det = self.cd[0] * self.cd[3] - self.cd[1] * self.cd[2];
         let dx = (self.cd[3] * xi - self.cd[1] * eta) / det;
         let dy = (-self.cd[2] * xi + self.cd[0] * eta) / det;
+        let (dx, dy) = self.distort(dx, dy)?;
         let (cx, cy) = self.centre();
         Some((cx + dx, cy + dy))
+    }
+
+    /// Linear pixel offset from the centre → the pixel offset that sees it: the
+    /// root of `ρ + k ρ³ = ρ_lin` along the same direction, by Newton's method.
+    /// `None` past the fold of a pincushion (`k < 0`), where `ρ + k ρ³` stops
+    /// growing: nothing out there is imaged.
+    fn distort(&self, lx: f64, ly: f64) -> Option<(f64, f64)> {
+        let rl = lx.hypot(ly);
+        let k = self.radial;
+        if rl == 0.0 || k == 0.0 {
+            return Some((lx, ly));
+        }
+        if k < 0.0 {
+            let fold = (-1.0 / (3.0 * k)).sqrt();
+            if rl >= 0.95 * (fold + k * fold * fold * fold) {
+                return None;
+            }
+        }
+        let mut r = rl;
+        for _ in 0..60 {
+            r -= (r + k * r * r * r - rl) / (1.0 + 3.0 * k * r * r);
+        }
+        Some((lx * r / rl, ly * r / rl))
+    }
+
+    /// Worst corner error (arcsec) of the best linear WCS over the frame: the
+    /// least-squares linear fit to the truth on a 9 × 9 grid, as
+    /// `scripts/fitslite.py`'s `best_linear` computes the benchmark's floor.
+    pub(crate) fn linear_floor_arcsec(&self) -> f64 {
+        const N: usize = 9;
+        let (w, h) = (self.width as f64 - 1.0, self.height as f64 - 1.0);
+        let (cx, cy) = self.centre();
+        let mut img = Vec::new();
+        let mut sky = Vec::new();
+        for i in 0..N {
+            for j in 0..N {
+                let (x, y) = (w * i as f64 / (N - 1) as f64, h * j as f64 / (N - 1) as f64);
+                let (ra, dec) = self.pixel_to_sky(x, y);
+                let (xi, eta) = gnomonic(self.ra0, self.dec0, ra, dec).unwrap();
+                img.push((x - cx, y - cy));
+                sky.push((xi, eta));
+            }
+        }
+        let lin = crate::math::lsq::fit_affine(&img, &sky).unwrap();
+        [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
+            .iter()
+            .map(|&(x, y)| {
+                let (u, v) = (x - cx, y - cy);
+                let (xi, eta) = (lin.a * u + lin.b * v + lin.c, lin.d * u + lin.e * v + lin.f);
+                let (ra_l, dec_l) = inverse_gnomonic(self.ra0, self.dec0, xi, eta);
+                let (ra_t, dec_t) = self.pixel_to_sky(x, y);
+                separation(ra_t, dec_t, ra_l, dec_l).to_degrees() * 3600.0
+            })
+            .fold(0.0, f64::max)
     }
 
     /// Worst disagreement (arcsec) between this WCS and a solved one, over the
