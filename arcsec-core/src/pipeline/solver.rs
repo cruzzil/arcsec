@@ -51,7 +51,9 @@ pub struct SolveParams {
     pub ra_hint: f64,
     /// Approximate DEC of image centre (radians, hint only).
     pub dec_hint: f64,
-    /// Image field of view (square side, radians). Used as the spiral step size.
+    /// Image field of view along its longer side (radians). Used as the spiral step
+    /// size, and, with the image's size, for the pixel scale a solution is expected
+    /// to have.
     pub fov: f64,
     /// Maximum search radius from the hint position (radians).
     pub search_radius: f64,
@@ -180,6 +182,73 @@ fn fit_pattern_pairs(
 /// 2 degrees (22 stars, spread 0.221, rms 0.65", rotation wrong by 1.56 degrees)
 /// from the Dec -88 field (46 stars, spread 0.207, rms 0.66", correct to 2.3").
 const MIN_VERIFIED_STARS: usize = 30;
+/// Fewest verified stars accepted for an image with `nrstars_image` detections:
+/// [`MIN_VERIFIED_STARS`], relaxed to 15% of the detections for a sparse image, but
+/// never below 10. Unchanged from 200 detections up.
+///
+/// A sparse frame (a short exposure, a narrow band, a small field) cannot match 30
+/// stars when it shows only 40. Below 30 the solution must also pass
+/// [`Acceptance::accepts`]' scale and residual checks.
+fn min_verified_stars(nrstars_image: usize) -> usize {
+    nrstars_image
+        .saturating_mul(15)
+        .div_ceil(100)
+        .clamp(10, MIN_VERIFIED_STARS)
+}
+/// Below [`MIN_VERIFIED_STARS`] matched stars, the fitted pixel scale must be
+/// within this fraction of the one the hint implies.
+const RELAXED_SCALE_TOL: f64 = 0.10;
+/// Below [`MIN_VERIFIED_STARS`] matched stars, the largest star-level rms, in
+/// pixels. The genuine relaxed solves on the corpus have 0.16-0.46 px; the false
+/// positive the relaxed count alone lets through (`ls2_25`, 12 stars) has 2.9 px,
+/// and a scale 1.36 times the hint's.
+const RELAXED_MAX_RMS_PX: f64 = 0.5;
+
+/// When a verified plate is believed.
+struct Acceptance {
+    /// Fewest matched stars ([`min_verified_stars`]).
+    min_stars: usize,
+    /// The pixel scale the hint implies, arcsec per (binned) pixel.
+    expected_scale: f64,
+}
+
+impl Acceptance {
+    fn new(nrstars_image: usize, params: &SolveParams, img: &crate::types::ImageBuffer) -> Self {
+        Self {
+            min_stars: min_verified_stars(nrstars_image),
+            expected_scale: params.fov.to_degrees() * 3600.0
+                / img.width.max(img.height).max(1) as f64,
+        }
+    }
+
+    /// Enough stars, spread over the frame; and if fewer than
+    /// [`MIN_VERIFIED_STARS`], the hint's pixel scale and a sub-half-pixel fit.
+    ///
+    /// A handful of chance coincidences can be fitted by some plate at some scale;
+    /// they are not fitted at the scale the optics give, to a fraction of a pixel.
+    fn accepts(&self, v: &Verified, spread: f64) -> bool {
+        if v.n() < self.min_stars || spread < MIN_VERIFY_SPREAD {
+            return false;
+        }
+        if v.n() >= MIN_VERIFIED_STARS {
+            return true;
+        }
+        let p = &v.plate;
+        let scale = (p.a * p.e - p.b * p.d).abs().sqrt();
+        let ok = (scale / self.expected_scale - 1.0).abs() <= RELAXED_SCALE_TOL
+            && v.rms <= RELAXED_MAX_RMS_PX * scale;
+        log::info!(
+            "{} stars verified, scale {:.4}\"/px against {:.4} expected, residual {:.2} px: {}",
+            v.n(),
+            scale,
+            self.expected_scale,
+            v.rms / scale,
+            if ok { "accepted" } else { "refused" }
+        );
+        ok
+    }
+}
+
 /// Match radii (pixels) used by successive verification passes, coarse to fine.
 const VERIFY_RADII: [f64; 3] = [6.0, 3.0, 2.0];
 /// Minimum spread of the matched stars, as a fraction of the image half-diagonal.
@@ -219,13 +288,15 @@ impl Verified {
 /// and repeat with a shrinking radius.
 ///
 /// Returns the refined plate with its matched pairs, or `None` if the plate is
-/// degenerate, too few stars agree, or the matches are too clustered.
+/// degenerate or `accept` refuses the result (too few stars agree, the matches
+/// are too clustered, or a sparse match is at the wrong scale or fits loosely).
 fn verify_and_refit(
     img_stars: &StarList,
     cat_stars: &StarList,
     plate: &PlateConstants,
     img_w: usize,
     img_h: usize,
+    accept: &Acceptance,
 ) -> Option<Verified> {
     if img_stars.is_empty() || cat_stars.is_empty() {
         return None;
@@ -358,7 +429,7 @@ fn verify_and_refit(
         ));
     }
 
-    best.filter(|(v, spread)| v.n() >= MIN_VERIFIED_STARS && *spread >= MIN_VERIFY_SPREAD)
+    best.filter(|(v, spread)| accept.accepts(v, *spread))
         .map(|(v, _)| v)
 }
 
@@ -390,10 +461,16 @@ struct SpiralCtx<'a> {
     img_quads: &'a crate::types::QuadList,
     img_tris: &'a crate::quads::TriangleList,
     nrstars_image: usize,
+    /// The most image stars worth using: `-s`, or fewer if the database cannot hold
+    /// that many in the field ([`density_star_limit`]).
+    star_limit: usize,
     nrstars_required: usize,
     oversize: f64,
     min_quads: usize,
     step_size: f64,
+    accept: Acceptance,
+    /// Long side over short side of the image.
+    aspect: f64,
 }
 
 /// A spiral position that produced a verified solution.
@@ -507,6 +584,9 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
     let (img_pos, cat_pos, n_raw) = match params.method {
         SolveMethod::Quads => {
             let mut cat_quads = build_quads_presorted(&cat_star_list, ctx.nrstars_image);
+            if ctx.nrstars_image < ctx.star_limit {
+                add_density_matched_quads(ctx, &cat_raw, ra_db, dec_db, &mut cat_quads);
+            }
             if cat_quads.is_empty() {
                 return failed;
             }
@@ -556,6 +636,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         &plate,
         ctx.img.width,
         ctx.img.height,
+        &ctx.accept,
     ) else {
         log::info!("Verification failed at this position; continuing search.");
         return failed;
@@ -581,6 +662,76 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             mag_limit,
         }),
     }
+}
+
+/// How many times denser than the image the catalogue read must be before
+/// [`add_density_matched_quads`] adds anything.
+///
+/// Every image the added quads solve on the corpus had a catalogue at least 3.7
+/// times denser than itself (the density-matched count at most 0.27 of the read);
+/// below 2.5 the full-depth quads already share the image's neighbourhoods closely
+/// enough, and the extra quads made a failing search on a 159-star image 50% slower.
+const DENSITY_MATCH_MIN_RATIO: f64 = 2.5;
+
+/// Add the quads of a catalogue star list as dense as the image's.
+///
+/// The catalogue is read to the depth `-s` asks for, so when the image yields fewer
+/// stars than that the catalogue is denser than the image, and its quads join
+/// neighbours the image never detected. The window's brightest
+/// `n · oversize² · long/short` catalogue stars have the image's density (the
+/// window is square, `oversize` fields of the long side across), so their quads are
+/// built over the same neighbourhoods as the image's. They are added to the
+/// full-depth quads, not substituted: reading only that depth loses more images
+/// than it gains, those whose faint detections are real (test-images.md §7.8).
+/// Verification still runs against the full-depth list.
+///
+/// Only when the catalogue read is at least [`DENSITY_MATCH_MIN_RATIO`] times
+/// denser than the image: the extra quads are matched at every spiral position, so
+/// on a search that fails everywhere they cost what they add to the quad count.
+fn add_density_matched_quads(
+    ctx: &SpiralCtx<'_>,
+    cat_raw: &[CatalogStar],
+    ra_db: f64,
+    dec_db: f64,
+    cat_quads: &mut crate::types::QuadList,
+) {
+    let k = (ctx.nrstars_image as f64 * ctx.oversize * ctx.oversize * ctx.aspect).round() as usize;
+    if k < 5 || (k as f64) * DENSITY_MATCH_MIN_RATIO > cat_raw.len() as f64 {
+        return;
+    }
+    // `cat_raw` is brightest first.
+    let mut sub: Vec<Star> = cat_raw[..k]
+        .iter()
+        .map(|s| {
+            let (x, y) = equatorial_standard(ra_db, dec_db, s.ra, s.dec, 1.0);
+            Star {
+                x,
+                y,
+                snr: 1.0,
+                hfd: 2.0,
+            }
+        })
+        .collect();
+    sub.sort_unstable_by(|a, b| a.x.total_cmp(&b.x));
+    let extra = build_quads_presorted(&StarList(sub), ctx.nrstars_image);
+    // A quad of the same four stars can come out of both lists: count it once.
+    // Centroid and size to a milliarcsecond identify it.
+    let key = |q: &crate::types::Quad| {
+        (
+            (q.center_x * 1000.0).round() as i64,
+            (q.center_y * 1000.0).round() as i64,
+            (q.d1 * 1000.0).round() as i64,
+        )
+    };
+    let seen: std::collections::HashSet<_> = cat_quads.0.iter().map(key).collect();
+    let before = cat_quads.len();
+    cat_quads
+        .0
+        .extend(extra.0.into_iter().filter(|q| !seen.contains(&key(q))));
+    log::info!(
+        "{} more database quads from its {k} brightest stars, the image's density.",
+        cat_quads.len() - before
+    );
 }
 
 /// Refit a verified plate in the tangent plane at the image centre.
@@ -665,8 +816,14 @@ fn recentre(
             break;
         };
         let cat = StarList(cat);
-        let Some(v) = verify_and_refit(ctx.stars, &cat, &guess, ctx.img.width, ctx.img.height)
-        else {
+        let Some(v) = verify_and_refit(
+            ctx.stars,
+            &cat,
+            &guess,
+            ctx.img.width,
+            ctx.img.height,
+            &ctx.accept,
+        ) else {
             log::info!("Re-centring on the image centre did not verify; keeping the fit.");
             break;
         };
@@ -848,10 +1005,13 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         img_quads: &img_quads,
         img_tris: &img_tris,
         nrstars_image,
+        star_limit,
         nrstars_required,
         oversize,
         min_quads,
         step_size,
+        accept: Acceptance::new(nrstars_image, params, img),
+        aspect: img.width.max(img.height) as f64 / img.width.min(img.height).max(1) as f64,
     };
 
     let n_threads = if params.threads > 0 {
@@ -1213,6 +1373,13 @@ mod tests {
         .all(|(u, v)| (u - v).abs() <= tol)
     }
 
+    /// The acceptance rule for a well-populated image, for the plate of
+    /// [`known_plate`].
+    const STRICT: Acceptance = Acceptance {
+        min_stars: MIN_VERIFIED_STARS,
+        expected_scale: 3.2,
+    };
+
     fn star_at(x: f64, y: f64) -> Star {
         Star {
             x,
@@ -1323,8 +1490,15 @@ mod tests {
         rough.c += 2.0 * truth.a;
         rough.f += 2.0 * truth.e;
         rough.b += 0.01;
-        let v = verify_and_refit(&StarList(img_stars), &StarList(cat_stars), &rough, 400, 300)
-            .expect("a correct plate must verify");
+        let v = verify_and_refit(
+            &StarList(img_stars),
+            &StarList(cat_stars),
+            &rough,
+            400,
+            300,
+            &STRICT,
+        )
+        .expect("a correct plate must verify");
         assert_eq!(v.n(), 60);
         assert_eq!(v.cat_pos.len(), 60);
         assert!(v.rms < 1e-6, "rms {}", v.rms);
@@ -1356,29 +1530,29 @@ mod tests {
             .map(|_| (rng.range(0.0, 400.0), rng.range(0.0, 300.0)))
             .collect();
         let (img, cat) = build(&few);
-        assert!(verify_and_refit(&img, &cat, &truth, 400, 300).is_none());
+        assert!(verify_and_refit(&img, &cat, &truth, 400, 300, &STRICT).is_none());
 
         // 80 stars, all in one 40-pixel corner: rotation is unconstrained.
         let clustered: Vec<_> = (0..80)
             .map(|_| (rng.range(0.0, 40.0), rng.range(0.0, 40.0)))
             .collect();
         let (img, cat) = build(&clustered);
-        assert!(verify_and_refit(&img, &cat, &truth, 400, 300).is_none());
+        assert!(verify_and_refit(&img, &cat, &truth, 400, 300, &STRICT).is_none());
 
         // The same 80 spread over the frame pass.
         let spread: Vec<_> = (0..80)
             .map(|_| (rng.range(0.0, 400.0), rng.range(0.0, 300.0)))
             .collect();
         let (img, cat) = build(&spread);
-        assert!(verify_and_refit(&img, &cat, &truth, 400, 300).is_some());
+        assert!(verify_and_refit(&img, &cat, &truth, 400, 300, &STRICT).is_some());
 
         // Degenerate inputs.
         let empty = StarList::default();
-        assert!(verify_and_refit(&empty, &cat, &truth, 400, 300).is_none());
+        assert!(verify_and_refit(&empty, &cat, &truth, 400, 300, &STRICT).is_none());
         let mut singular = truth.clone();
         singular.a = 0.0;
         singular.b = 0.0;
-        assert!(verify_and_refit(&img, &cat, &singular, 400, 300).is_none());
+        assert!(verify_and_refit(&img, &cat, &singular, 400, 300, &STRICT).is_none());
     }
 
     // ── End-to-end solves against synthetic catalogues ────────────────────────
@@ -1491,7 +1665,7 @@ mod tests {
             wcs.stars_matched,
             wcs.residual_rms
         );
-        assert!(wcs.stars_matched >= MIN_VERIFIED_STARS);
+        assert!(wcs.stars_matched >= 10);
         // Star-level residual under a third of a pixel.
         let scale_arcsec = s.truth.cd[1].hypot(s.truth.cd[3]) * 3600.0;
         assert!(
@@ -1701,6 +1875,124 @@ mod tests {
         );
         p.db_name = "t02".into();
         let wcs = solve_image(&s.img, &p).expect("solve at the database limit");
+        assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
+    }
+
+    #[test]
+    fn min_verified_stars_relaxes_only_for_sparse_images() {
+        for (n, want) in [
+            (0, 10),
+            (5, 10),
+            (66, 10),
+            (67, 11),
+            (100, 15),
+            (193, 29),
+            (194, 30),
+            (200, 30),
+            (500, 30),
+            (usize::MAX, 30),
+        ] {
+            assert_eq!(min_verified_stars(n), want, "{n} detections");
+        }
+    }
+
+    /// Below 30 matches a solution must be at the hint's scale, to half a pixel.
+    #[test]
+    fn a_sparse_match_must_have_the_expected_scale_and_a_tight_fit() {
+        let truth = known_plate(); // 3.2"/px
+        let verified = |n: usize, rms_px: f64, scale: f64| {
+            let mut plate = truth.clone();
+            for c in [&mut plate.a, &mut plate.b, &mut plate.d, &mut plate.e] {
+                *c *= scale;
+            }
+            Verified {
+                plate,
+                rms: rms_px * 3.2 * scale,
+                img_pos: vec![(0.0, 0.0); n],
+                cat_pos: vec![(0.0, 0.0); n],
+            }
+        };
+        let accept = Acceptance {
+            min_stars: 12,
+            expected_scale: 3.2,
+        };
+        // Enough stars: scale and residual are not looked at.
+        assert!(accept.accepts(&verified(30, 3.9, 1.36), 0.5));
+        // Sparse, right scale, tight fit.
+        assert!(accept.accepts(&verified(12, 0.3, 1.0), 0.5));
+        assert!(accept.accepts(&verified(20, 0.49, 1.09), 0.5));
+        assert!(accept.accepts(&verified(20, 0.49, 0.91), 0.5));
+        // Sparse and wrong: scale 10% off, a loose fit, too few, too clustered.
+        assert!(!accept.accepts(&verified(20, 0.3, 1.11), 0.5));
+        assert!(!accept.accepts(&verified(20, 0.3, 0.89), 0.5));
+        assert!(!accept.accepts(&verified(29, 0.51, 1.0), 0.5));
+        assert!(!accept.accepts(&verified(11, 0.1, 1.0), 0.5));
+        assert!(!accept.accepts(&verified(20, 0.1, 1.0), 0.1));
+        // The false positive the relaxed count alone lets through (ls2_25).
+        assert!(!accept.accepts(&verified(12, 2.9, 1.36), 0.5));
+    }
+
+    /// A frame showing only its ~20 brightest stars against a deep catalogue: it
+    /// solves with fewer than 30 matches when the hint's scale is right, and is
+    /// refused when the scale the hint implies is 20% off.
+    #[test]
+    fn a_sparse_frame_solves_at_the_hint_scale_only() {
+        let truth = TruthWcs::new(deg(30.0), deg(-12.0), 5.0, 40.0, false, 360, 300);
+        let s = scene(truth, Db::Areas1476, 150, 41);
+        let mut bright = s.sky.clone();
+        bright.sort_by(|a, b| a.mag.total_cmp(&b.mag));
+        let bright: Vec<SkyStar> = bright
+            .into_iter()
+            .filter(|st| {
+                s.truth
+                    .sky_to_pixel(st.ra, st.dec)
+                    .is_some_and(|(x, y)| (5.0..355.0).contains(&x) && (5.0..295.0).contains(&y))
+            })
+            .take(22)
+            .collect();
+        let mut rng = Rng::new(42);
+        let img = render(&s.truth, &bright, 1.3, 1000.0, 8.0, 30_000.0, &mut rng);
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.fov = (360.0 * 5.0 / 3600.0_f64).to_radians(); // the long side
+        p.search_radius = 0.0;
+        let wcs = solve_image(&img, &p).expect("sparse solve");
+        assert!(
+            wcs.stars_matched < MIN_VERIFIED_STARS,
+            "{}",
+            wcs.stars_matched
+        );
+        assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
+
+        p.fov *= 1.2;
+        assert!(matches!(
+            solve_image(&img, &p),
+            Err(ArcsecError::InsufficientQuads { .. })
+        ));
+    }
+
+    /// A shallow frame, ~40 stars, against a catalogue twelve times deeper: the
+    /// image's quads join neighbours the deep catalogue's do not, and only the
+    /// density-matched catalogue quads match them (without them this does not
+    /// solve).
+    #[test]
+    fn a_shallow_frame_matches_the_density_matched_catalogue_quads() {
+        let truth = TruthWcs::new(deg(140.0), deg(55.0), 5.0, -25.0, true, 360, 300);
+        let s = scene(truth, Db::Areas1476, 500, 51);
+        let mut bright = s.sky.clone();
+        bright.sort_by(|a, b| a.mag.total_cmp(&b.mag));
+        let in_frame = |st: &SkyStar| {
+            s.truth
+                .sky_to_pixel(st.ra, st.dec)
+                .is_some_and(|(x, y)| (0.0..360.0).contains(&x) && (0.0..300.0).contains(&y))
+        };
+        let n_frame = bright.iter().filter(|st| in_frame(st)).count();
+        bright.truncate(bright.len() * 40 / n_frame.max(1));
+        let mut rng = Rng::new(52);
+        let img = render(&s.truth, &bright, 1.3, 1000.0, 8.0, 30_000.0, &mut rng);
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.fov = (360.0 * 5.0 / 3600.0_f64).to_radians();
+        p.search_radius = 0.0;
+        let wcs = solve_image(&img, &p).expect("shallow solve");
         assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
     }
 

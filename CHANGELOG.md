@@ -18,6 +18,15 @@ one is called out as such.
   `min(-s, density × area)` detections. Small, crowded fields with d80 (below ~0.25°)
   no longer build their quads from stars the catalogue does not have. Library:
   `catalog::database_density`.
+- Sparse images solve. When the image yields fewer stars than it may use, the catalogue
+  read is denser than the image; when it is at least 2.5 times denser, the catalogue
+  spiral now also builds quads from the catalogue's brightest stars at the image's
+  density and adds them to the full-depth ones. And an image with fewer than 194 detections needs fewer than 30 matched stars,
+  15 % of its detections but at least 10; below 30 the solution must also have the
+  pixel scale the hint implies (within 10 %) and a star-level rms of at most 0.5 px.
+  Narrow SkyMapper frames and LCO frames with few stars gain most.
+  `SolveParams::fov` is documented as the long side, which is what the CLI passes; the
+  scale check relies on it.
 
 ### Fixed
 

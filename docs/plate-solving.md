@@ -772,10 +772,21 @@ matches exceeds a fixed or star-count-scaled threshold. arcsec uses
 
 ```
     catalogue path:  min_quads = 3 + n_stars_image / 140 agreeing quads to attempt a fit,
-                     then ≥ MIN_VERIFIED_STARS = 30 individually matched stars spanning
-                     ≥ MIN_VERIFY_SPREAD = 0.20 of the image half-diagonal to accept
+                     then ≥ min(30, max(10, ⌈0.15·n_stars_image⌉)) individually matched
+                     stars spanning ≥ MIN_VERIFY_SPREAD = 0.20 of the image
+                     half-diagonal to accept; below 30, also a plate scale within 10 %
+                     of the hint's and a star-level rms ≤ 0.5 px
     blind path:      MIN_VERIFY_SCORE = 18 verified stars, EARLY_STOP_SCORE = 20
 ```
+
+The relaxed count is for sparse images (≥ 194 detections keep 30), and it is not safe on
+its own. A Poisson chance-match floor in its place let four tier-D controls verify, and
+the relaxed count without the scale and rms gate accepts a wrong solution for a sparse
+0.09° Legacy Surveys frame (`ls2_25`): 12 stars at 1.36 times the hint's scale with a
+2.9 px rms, 5° from the truth
+([test-images.md §7.8](test-images.md#78-solver-robustness-2026-10-01)). A handful of
+coincidences can be fitted by some plate at some scale; they are not fitted at the scale
+the optics give, to half a pixel.
 
 Both paths are now genuinely verified — they project catalogue or index stars into the
 image and count agreement. The catalogue path gained this on 2026-09-02; before that it
@@ -984,8 +995,9 @@ solves, verifying 132.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │ A. DETECT              up to `-s` stars (default 500), then the brightest│
-  │                        min(-s, density × area) (the database limit)      │
+  │ A. DETECT              up to `-s` stars (default 500); keep the          │
+  │                        brightest min(-s, density × area), the database   │
+  │                        limit                                             │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ B. BUILD IMAGE QUADS   build_quads(): each star plus its nearest         │
   │                        neighbours, all 4-subsets of that group           │
@@ -1013,6 +1025,9 @@ solves, verifying 132.
   │                                                                          │
   │        project catalogue → tangent plane (arcsec), sort by x             │
   │        build_quads_presorted() with the *image* star count               │
+  │        if n < min(-s, database limit) and the read holds ≥ 2.5 × that    │
+  │           many: add the quads of the brightest k = n · oversize² ·       │
+  │           long/short catalogue stars (the image's density), deduped      │
   │        sort_catalog_quads(): sort by ratios[INDEX_RATIO = 4]             │
   │                                                                          │
   │        find_matches_sorted(): binary-search ±t on ratios[4] over a       │
@@ -1024,16 +1039,18 @@ solves, verifying 132.
   │        if matches < min_quads = 3 + n/140:  next position                │
   │                                                                          │
   │        extract_star_pairs(): (image quad centroid, catalogue centroid)   │
-  │        sigma_clip_pairs(): drop pairs off the consensus (first pass 10 px │
-  │           or 3 × 1.48 MAD, then 3σ); if fewer than min_quads remain:     │
-  │           next position                                                  │
+  │        sigma_clip_pairs(): drop pairs off the consensus (first pass      │
+  │           10 px or 3 × 1.48 MAD, then 3σ); if fewer than min_quads       │
+  │           remain: next position                                          │
   │        solve_plate_constants(): Givens-rotation LSQ, 6 constants;        │
   │           refused unless a similarity (singular-value ratio ≤ 1.08)      │
   │        verify_and_refit(): project every catalogue star through the      │
   │           plate, pair it with the nearest unused detected star within    │
   │           6 → 3 → 2 px, re-fit on those pairs at each radius             │
-  │        reject unless ≥ 30 stars matched and their spread ≥ 0.20 of the   │
-  │           image half-diagonal:  next position                            │
+  │        reject unless ≥ min(30, max(10, ⌈0.15·n⌉)) stars matched and      │
+  │           their spread ≥ 0.20 of the image half-diagonal; below 30       │
+  │           also unless the plate scale is within 10% of FOV/long side     │
+  │           and the rms ≤ 0.5 px:  next position                           │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ D. OUTPUT              derive_wcs(): tangent-plane inverse at the image  │
   │                        centre; un-scale CRPIX and CD/CDELT for binning   │
@@ -1107,7 +1124,11 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `min_quads` | `3 + n/140` | `solver.rs` | agreeing quads needed to attempt a fit |
 | `oversize` | 2.0 → 1.0 | `solver.rs` | catalogue window vs FOV |
 | `VERIFY_RADII` | 6, 3, 2 px | `solver.rs` | star-level verification match radii |
-| `MIN_VERIFIED_STARS` | 30 | `solver.rs` | stars that must agree to accept a position |
+| `MIN_VERIFIED_STARS` | 30 | `solver.rs` | stars that must agree to accept a position, for an image with ≥ 194 detections |
+| `min_verified_stars(n)` | `min(30, max(10, ⌈0.15·n⌉))` | `solver.rs` | the same for `n` detections: relaxed for sparse images |
+| `RELAXED_SCALE_TOL` | 10 % | `solver.rs` | below 30 matches, the plate scale must be this close to the hint's (`FOV / long side`) |
+| `RELAXED_MAX_RMS_PX` | 0.5 px | `solver.rs` | below 30 matches, the largest star-level rms |
+| `DENSITY_MATCH_MIN_RATIO` | 2.5 | `solver.rs` | density-matched catalogue quads are added only when the catalogue read holds at least this many times the image-density count |
 | `MIN_VERIFY_SPREAD` | 0.20 | `solver.rs` | spread of those stars, fraction of the half-diagonal |
 | `MAX_PLATE_ANISOTROPY` | 1.08 | `math/lsq.rs` | largest singular-value ratio σmax/σmin of a plate fit's linear part; every fit through `solve_plate_constants` (quad, star-level, blind) must be this close to a similarity |
 | `TETRA_TOL_FACTOR` | 0.3 | `quads/tetra.rs` | triangle tolerance scaling |
