@@ -11,6 +11,14 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- Using arcsec with Siril: a README section and a website page,
+  [Use with Siril](https://cruzzil.github.io/arcsec/siril/). Siril 1.4 has no setting
+  for an external ASTAP solver, so the page covers solving with `--update` and letting
+  Siril read the solution from the header, for single images and for sequences; tested
+  with Siril 1.4.4 on Linux.
+
 ### Fixed
 
 - `--update` now removes the `PC` matrix and SIP terms of an earlier solution before
