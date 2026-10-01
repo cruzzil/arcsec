@@ -362,6 +362,26 @@ fn verify_and_refit(
         .map(|(v, _)| v)
 }
 
+/// The most image stars the database can match in this field: its density
+/// ([`crate::catalog::database_density`]) times the image's area, or `-s` if that
+/// is smaller or the density is unknown. ASTAP's "database limit".
+///
+/// The area is `fov²` scaled by the aspect ratio, `fov` being the long side.
+fn density_star_limit(params: &SolveParams, img: &crate::types::ImageBuffer) -> usize {
+    let Some(density) = crate::catalog::database_density(&params.db_name) else {
+        return params.max_stars;
+    };
+    let fov_deg = params.fov.to_degrees();
+    let (w, h) = (img.width as f64, img.height as f64);
+    let area = fov_deg * fov_deg * w.min(h) / w.max(h).max(1.0);
+    let cap = (density * area).round();
+    if cap < params.max_stars as f64 {
+        cap as usize
+    } else {
+        params.max_stars
+    }
+}
+
 /// Everything a spiral position needs that does not change between positions.
 struct SpiralCtx<'a> {
     params: &'a SolveParams,
@@ -727,11 +747,26 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         log::info!("Selecting the {} brightest stars only.", params.max_stars);
     }
 
-    // Detection is not trimmed. Stars beyond `-s` are faint enough to be absent
-    // from the catalog, which once corrupted 3-NN quads badly enough to justify
-    // dropping all but the brightest half; quad redundancy and star-level
+    // Detection is not trimmed to a fraction. Stars beyond `-s` are faint enough to
+    // be absent from the catalog, which once corrupted 3-NN quads badly enough to
+    // justify dropping all but the brightest half; quad redundancy and star-level
     // verification absorb that now, and halving the list halved the quad count.
     // The catalog still reads the full requested depth.
+    //
+    // It is trimmed to what the database can hold, though (ASTAP's "database
+    // limit"). A database is density-limited, so a small field holds only so many
+    // catalogue stars, however many the image shows: 973 detections on a 0.21°
+    // field (`rnd_080`) against ~100 catalogue stars build quads from stars the
+    // catalogue has never heard of, and the field cannot match.
+    let star_limit = density_star_limit(params, img);
+    let mut stars = stars;
+    if stars.len() > star_limit {
+        stars.0.sort_by(|a, b| b.snr.total_cmp(&a.snr));
+        stars.0.truncate(star_limit);
+        log::info!(
+            "Database limit for this field is {star_limit} stars; using the {star_limit} brightest."
+        );
+    }
 
     let nrstars_image = stars.len();
     if nrstars_image < 5 {
@@ -980,7 +1015,7 @@ mod tests {
     use super::*;
     use crate::math::coords::{ang_sep, standard_equatorial};
     use crate::test_support::{
-        Rng, SkySpec, TempDir, TruthWcs, random_sky, render, write_001_db, write_290_db,
+        Rng, SkySpec, SkyStar, TempDir, TruthWcs, random_sky, render, write_001_db, write_290_db,
         write_1476_db,
     };
     use crate::types::{ImageBuffer, PlateConstants};
@@ -1360,6 +1395,8 @@ mod tests {
         dir: TempDir,
         img: ImageBuffer,
         truth: TruthWcs,
+        /// Every star drawn, in and around the frame.
+        sky: Vec<SkyStar>,
     }
 
     /// Render ~`n_in_frame` stars through `truth` and write the surrounding sky
@@ -1401,7 +1438,31 @@ mod tests {
             Db::Areas290 => write_290_db(dir.path(), "t50", &sky),
             Db::AllSky001 => write_001_db(dir.path(), "t50", &sky),
         }
-        Scene { dir, img, truth }
+        Scene {
+            dir,
+            img,
+            truth,
+            sky,
+        }
+    }
+
+    /// Parameters that fail every check that needs a database.
+    fn params_for_blank() -> SolveParams {
+        SolveParams {
+            ra_hint: 0.0,
+            dec_hint: 0.0,
+            fov: deg(1.0),
+            search_radius: 0.0,
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: std::path::PathBuf::from("/nonexistent"),
+            db_name: "d50".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            threads: 1,
+            speed: SearchSpeed::Auto,
+        }
     }
 
     fn params_for(s: &Scene, ra_hint: f64, dec_hint: f64) -> SolveParams {
@@ -1587,6 +1648,60 @@ mod tests {
         assert!(err < 2.0, "worst corner error {err:.3}\"");
         // The pairs are on the unbinned grid too: one binned pixel is two of these.
         assert_matches_agree(&wcs, 0.6, 2.0);
+    }
+
+    #[test]
+    fn the_star_limit_is_the_database_density_times_the_field_area() {
+        let params = |fov_deg: f64, db: &str, max_stars: usize| SolveParams {
+            fov: deg(fov_deg),
+            max_stars,
+            db_name: db.into(),
+            ..params_for_blank()
+        };
+        let square = ImageBuffer::new(200, 200);
+        let wide = ImageBuffer::new(400, 200);
+        // d80 on a 0.2° square field: 8000 × 0.04 = 320 stars.
+        assert_eq!(density_star_limit(&params(0.2, "d80", 500), &square), 320);
+        // The same long side on a 2:1 frame covers half the area.
+        assert_eq!(density_star_limit(&params(0.2, "d80", 500), &wide), 160);
+        // Never more than -s.
+        assert_eq!(density_star_limit(&params(1.0, "d80", 500), &square), 500);
+        assert_eq!(density_star_limit(&params(0.2, "d80", 100), &square), 100);
+        // g05 (500/deg²) binds only below ~1°, w08 (1/deg²) on all but the widest.
+        assert_eq!(density_star_limit(&params(0.8, "g05", 500), &square), 320);
+        assert_eq!(density_star_limit(&params(20.0, "w08", 500), &wide), 200);
+        // Unknown density: -s.
+        assert_eq!(density_star_limit(&params(0.1, "v17", 500), &square), 500);
+    }
+
+    /// A field showing far more stars than the database holds there: with every
+    /// detection the image quads are built from stars the catalogue does not have,
+    /// and it does not solve; capped at the database's density it does.
+    #[test]
+    fn a_frame_deeper_than_the_database_solves_at_the_database_limit() {
+        // 0.5° x 0.42° at 3"/px: 0.21 deg², ~450 stars in the frame.
+        let truth = TruthWcs::new(deg(250.0), deg(36.0), 3.0, 12.0, false, 600, 500);
+        let s = scene(truth, Db::Areas1476, 450, 31);
+        // The database holds only the brightest 200 per square degree (the
+        // scene's sky is 3° on a side), ~42 of them in the frame.
+        let mut sky = s.sky.clone();
+        sky.sort_by(|a, b| a.mag.total_cmp(&b.mag));
+        sky.truncate(200 * 9);
+        write_1476_db(s.dir.path(), "t02", &sky);
+        // The same stars under a name whose density is unknown, so no limit.
+        write_1476_db(s.dir.path(), "t17", &sky);
+
+        let mut p = params_for(&s, truth.ra0, truth.dec0);
+        p.fov = (600.0 * 3.0 / 3600.0_f64).to_radians();
+        p.search_radius = 0.0;
+        p.db_name = "t17".into();
+        assert!(
+            solve_image(&s.img, &p).is_err(),
+            "every detection: should not match"
+        );
+        p.db_name = "t02".into();
+        let wcs = solve_image(&s.img, &p).expect("solve at the database limit");
+        assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
     }
 
     #[test]

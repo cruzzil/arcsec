@@ -962,17 +962,30 @@ alternative **triangle** matcher (§4.1).
              └─ sort by SNR, keep the top `-s` (default 500)
 ```
 
-The detected list is not trimmed further. A brightest-half trim (`max(max_stars/2, 50)`)
+The detected list is not trimmed to a fraction. A brightest-half trim (`max(max_stars/2, 50)`)
 used to guard the 3-nearest-neighbour quads against faint stars missing from the
 catalogue; with 9-NN redundancy and star-level verification it only halved the quad
 count, and removing it took tier B to 34/34 (see [test-images.md §6.2](test-images.md#62-what-moved-the-numbers)).
 The blind front-end still applies it.
 
+It is trimmed to the **database limit**, as ASTAP does: the catalogue is
+density-limited, so the field cannot hold more than `density × area` catalogue stars,
+and image stars beyond that only build quads the catalogue cannot match. The catalogue
+spiral keeps the brightest `min(-s, density × area)` detections, with `area = FOV² ×
+short/long` and the density read from the database name as ASTAP reads it
+(`catalog::database_density`: two digits × 100 per deg², so d80 8000, d50 5000, d20
+2000, d05/v05/g05 500, v50 5000; `w08`, whose digits are a magnitude, holds 1 per deg²).
+With d80 it binds below ~0.25° fields; with g05 below ~1°, so never in g05's own range;
+with w08 on fields up to ~22°. On `rnd_080` (0.21°, galactic bulge) detection finds 973
+stars and keeps 500 where d80 holds 378 in the whole search window; capped at 344 it
+solves, verifying 132.
+
 ### 10.3 The catalogue spiral solve (`pipeline/solver.rs`)
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │ A. DETECT              up to `-s` stars (default 500), no further trim   │
+  │ A. DETECT              up to `-s` stars (default 500), then the brightest│
+  │                        min(-s, density × area) (the database limit)      │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ B. BUILD IMAGE QUADS   build_quads(): each star plus its nearest         │
   │                        neighbours, all 4-subsets of that group           │
@@ -1085,6 +1098,7 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 |---|---|---|---|
 | `quad_tolerance` | 0.007 | `-t` | per-ratio match tolerance |
 | `max_stars` | 500 | `-s` | detection cap; also sets catalogue depth |
+| database limit | `min(-s, density × FOV² × short/long)` | `solver.rs` `density_star_limit` | image stars kept for matching; density from the database name (`catalog::database_density`) |
 | `hfd_min` | 1.5″ | `-m` | minimum star size; converted to binned pixels, floor 0.8 px |
 | `search_radius` | 180° | `-r` | spiral radius |
 | binning | `round(1/arcsec_per_px)`, ≤ 16 | `-z` absent or 0 | auto downsample when `arcsec/px < 1`; any factor is capped so the binned image keeps ≥ 2 px a side |

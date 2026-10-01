@@ -11,6 +11,14 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Changed
+
+- The catalogue solve uses at most as many image stars as the database can hold in the
+  field, its density times the field's area (ASTAP's "database limit"): the brightest
+  `min(-s, density × area)` detections. Small, crowded fields with d80 (below ~0.25°)
+  no longer build their quads from stars the catalogue does not have. Library:
+  `catalog::database_density`.
+
 ### Fixed
 
 - The plate fit's similarity check compared the lengths of the matrix *rows*, which a
@@ -21,9 +29,8 @@ one is called out as such.
   `ArcsecError::BadSolution::ratio` now carries that singular-value ratio rather than
   the squared row-norm ratio, and its message changes accordingly.
 - A few wrong quads in the winning vote could drag the plate fit off a similarity, and
-  the search abandoned the right position. The quad path now
-  sigma-clips the matched quad centroids before fitting, as the triangle path already
-  did. Nebulous and crowded fields (Coalsack, B68, M16), coarse DSS and SHASSA fields
+  the search abandoned the right position. The quad path now sigma-clips the matched
+  quad centroids before fitting, as the triangle path already did. Nebulous and crowded fields (Coalsack, B68, M16), coarse DSS and SHASSA fields
   and TESS frames gain most.
 
 ## [0.2.0] - 2026-10-01
