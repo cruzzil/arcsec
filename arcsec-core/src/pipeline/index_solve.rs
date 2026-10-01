@@ -450,13 +450,7 @@ fn score(
 /// [`CHECK_STARS`] stars in the field, projected through the hypothesis, counted on
 /// the detections and compared with chance. `None` if the catalogue cannot be read
 /// (the caller then does not filter on it).
-fn catalog_check(
-    template: &SolveParams,
-    hy: &Hyp,
-    det: &DetGrid,
-    w: f64,
-    h: f64,
-) -> Option<usize> {
+fn catalog_check(template: &SolveParams, hy: &Hyp, det: &DetGrid, w: f64, h: f64) -> Option<usize> {
     let fov = hy.scale * w.max(h);
     let stars = crate::catalog::read_catalog_stars(
         &template.db_path,
