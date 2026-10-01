@@ -15,6 +15,7 @@
 //! solver reads by default, so `-d` is only needed to override it.
 
 mod fetch;
+pub mod index_cmd;
 mod registry;
 
 use std::ffi::OsString;
@@ -79,6 +80,19 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
         }
         Some(("remove", sm)) => cmd_remove(&dir, &names(sm), sm.get_flag("yes")),
         Some(("verify", _)) => cmd_verify(&dir),
+        Some(("index", sm)) => match sm.subcommand() {
+            Some(("build", b)) => index_cmd::cmd_build(
+                &dir,
+                b.get_one::<PathBuf>("db"),
+                b.get_one::<String>("name"),
+                *b.get_one::<f64>("min-fov").unwrap_or(&0.3),
+                *b.get_one::<f64>("max-fov").unwrap_or(&30.0),
+                b.get_one::<PathBuf>("out"),
+                *b.get_one::<usize>("threads").unwrap_or(&0),
+            ),
+            Some(("info", i)) => index_cmd::cmd_info(&dir, i.get_one::<PathBuf>("file")),
+            _ => Err("unknown index subcommand".to_string()),
+        },
         _ => Err("unknown subcommand".to_string()),
     };
 
@@ -204,6 +218,16 @@ fn cmd_list(dir: &Path) {
     println!("\nDescriptions:");
     for e in REGISTRY {
         println!("  {:<11} {}", e.id, e.desc);
+    }
+    let indexes = index_cmd::index_files(dir);
+    println!("\nBlind indexes (built locally with `arcsec catalog index build`):");
+    if indexes.is_empty() {
+        println!("  none");
+    }
+    for p in indexes {
+        if let Err(e) = index_cmd::describe(&p) {
+            println!("  {}: {e}", p.display());
+        }
     }
 }
 
@@ -367,6 +391,29 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
             println!("  {:<11} PROBLEMS:", e.id);
             for b in bad {
                 println!("      {b}");
+            }
+        }
+    }
+    for p in index_cmd::index_files(dir) {
+        checked += 1;
+        let name = p
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let res = arcsec_core::index::BlindIndex::open(&p).and_then(|ix| {
+            ix.validate()?;
+            Ok(ix)
+        });
+        match res {
+            Ok(ix) => println!(
+                "  {name:<11} ok  ({} patterns, {})",
+                ix.n_patterns(),
+                human(ix.file_size() as u64)
+            ),
+            Err(e) => {
+                problems += 1;
+                println!(
+                    "  {name:<11} PROBLEM: {e} - rebuild it with `arcsec catalog index build`"
+                );
             }
         }
     }

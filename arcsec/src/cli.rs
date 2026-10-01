@@ -187,7 +187,7 @@ pub fn solver_command() -> Command {
                 .short('i')
                 .value_name("PATH")
                 .value_parser(value_parser!(PathBuf))
-                .help("Astrometry.net index file, or a directory of index-*.fits files, for blind solving"),
+                .help("Blind index for solving with no position: an arcsec index (.arcsecix, see `arcsec catalog index build`), an Astrometry.net index file, or a directory holding either"),
         )
         .arg(
             Arg::new("threads")
@@ -338,6 +338,72 @@ pub fn catalog_command() -> Command {
         .subcommand(
             Command::new("verify")
                 .about("Check installed catalogues for missing or truncated files"),
+        )
+        .subcommand(
+            Command::new("index")
+                .about("Build or inspect arcsec's blind index (no download: built from an installed star database)")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("build")
+                        .about("Build a blind index from an installed star database")
+                        .arg(
+                            Arg::new("db")
+                                .long("db")
+                                .value_name("DIR")
+                                .value_parser(value_parser!(PathBuf))
+                                .help("Directory holding the star database [default: the catalogue directory]"),
+                        )
+                        .arg(
+                            Arg::new("name")
+                                .long("name")
+                                .short('D')
+                                .value_name("DB")
+                                .help("Database to build from, e.g. d80 [default: the deepest installed]"),
+                        )
+                        .arg(
+                            Arg::new("min-fov")
+                                .long("min-fov")
+                                .value_name("DEG")
+                                .value_parser(value_parser!(f64))
+                                .default_value("0.3")
+                                .help("Smallest field (short side, degrees) to support; smaller fields need much larger indexes"),
+                        )
+                        .arg(
+                            Arg::new("max-fov")
+                                .long("max-fov")
+                                .value_name("DEG")
+                                .value_parser(value_parser!(f64))
+                                .default_value("30")
+                                .help("Largest field (short side, degrees) to support"),
+                        )
+                        .arg(
+                            Arg::new("out")
+                                .long("out")
+                                .short('o')
+                                .value_name("FILE")
+                                .value_parser(value_parser!(PathBuf))
+                                .help("Output file [default: <catalogue dir>/<db>.arcsecix]"),
+                        )
+                        .arg(
+                            Arg::new("threads")
+                                .long("threads")
+                                .value_name("N")
+                                .value_parser(value_parser!(usize))
+                                .default_value("0")
+                                .help("Worker threads; 0 for one per core"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("info")
+                        .about("Describe a blind index: tiers, sizes, source")
+                        .arg(
+                            Arg::new("file")
+                                .value_name("FILE")
+                                .value_parser(value_parser!(PathBuf))
+                                .help("Index file [default: every *.arcsecix in the catalogue directory]"),
+                        ),
+                ),
         )
 }
 
