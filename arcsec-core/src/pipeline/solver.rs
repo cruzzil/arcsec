@@ -18,6 +18,7 @@ use crate::quads::{
 use crate::types::{MatchedStar, PairedPositions, PlateConstants, Star, StarList, WcsSolution};
 use crate::wcs::output::derive_wcs;
 
+use super::distortion::{Pair, Refined, StarGrid, best_linear, max_departure_px, refine};
 use super::spiral::SpiralSearch;
 
 /// Which pattern-matching algorithm to use in the catalog spiral loop.
@@ -303,26 +304,7 @@ fn verify_and_refit(
     }
 
     // Uniform grid over the detected stars for nearest-neighbour lookup.
-    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
-    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for st in &img_stars.0 {
-        min_x = min_x.min(st.x);
-        max_x = max_x.max(st.x);
-        min_y = min_y.min(st.y);
-        max_y = max_y.max(st.y);
-    }
-    if !(min_x.is_finite() && min_y.is_finite() && max_x > min_x && max_y > min_y) {
-        return None;
-    }
-    let cell = VERIFY_RADII[0].max(1.0);
-    let nx = (((max_x - min_x) / cell).ceil() as usize + 1).max(1);
-    let ny = (((max_y - min_y) / cell).ceil() as usize + 1).max(1);
-    let mut grid: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
-    for (i, st) in img_stars.0.iter().enumerate() {
-        let gx = ((st.x - min_x) / cell) as usize;
-        let gy = ((st.y - min_y) / cell) as usize;
-        grid[gy.min(ny - 1) * nx + gx.min(nx - 1)].push(i as u32);
-    }
+    let grid = StarGrid::new(img_stars, VERIFY_RADII[0])?;
 
     let mut current = plate.clone();
     // The last pass that fitted, with the spread of its matches.
@@ -345,42 +327,12 @@ fn verify_and_refit(
             let dy = cs.y - current.f;
             let px = (current.e * dx - current.b * dy) / det;
             let py = (-current.d * dx + current.a * dy) / det;
-            if px < min_x - radius
-                || px > max_x + radius
-                || py < min_y - radius
-                || py > max_y + radius
-            {
+            if !grid.near(px, py, radius) {
                 continue;
             }
-
-            let gx = (((px - min_x) / cell) as isize).clamp(0, nx as isize - 1);
-            let gy = (((py - min_y) / cell) as isize).clamp(0, ny as isize - 1);
-            let mut best_i: Option<usize> = None;
-            let mut best_d2 = r2;
-            for oy in -1isize..=1 {
-                for ox in -1isize..=1 {
-                    let cx = gx + ox;
-                    let cy = gy + oy;
-                    if cx < 0 || cy < 0 || cx >= nx as isize || cy >= ny as isize {
-                        continue;
-                    }
-                    for &i in &grid[cy as usize * nx + cx as usize] {
-                        let i = i as usize;
-                        if used[i] {
-                            continue;
-                        }
-                        let st = &img_stars.0[i];
-                        let d2 = (st.x - px) * (st.x - px) + (st.y - py) * (st.y - py);
-                        if d2 < best_d2 {
-                            best_d2 = d2;
-                            best_i = Some(i);
-                        }
-                    }
-                }
-            }
-            if let Some(i) = best_i {
+            if let Some(i) = grid.nearest(px, py, r2, &used) {
                 used[i] = true; // one-to-one: a detected star backs at most one catalogue star
-                img_pos.push((img_stars.0[i].x, img_stars.0[i].y));
+                img_pos.push(grid.pos(i));
                 cat_pos.push((cs.x, cs.y));
             }
         }
@@ -398,18 +350,8 @@ fn verify_and_refit(
             sq += (xp - xc).powi(2) + (yp - yc).powi(2);
         }
         let rms = (sq / img_pos.len() as f64).sqrt();
-        // Spread of the matched stars about their own centroid, as a fraction of the
-        // image half-diagonal. Matches clustered in one corner leave rotation free.
-        let n = img_pos.len() as f64;
-        let mx = img_pos.iter().map(|p| p.0).sum::<f64>() / n;
-        let my = img_pos.iter().map(|p| p.1).sum::<f64>() / n;
-        let var = img_pos
-            .iter()
-            .map(|&(x, y)| (x - mx) * (x - mx) + (y - my) * (y - my))
-            .sum::<f64>()
-            / n;
-        let half_diag = 0.5 * ((img_w * img_w + img_h * img_h) as f64).sqrt();
-        let spread = var.sqrt() / half_diag;
+        // Matches clustered in one corner leave rotation free.
+        let spread = spread_of(&img_pos, img_w, img_h);
         log::debug!(
             "verify: {} stars, spread {:.3}, rms {:.2}\"",
             img_pos.len(),
@@ -483,6 +425,9 @@ struct PositionOutcome {
     n_matched: usize,
     n_raw: usize,
     mag_limit: f64,
+    /// The field is distorted beyond what the model can follow: the search
+    /// stops here, without a solution.
+    refused: bool,
 }
 
 /// Result of trying one spiral position: the angular distance if the catalogue was
@@ -626,8 +571,31 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         }
     };
 
+    // The matched patterns, kept as seeds for the distortion model: wherever in
+    // the frame they fall, they are correspondences whatever the plate does there.
+    let seeds = Seeds {
+        img: img_pos.clone(),
+        cat: cat_pos.clone(),
+        ra: ra_db,
+        dec: dec_db,
+    };
     let Some((plate, n_matched)) = fit_pattern_pairs(img_pos, cat_pos, ctx.min_quads) else {
         return failed;
+    };
+
+    let found = |verified, ra_db, dec_db, refused| PositionTry {
+        sep_deg: Some(sep_deg),
+        outcome: Some(PositionOutcome {
+            idx,
+            ra_db,
+            dec_db,
+            sep_deg,
+            verified,
+            n_matched,
+            n_raw,
+            mag_limit,
+            refused,
+        }),
     };
 
     let Some(verified) = verify_and_refit(
@@ -639,6 +607,12 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         &ctx.accept,
     ) else {
         log::info!("Verification failed at this position; continuing search.");
+        if n_matched >= STRONG_VOTE
+            && let Some((verified, ra_c, dec_c)) =
+                second_chance(ctx, &cat_raw, &seeds, &plate, ra_db, dec_db)
+        {
+            return found(verified, ra_c, dec_c, false);
+        }
         return failed;
     };
     log::info!(
@@ -648,20 +622,288 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
     );
 
     let (verified, ra_db, dec_db) = recentre(ctx, &cat_raw, verified, ra_db, dec_db);
-
-    PositionTry {
-        sep_deg: Some(sep_deg),
-        outcome: Some(PositionOutcome {
-            idx,
-            ra_db,
-            dec_db,
-            sep_deg,
-            verified,
-            n_matched,
-            n_raw,
-            mag_limit,
-        }),
+    match model_distortion(ctx, &cat_raw, &seeds, verified, ra_db, dec_db) {
+        Modelled::Linear(v) => found(v, ra_db, dec_db, false),
+        Modelled::Distorted(v, ra_c, dec_c) => found(v, ra_c, dec_c, false),
+        Modelled::Refused(v) => found(v, ra_db, dec_db, true),
     }
+}
+
+/// Pattern pairs a position must keep, after clipping, for [`second_chance`].
+///
+/// A wrong position rarely keeps more than a handful; the two corpus images the
+/// second chance solves kept 60 and more.
+const STRONG_VOTE: usize = 50;
+
+/// Catalogue stars in standard coordinates about `(ra, dec)`, brightest first.
+fn project(cat_raw: &[CatalogStar], ra: f64, dec: f64) -> StarList {
+    StarList(
+        cat_raw
+            .iter()
+            .map(|s| {
+                let (x, y) = equatorial_standard(ra, dec, s.ra, s.dec, 1.0);
+                Star {
+                    x,
+                    y,
+                    snr: 1.0,
+                    hfd: 2.0,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The matched pattern centroids of a position, in the plane about `(ra, dec)`.
+struct Seeds {
+    img: Vec<(f64, f64)>,
+    cat: Vec<(f64, f64)>,
+    ra: f64,
+    dec: f64,
+}
+
+impl Seeds {
+    /// The pairs with their catalogue side moved to the plane about `(ra, dec)`.
+    fn in_plane(&self, ra: f64, dec: f64) -> Vec<Pair> {
+        self.img
+            .iter()
+            .zip(&self.cat)
+            .map(|(&i, &(x, y))| {
+                if ra == self.ra && dec == self.dec {
+                    return (i, (x, y));
+                }
+                let (sra, sdec) = standard_equatorial(self.ra, self.dec, x, y, 1.0);
+                (i, equatorial_standard(ra, dec, sra, sdec, 1.0))
+            })
+            .collect()
+    }
+}
+
+/// Fit the distortion model ([`refine`]) from a linear plate in the plane about
+/// `(ra, dec)`.
+fn fit_distortion(
+    ctx: &SpiralCtx<'_>,
+    cat_raw: &[CatalogStar],
+    seeds: &Seeds,
+    plate: &PlateConstants,
+    ra: f64,
+    dec: f64,
+) -> Option<Refined> {
+    // The spiral position's catalogue window need not cover the image: with the
+    // hint a third of a field off, a third of the frame has no catalogue stars,
+    // and the model cannot reach it. So read the catalogue again about the image
+    // centre, wide enough for its corners at any rotation, at the same density.
+    // One read per solve (or per strong position that failed to verify).
+    let (w, h) = (ctx.img.width as f64, ctx.img.height as f64);
+    let (xs, ys) = (
+        plate.a * (w - 1.0) * 0.5 + plate.b * (h - 1.0) * 0.5 + plate.c,
+        plate.d * (w - 1.0) * 0.5 + plate.e * (h - 1.0) * 0.5 + plate.f,
+    );
+    let (ra_c, dec_c) = standard_equatorial(ra, dec, xs, ys, 1.0);
+    let window = w.hypot(h) / w.max(h);
+    let cat = match read_catalog_stars(
+        &ctx.params.db_path,
+        &ctx.params.db_name,
+        ra_c,
+        dec_c,
+        ctx.params.fov * window,
+        (ctx.params.max_stars as f64 * window * window).round() as usize,
+    ) {
+        Ok(v) if !v.is_empty() => project(&v, ra, dec),
+        _ => project(cat_raw, ra, dec),
+    };
+    let grid = StarGrid::new(ctx.stars, VERIFY_RADII[0])?;
+    let r = refine(
+        &grid,
+        &cat,
+        &seeds.in_plane(ra, dec),
+        plate,
+        ctx.img.width,
+        ctx.img.height,
+        VERIFY_RADII[VERIFY_RADII.len() - 1],
+    )?;
+    log::info!(
+        "Distortion model: {} terms, {} stars within {} px, rms {:.2} px, F {:.1} over linear, {} of 9 cells",
+        r.model.n_terms,
+        r.img_pos.len(),
+        VERIFY_RADII[VERIFY_RADII.len() - 1],
+        r.rms / r.model.scale(),
+        r.f_linear,
+        r.cells
+    );
+    Some(r)
+}
+
+/// The linear plate closest to `r`'s model over the frame ([`best_linear`]), in
+/// the tangent plane at the image centre, with the model's star pairs carried into
+/// that plane. Returns it as a verification record, with the new tangent point.
+fn linear_from_model(
+    ctx: &SpiralCtx<'_>,
+    r: &Refined,
+    ra: f64,
+    dec: f64,
+) -> Option<(Verified, f64, f64)> {
+    let (w, h) = (ctx.img.width, ctx.img.height);
+    let (xs, ys) = r
+        .model
+        .apply((w as f64 - 1.0) * 0.5, (h as f64 - 1.0) * 0.5);
+    let (ra_c, dec_c) = standard_equatorial(ra, dec, xs, ys, 1.0);
+    // The plate of the model's plane is not linear in the centre's; carry the
+    // model across point by point.
+    let moved = |(x, y): (f64, f64)| {
+        let (sra, sdec) = standard_equatorial(ra, dec, x, y, 1.0);
+        equatorial_standard(ra_c, dec_c, sra, sdec, 1.0)
+    };
+    let plate = best_linear(|x, y| moved(r.model.apply(x, y)), w, h)?;
+    let cat_pos = r.cat_pos.iter().map(|&p| moved(p)).collect();
+    Some((
+        Verified {
+            plate,
+            rms: r.rms,
+            img_pos: r.img_pos.clone(),
+            cat_pos,
+        },
+        ra_c,
+        dec_c,
+    ))
+}
+
+/// What [`model_distortion`] made of a verified position.
+enum Modelled {
+    /// No distortion worth reporting: the verified plate, unchanged.
+    Linear(Verified),
+    /// The linear plate closest to the distortion model, with its tangent point.
+    Distorted(Verified, f64, f64),
+    /// Strong distortion the model cannot follow over the frame: the linear plate
+    /// would be wrong at the edges, so the solve is refused.
+    Refused(Verified),
+}
+
+/// F statistic of the distortion model over a linear plate, on the final pairs,
+/// needed for it to change the reported plate.
+///
+/// On the corpus, survey images with no distortion reach F = 4–24 (catalogue and
+/// centroid systematics a cubic can fit); every real distortion that changes a
+/// result is above 30 except one 2.2° TESS crop (F = 7). See test-images.md §7.9.
+const MIN_REPORT_F: f64 = 30.0;
+
+/// A distortion model changes the reported plate only if the verified plate is
+/// this far (pixels) from it somewhere in the frame. ZTF's real distortion of under
+/// a pixel (F up to 47) stays below it, and those solves are unchanged.
+const MIN_DEPARTURE_PX: f64 = 1.0;
+
+/// When the model cannot be used (its pairs leave part of the frame empty), a
+/// cubic fitted to the wide-radius pairs at least this significant ...
+const REFUSE_F: f64 = 100.0;
+/// ... and this far (pixels) from the verified plate where it has stars means the
+/// linear plate is a fit to part of a strongly distorted field: refuse it. No solve
+/// on the corpus comes near (largest F 21 at ≥ 2 px); fields with 4 px or more of
+/// distortion and a third of the frame empty all reach both.
+const REFUSE_DEPARTURE_PX: f64 = 3.0;
+
+/// After a linear plate verified, fit the distortion model and decide what to
+/// report.
+///
+/// The model replaces the verified plate when it is significant
+/// ([`MIN_REPORT_F`]), its pairs cover the frame (all nine cells of a 3×3 grid for
+/// a cubic, seven for a quadratic), it moves some part of the frame by
+/// [`MIN_DEPARTURE_PX`] or more, and it pairs at least 90% as many stars as the
+/// plate. Otherwise the verified plate stands, unless the field is visibly and
+/// strongly distorted where it has stars ([`REFUSE_F`], [`REFUSE_DEPARTURE_PX`]).
+fn model_distortion(
+    ctx: &SpiralCtx<'_>,
+    cat_raw: &[CatalogStar],
+    seeds: &Seeds,
+    verified: Verified,
+    ra: f64,
+    dec: f64,
+) -> Modelled {
+    let Some(r) = fit_distortion(ctx, cat_raw, seeds, &verified.plate, ra, dec) else {
+        return Modelled::Linear(verified);
+    };
+    let (w, h) = (ctx.img.width, ctx.img.height);
+    let departure = max_departure_px(&r.model, &verified.plate, w, h);
+    log::info!(
+        "Distortion: verified plate departs {departure:.2} px from the model; {} stars against {} verified",
+        r.img_pos.len(),
+        verified.n(),
+    );
+    let min_cells = if r.model.n_terms == 10 { 9 } else { 7 };
+    let usable = r.model.n_terms > 3
+        && r.cells >= min_cells
+        && r.f_linear >= MIN_REPORT_F
+        && r.img_pos.len() * 10 >= verified.n() * 9;
+    if usable {
+        if departure >= MIN_DEPARTURE_PX
+            && let Some((v, ra_c, dec_c)) = linear_from_model(ctx, &r, ra, dec)
+        {
+            log::info!("Reporting the linear plate closest to the distortion model.");
+            return Modelled::Distorted(v, ra_c, dec_c);
+        }
+        return Modelled::Linear(verified);
+    }
+    let (wide_f, wide_dep) = r.unmodelled();
+    log::info!("Where the stars are: a cubic with F {wide_f:.1}, {wide_dep:.2} px from the plate.");
+    if wide_f >= REFUSE_F && wide_dep >= REFUSE_DEPARTURE_PX {
+        log::info!(
+            "The field is distorted by {wide_dep:.1} px where it has stars, and the distortion \
+             cannot be modelled over the whole frame: refusing a linear solution."
+        );
+        return Modelled::Refused(verified);
+    }
+    Modelled::Linear(verified)
+}
+
+/// Spread of matched stars about their centroid, as a fraction of the image
+/// half-diagonal.
+fn spread_of(img_pos: &[(f64, f64)], img_w: usize, img_h: usize) -> f64 {
+    let n = img_pos.len() as f64;
+    let mx = img_pos.iter().map(|p| p.0).sum::<f64>() / n;
+    let my = img_pos.iter().map(|p| p.1).sum::<f64>() / n;
+    let var = img_pos
+        .iter()
+        .map(|&(x, y)| (x - mx) * (x - mx) + (y - my) * (y - my))
+        .sum::<f64>()
+        / n;
+    let half_diag = 0.5 * ((img_w * img_w + img_h * img_h) as f64).sqrt();
+    var.sqrt() / half_diag
+}
+
+/// A position whose patterns agree strongly but whose linear plate did not verify:
+/// fit the distortion model from the pattern plate and verify that instead, by
+/// the same acceptance rules. A strongly distorted field can leave too few stars
+/// within 2 pixels of any linear plate (`s_tess_b_pincush`, before the model,
+/// verified 11 at the right position and then accepted a neighbour's wrong plate).
+fn second_chance(
+    ctx: &SpiralCtx<'_>,
+    cat_raw: &[CatalogStar],
+    seeds: &Seeds,
+    plate: &PlateConstants,
+    ra: f64,
+    dec: f64,
+) -> Option<(Verified, f64, f64)> {
+    log::info!("Strong pattern match: retrying verification with a distortion model.");
+    let r = fit_distortion(ctx, cat_raw, seeds, plate, ra, dec)?;
+    // As for a reported model: it must reach the frame it will be extrapolated to.
+    if r.cells < if r.model.n_terms == 10 { 9 } else { 7 } {
+        log::info!("The distortion model's stars do not cover the frame.");
+        return None;
+    }
+    let probe = Verified {
+        plate: r.model.linear_part(),
+        rms: r.rms,
+        img_pos: r.img_pos.clone(),
+        cat_pos: r.cat_pos.clone(),
+    };
+    let spread = spread_of(&r.img_pos, ctx.img.width, ctx.img.height);
+    if !ctx.accept.accepts(&probe, spread) {
+        log::info!("The distortion model did not verify either.");
+        return None;
+    }
+    log::info!(
+        "Verified {} stars with the distortion model.",
+        r.img_pos.len()
+    );
+    linear_from_model(ctx, &r, ra, dec)
 }
 
 /// How many times denser than the image the catalogue read must be before
@@ -1076,6 +1318,16 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         start_idx += batch_len;
     }
 
+    if let Some(o) = winner.as_ref().filter(|o| o.refused) {
+        log::info!(
+            "No solution: the field at search position {} is too distorted for a linear plate.",
+            o.idx
+        );
+        return Err(ArcsecError::InsufficientQuads {
+            found: 0,
+            required: min_quads,
+        });
+    }
     if let Some(o) = winner {
         log::info!(
             "{} of {} patterns selected matching within {:.3} tolerance.",
@@ -1994,6 +2246,115 @@ mod tests {
         p.search_radius = 0.0;
         let wcs = solve_image(&img, &p).expect("shallow solve");
         assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
+    }
+
+    /// A 1024 × 768 field at 10"/px with `corner_px` of radial distortion at the
+    /// corners (positive: pincushion).
+    fn distorted_scene(corner_px: f64, seed: u64) -> Scene {
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 10.0, 23.0, false, 1024, 768)
+            .with_corner_distortion(corner_px);
+        scene(truth, Db::Areas1476, 300, seed)
+    }
+
+    /// Worst error (arcsec) of a solution with its SIP terms against the truth,
+    /// over the centre, the corners and two edge midpoints.
+    fn sip_error_arcsec(s: &Scene, wcs: &WcsSolution) -> f64 {
+        let tan = crate::wcs::TanWcs::from(wcs);
+        let (w, h) = (s.truth.width as f64 - 1.0, s.truth.height as f64 - 1.0);
+        let mut worst: f64 = 0.0;
+        for (fx, fy) in [
+            (0.5, 0.5),
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (0.5, 0.0),
+            (0.0, 0.5),
+        ] {
+            let (x, y) = (w * fx, h * fy);
+            let (ra_t, dec_t) = s.truth.pixel_to_sky(x, y);
+            let (ra_s, dec_s) = tan.pixel_to_sky(x + 1.0, y + 1.0);
+            let sep = crate::test_support::separation(ra_t, dec_t, ra_s, dec_s);
+            worst = worst.max(sep.to_degrees() * 3600.0);
+        }
+        worst
+    }
+
+    #[test]
+    fn a_distorted_field_reports_the_best_linear_plate_over_the_frame() {
+        // 30 px of pincushion at the corners. The 2 px verification keeps only the
+        // stars a linear plate fits, around the centre, and a plate fitted to them
+        // alone is ~190" out at the corners; the best linear plate over the frame
+        // is ~103" out, and that is what should be reported.
+        for (hint_ra, hint_dec) in [(84.3, -5.2), (84.3 + 0.9, -5.2 - 0.7)] {
+            let s = distorted_scene(30.0, 7);
+            let wcs =
+                solve_image(&s.img, &params_for(&s, deg(hint_ra), deg(hint_dec))).expect("solve");
+            let floor = s.truth.linear_floor_arcsec();
+            let err = s.truth.max_error_arcsec(&wcs);
+            assert!(floor > 80.0, "floor {floor:.1}\"");
+            assert!(
+                err < floor + 5.0,
+                "corner error {err:.1}\" against a linear floor of {floor:.1}\""
+            );
+            assert!(wcs.sip.is_none(), "solve_image never fits SIP");
+            // The model's pairs reach the corners, so --sip can follow the distortion.
+            assert!(wcs.stars_matched > 150, "{} stars", wcs.stars_matched);
+            let mut with_sip = wcs.clone();
+            with_sip.sip = crate::wcs::fit_sip(&wcs, 1024, 768);
+            assert!(with_sip.sip.is_some(), "the distortion is significant");
+            let sip_err = sip_error_arcsec(&s, &with_sip);
+            assert!(sip_err < 3.0, "SIP error {sip_err:.2}\"");
+        }
+    }
+
+    /// [`distorted_scene`] with the right third of the frame blanked to the
+    /// background, as a nebula or a dark cloud would leave it.
+    fn part_empty_scene(corner_px: f64) -> Scene {
+        let mut s = distorted_scene(corner_px, 7);
+        let w = s.img.width;
+        for y in 0..s.img.height {
+            for x in (2 * w / 3)..w {
+                s.img.data[y * w + x] = 1000.0;
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn strong_distortion_that_cannot_be_modelled_over_the_frame_is_refused() {
+        // 30 px of barrel distortion, and stars in only two thirds of the frame: a
+        // cubic cannot be trusted over the empty third, and the linear plate the
+        // verified stars give is ~230" out at the corners against a floor of
+        // ~124". Reporting it would be a false positive.
+        let s = part_empty_scene(30.0);
+        let r = solve_image(&s.img, &params_for(&s, deg(84.3), deg(-5.2)));
+        assert!(
+            matches!(r, Err(ArcsecError::InsufficientQuads { .. })),
+            "{:?}",
+            r.map(|w| s.truth.max_error_arcsec(&w))
+        );
+    }
+
+    #[test]
+    fn an_undistorted_field_with_an_empty_third_still_solves() {
+        let s = part_empty_scene(0.0);
+        let wcs = solve_image(&s.img, &params_for(&s, deg(84.3), deg(-5.2))).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    #[test]
+    fn mild_distortion_is_modelled_too() {
+        // 3 px at the corners: a linear plate fitted to the verified stars is
+        // already close to the floor, but not as close as the best one.
+        let s = distorted_scene(3.0, 11);
+        let wcs = solve_image(&s.img, &params_for(&s, deg(84.3), deg(-5.2))).expect("solve");
+        let floor = s.truth.linear_floor_arcsec();
+        let err = s.truth.max_error_arcsec(&wcs);
+        assert!(
+            err < floor + 2.0,
+            "corner error {err:.1}\" against a floor of {floor:.1}\""
+        );
     }
 
     #[test]
