@@ -36,7 +36,32 @@ use crate::extract::Extract2;
 /// cannot run on a one-pixel-wide image, and would otherwise panic on it.
 const MIN_SOLVE_DIM: usize = 2;
 
+/// The unsolved `.ini` and command line, once known, for [`main`]'s panic handler.
+static UNSOLVED_INI: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::new(None);
+
+/// Run arcsec, mapping a panic to a clean failure.
+///
+/// A panic is a bug, but whatever caused it, a program driving arcsec (N.I.N.A.,
+/// Ekos, a script) should still see an ASTAP exit code and a `PLTSOLVD=F` `.ini`
+/// rather than Rust's exit 101 and nothing. The panic hook has already printed the
+/// message and location by the time it is caught here. Exit 1, "no solution", is
+/// the generic failure; the image readers catch their own panics first and report
+/// exit 16, an unreadable file, instead. Worker threads re-raise their panics on
+/// the main thread (see `search_in_order`), so those are caught here too.
 fn main() {
+    if let Err(panic) = std::panic::catch_unwind(run) {
+        eprintln!(
+            "Error: internal error ({}). This is a bug in arcsec; please report it.",
+            image_io::panic_message(panic.as_ref())
+        );
+        if let Some((ini, cmdline)) = UNSOLVED_INI.lock().ok().and_then(|mut u| u.take()) {
+            let _ = fits_io::write_unsolved_ini_file(&ini, &cmdline);
+        }
+        process::exit(1);
+    }
+}
+
+fn run() {
     // `arcsec catalog ...` is handled by its own parser. Dispatching on argv[1]
     // before clap sees it keeps the ASTAP-compatible flag form (`arcsec -f x.fits`)
     // completely untouched — no subcommand can shadow a flag, and no flag parsing
@@ -83,6 +108,9 @@ fn main() {
             .join(" "),
         extract2: None,
     };
+    if let Ok(mut u) = UNSOLVED_INI.lock() {
+        *u = Some((unsolved.ini_path.clone(), unsolved.cmdline.clone()));
+    }
 
     let log_path = matches
         .get_flag("log")
@@ -392,6 +420,10 @@ fn main() {
     );
 
     // ── Write output files ───────────────────────────────────────────────────
+    // Solved: a later panic (in --update or --extract2) must not mark it unsolved.
+    if let Ok(mut u) = UNSOLVED_INI.lock() {
+        u.take();
+    }
     let wcs_path = with_extension(&out_base, "wcs");
     let ini_path = &unsolved.ini_path;
     if let Err(e) = fits_io::write_wcs_file(&wcs_path, &wcs) {
