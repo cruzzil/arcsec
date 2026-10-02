@@ -231,6 +231,9 @@ impl Acceptance {
         if v.n() < self.min_stars || spread < MIN_VERIFY_SPREAD {
             return false;
         }
+        if !significant(v) {
+            return false;
+        }
         if v.n() >= MIN_VERIFIED_STARS {
             return true;
         }
@@ -248,6 +251,38 @@ impl Acceptance {
         );
         ok
     }
+}
+
+/// Fewest verified stars, as a multiple of the matches expected by chance
+/// ([`Verified::chance`]).
+///
+/// In a dense frame a wrong plate pairs many catalogue stars with unrelated
+/// detections: on a 2.2° TESS crop (500 detections on 384 × 384 pixels) a
+/// catalogue star has a detection within 2 px of it 4% of the time, so a plate
+/// that puts 450 catalogue stars in the frame finds 18 by chance, and the
+/// shrinking-radius refit, which follows them, gets to 30. Wrong plates the
+/// catalogue-seeded search proposed there verified 1.5-2.7 times the chance count;
+/// every correct solve on the corpus verifies at least 7.9 times it.
+const MIN_SIGNIFICANCE: f64 = 4.0;
+
+/// Whether a verification stands out from chance ([`MIN_SIGNIFICANCE`]) and
+/// fits its own stars: a plate refitted to pairs found within the last match
+/// radius must keep them within it. A plate refitted to coincidences does not
+/// (4.4 px rms on two wrong plates, where no correct solve exceeds 1.35 px).
+fn significant(v: &Verified) -> bool {
+    let p = &v.plate;
+    let scale = (p.a * p.e - p.b * p.d).abs().sqrt();
+    let ok = v.n() as f64 >= MIN_SIGNIFICANCE * v.chance
+        && v.rms <= VERIFY_RADII[VERIFY_RADII.len() - 1] * scale;
+    if !ok {
+        log::info!(
+            "{} stars verified against {:.1} expected by chance, residual {:.2} px: refused",
+            v.n(),
+            v.chance,
+            v.rms / scale.max(f64::MIN_POSITIVE)
+        );
+    }
+    ok
 }
 
 /// Match radii (pixels) used by successive verification passes, coarse to fine.
@@ -270,6 +305,10 @@ struct Verified {
     /// The catalogue star each was paired with, in standard coordinates (arcsec)
     /// about the plane the plate maps into.
     cat_pos: Vec<(f64, f64)>,
+    /// Matches expected by chance in the last pass: the catalogue stars the plate
+    /// puts in the frame, times the chance that a detection lies within the match
+    /// radius of a random point. Zero where it was not estimated.
+    chance: f64,
 }
 
 impl Verified {
@@ -320,6 +359,7 @@ fn verify_and_refit(
         let mut img_pos: Vec<(f64, f64)> = Vec::new();
         let mut cat_pos: Vec<(f64, f64)> = Vec::new();
         let mut used = vec![false; img_stars.len()];
+        let mut in_frame = 0usize;
 
         for cs in &cat_stars.0 {
             // Invert  xi = a*x + b*y + c ;  eta = d*x + e*y + f
@@ -327,6 +367,9 @@ fn verify_and_refit(
             let dy = cs.y - current.f;
             let px = (current.e * dx - current.b * dy) / det;
             let py = (-current.d * dx + current.a * dy) / det;
+            if px >= 0.0 && py >= 0.0 && px < img_w as f64 && py < img_h as f64 {
+                in_frame += 1;
+            }
             if !grid.near(px, py, radius) {
                 continue;
             }
@@ -359,6 +402,11 @@ fn verify_and_refit(
             rms
         );
 
+        // A detection lies within `radius` of a random point in the frame with
+        // probability 1 - exp(-density * area of the circle).
+        let density = img_stars.len() as f64 / (img_w * img_h).max(1) as f64;
+        let chance = in_frame as f64 * (1.0 - (-density * core::f64::consts::PI * r2).exp());
+
         current = refined.clone();
         best = Some((
             Verified {
@@ -366,6 +414,7 @@ fn verify_and_refit(
                 rms,
                 img_pos,
                 cat_pos,
+                chance,
             },
             spread,
         ));
@@ -761,6 +810,7 @@ fn linear_from_model(
             rms: r.rms,
             img_pos: r.img_pos.clone(),
             cat_pos,
+            chance: 0.0,
         },
         ra_c,
         dec_c,
@@ -893,6 +943,8 @@ fn second_chance(
         rms: r.rms,
         img_pos: r.img_pos.clone(),
         cat_pos: r.cat_pos.clone(),
+        // Not estimated: the model's pairs are tested by coverage instead.
+        chance: 0.0,
     };
     let spread = spread_of(&r.img_pos, ctx.img.width, ctx.img.height);
     if !ctx.accept.accepts(&probe, spread) {
@@ -2162,14 +2214,17 @@ mod tests {
                 rms: rms_px * 3.2 * scale,
                 img_pos: vec![(0.0, 0.0); n],
                 cat_pos: vec![(0.0, 0.0); n],
+                chance: 0.0,
             }
         };
         let accept = Acceptance {
             min_stars: 12,
             expected_scale: 3.2,
         };
-        // Enough stars: scale and residual are not looked at.
-        assert!(accept.accepts(&verified(30, 3.9, 1.36), 0.5));
+        // Enough stars: scale is not looked at, and the residual only as far as
+        // the last match radius (`significant`).
+        assert!(accept.accepts(&verified(30, 1.9, 1.36), 0.5));
+        assert!(!accept.accepts(&verified(30, 2.1, 1.0), 0.5));
         // Sparse, right scale, tight fit.
         assert!(accept.accepts(&verified(12, 0.3, 1.0), 0.5));
         assert!(accept.accepts(&verified(20, 0.49, 1.09), 0.5));
@@ -2246,6 +2301,29 @@ mod tests {
         p.search_radius = 0.0;
         let wcs = solve_image(&img, &p).expect("shallow solve");
         assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
+    }
+
+    /// A plate is not accepted for a count of matches chance would give in a
+    /// dense frame, or a residual larger than the last match radius.
+    #[test]
+    fn a_verification_no_better_than_chance_is_refused() {
+        let plate = known_plate();
+        let v = |n: usize, chance: f64, rms_px: f64| Verified {
+            plate: plate.clone(),
+            rms: rms_px * 3.2,
+            img_pos: vec![(0.0, 0.0); n],
+            cat_pos: vec![(0.0, 0.0); n],
+            chance,
+        };
+        // The wrong plates of dense TESS crops: 30-32 stars against 15-18 by chance.
+        assert!(!significant(&v(31, 17.8, 1.3)));
+        assert!(!significant(&v(32, 14.7, 1.3)));
+        // The weakest correct solve on the corpus: 121 against 15.3.
+        assert!(significant(&v(121, 15.3, 0.65)));
+        // Many matches, but not fitted: 4.4 px rms after the 2 px pass.
+        assert!(!significant(&v(30, 3.1, 4.4)));
+        // No estimate (the distortion model's own pairs): only the residual counts.
+        assert!(significant(&v(30, 0.0, 1.9)));
     }
 
     /// A 1024 × 768 field at 10"/px with `corner_px` of radial distortion at the
