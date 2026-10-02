@@ -11,6 +11,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
 ### Added
 
 - **Catalogue-seeded fallback search** for fields whose brightness ranking disagrees
@@ -322,7 +324,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/cruzzil/arcsec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cruzzil/arcsec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cruzzil/arcsec/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/cruzzil/arcsec/compare/v0.1.1...v0.1.2
