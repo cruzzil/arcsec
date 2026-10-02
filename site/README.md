@@ -46,6 +46,11 @@ The site states facts about the CLI; when those change, the site must too.
   either, update it and compare a few answers with `arcsec catalog recommend --fov <deg>`.
 - **Options, exit codes and output files** are described in
   `src/content/docs/reference/cli.mdx`; compare with `arcsec --help`.
+- **The C library.** `src/content/docs/c-library.mdx` summarises
+  `libarcsec/README.md` and `libarcsec/include/arcsec.h`: the archive names (from
+  `.github/workflows/release.yml`), the status codes, the threading and memory rules.
+  `src/lib/release.ts` offers only the CLI's archives (`arcsec-v*`), not the library's
+  (`arcsec-lib-v*`).
 - **Figures** in the FAQ (solve time, tetra's solve count, the 15° field) come from
   `docs/test-images.md` §6.
 

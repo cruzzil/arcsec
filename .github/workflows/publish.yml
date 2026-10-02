@@ -27,7 +27,7 @@ env:
 
 jobs:
   publish:
-    name: Publish arcsec-core, then arcsec
+    name: Publish arcsec-core and arcsec-io, then arcsec
     runs-on: ubuntu-latest
     environment: crates-io
     steps:

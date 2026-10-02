@@ -1,8 +1,8 @@
 name: Release
 
-# Pushing a tag vX.Y.Z builds the CLI for each platform CI tests on and publishes a
-# GitHub Release with the archives, SHA-256 checksums, and the CHANGELOG.md section
-# for that version as its notes. Publishing to crates.io is separate and manual - see
+# Pushing a tag vX.Y.Z builds the CLI and the C library (libarcsec) for each platform
+# CI tests on and publishes a GitHub Release with the archives, SHA-256 checksums, and
+# the CHANGELOG.md section for that version as its notes. Publishing to crates.io is separate and manual - see
 # publish.yml and CONTRIBUTING.md.
 on:
   push:
@@ -140,10 +140,32 @@ jobs:
             echo "file=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
+      # libarcsec: headers, shared and static libraries, pkg-config and CMake files,
+      # as libarcsec/dist.sh lays them out (see libarcsec/README.md).
+      - name: Package the C library
+        id: package-lib
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="arcsec-lib-v${VERSION}-${{ matrix.target }}"
+          libarcsec/dist.sh --target ${{ matrix.target }} "dist/$name"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+            echo "file=dist/$name.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar -czf "$name.tar.gz" "$name"
+            echo "file=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.target }}
-          path: ${{ steps.package.outputs.file }}
+          path: |
+            ${{ steps.package.outputs.file }}
+            ${{ steps.package-lib.outputs.file }}
           if-no-files-found: error
 
   release:

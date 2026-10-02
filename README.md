@@ -271,7 +271,9 @@ As ASTAP's:
 
 The solving library is published separately as
 [`arcsec-core`](https://crates.io/crates/arcsec-core), for use from other Rust programs;
-see [its README](arcsec-core/README.md).
+see [its README](arcsec-core/README.md). C and C++ programs can use **libarcsec**, a
+shared or static library with a C header, released beside the program; see
+[libarcsec/README.md](libarcsec/README.md).
 
 ## License
 
