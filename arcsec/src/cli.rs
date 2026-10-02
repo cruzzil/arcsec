@@ -118,7 +118,7 @@ pub fn solver_command() -> Command {
                 .value_name("TOL")
                 .value_parser(value_parser!(f64))
                 .default_value("0.007")
-                .help("Quad matching tolerance"),
+                .help("Quad matching tolerance (at most 0.1)"),
         )
         .arg(
             Arg::new("hfd-min")

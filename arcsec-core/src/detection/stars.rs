@@ -795,7 +795,9 @@ fn detect_all(img: &ImageBuffer, bg: &Background, hfd_min: f64, max_stars: usize
     if w < 3 || h < 3 || img.data.len() < w * h {
         return Vec::new();
     }
-    let mut stars: Vec<Star> = Vec::with_capacity(max_stars + 1000);
+    // Only a capacity hint, so bound it by what the frame could hold: `-s` is the
+    // user's to set, and `-s 4000000000` reserved hundreds of gigabytes.
+    let mut stars: Vec<Star> = Vec::with_capacity(max_stars.saturating_add(1000).min(w * h));
     // img_sa: persistent star-area map. 1 = already detected, 0 = free.
     // Using a single marker prevents double-detection across retry passes.
     let mut img_sa = vec![0u8; w * h];

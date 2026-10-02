@@ -65,9 +65,74 @@ impl Iterator for SpiralSearch {
     }
 }
 
+/// The number of positions [`SpiralSearch::new`]`(max_distance)` yields: every ring
+/// out to `max_distance`, `(2m + 1)²`, or none for a negative distance.
+///
+/// Computed rather than counted so the solver need not hold the spiral in memory:
+/// a search radius of many fields (or a tiny field from a corrupt header, which
+/// saturates `max_distance` at `i32::MAX`) would otherwise allocate for billions
+/// of positions before trying the first.
+#[must_use]
+pub fn spiral_len(max_distance: i32) -> u64 {
+    match u64::try_from(max_distance) {
+        Ok(m) => (2 * m + 1) * (2 * m + 1),
+        Err(_) => 0,
+    }
+}
+
+/// The position [`SpiralSearch`] yields at `index` (0-based), without walking
+/// the spiral to it.
+///
+/// Ring `k ≥ 1` holds indices `(2k-1)² .. (2k+1)²` and is walked as four sides of
+/// `2k` positions each: up the east side from `(k, 1-k)`, west along the north
+/// side, down the west side and east along the south side, ending at `(k, -k)`.
+#[must_use]
+pub fn spiral_position(index: u64) -> (i32, i32) {
+    if index == 0 {
+        return (0, 0);
+    }
+    // In u64 until the ring's start is subtracted: (2k - 1)² overflows i64 for the
+    // outermost rings an index can name.
+    let ku = index.isqrt().div_ceil(2);
+    let offset = index - (2 * ku - 1) * (2 * ku - 1);
+    let (side, t) = (offset / (2 * ku), (offset % (2 * ku)) as i64);
+    let k = ku as i64;
+    let (x, y) = match side {
+        0 => (k, 1 - k + t),
+        1 => (k - 1 - t, k),
+        2 => (-k, k - 1 - t),
+        _ => (1 - k + t, -k),
+    };
+    // Every ring a `u64` index can reach (k < 2³²) fits; the solver's spiral
+    // never goes past `i32::MAX` rings.
+    (x as i32, y as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_form_matches_the_walk() {
+        for max in -2..=40 {
+            let walked: Vec<(i32, i32)> = SpiralSearch::new(max).collect();
+            assert_eq!(walked.len() as u64, spiral_len(max), "max {max}");
+            for (i, &p) in walked.iter().enumerate() {
+                assert_eq!(spiral_position(i as u64), p, "index {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_saturated_spiral_is_counted_not_built() {
+        // What a field of 1e-300 rad gives: (radius / fov + 2) as i32.
+        let m = (1.0f64 / 1e-300 + 2.0) as i32;
+        assert_eq!(m, i32::MAX);
+        let n = spiral_len(m);
+        assert_eq!(n, 4_294_967_295u64 * 4_294_967_295);
+        // The last position is the south-east corner of the outermost ring.
+        assert_eq!(spiral_position(n - 1), (i32::MAX, -i32::MAX));
+    }
 
     #[test]
     fn first_few_positions() {
