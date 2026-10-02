@@ -172,21 +172,9 @@ pub fn cmd_build(
     Ok(())
 }
 
-/// Index files to describe: `file`, or every `*.arcsecix` in `dir`.
+/// Index files to describe: every `*.arcsecix` in `dir`.
 pub fn index_files(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .is_some_and(|e| e == arcsec_core::index::format::EXTENSION)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    v.sort();
-    v
+    arcsec_core::auto::index_files(dir)
 }
 
 /// Print one index's description.

@@ -23,13 +23,15 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-pub use registry::{ASTAP_EXTS, Files, REGISTRY, is_installed};
 use registry::{
     Archive, Entry, Purpose, astap_file_count, expected_file_count, files_of, find, installed_size,
     is_complete, loose_files,
 };
+use registry::{REGISTRY, is_installed};
 
-use crate::{cli, image_io};
+use arcsec_io::image_io;
+
+use crate::cli;
 
 /// Parse and run `arcsec catalog <subcommand>`; returns the process exit code.
 ///
@@ -107,57 +109,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
 
 // ── Install location ────────────────────────────────────────────────────────────
 
-/// Where catalogues are kept, in priority order:
-///
-/// 1. `$ARCSEC_CATALOG_DIR`, if set — for people who keep them on another disk.
-/// 2. `$XDG_DATA_HOME/arcsec/catalogs` on Linux, or the platform equivalent:
-///    `~/Library/Application Support/arcsec/catalogs` on macOS,
-///    `%LOCALAPPDATA%\arcsec\catalogs` on Windows.
-/// 3. `~/.arcsec/catalogs` if the home directory cannot be resolved any other way.
-///
-/// The point is that a user who runs `arcsec catalog install d50` never has to know
-/// this path, and the solver looks here without being told.
+/// Where catalogues are kept: `$ARCSEC_CATALOG_DIR`, else the platform's data
+/// directory. The rules live in [`arcsec_core::auto::default_catalog_dir`], which
+/// the solver (and the C library) use too.
 pub fn default_dir() -> PathBuf {
-    default_dir_from(|k| std::env::var(k).ok())
-}
-
-/// [`default_dir`] with the environment supplied by `var`, so it can be tested
-/// without mutating the real process environment.
-fn default_dir_from(var: impl Fn(&str) -> Option<String>) -> PathBuf {
-    let get = |k: &str| var(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-
-    if let Some(p) = get("ARCSEC_CATALOG_DIR") {
-        return p;
-    }
-
-    let platform = if cfg!(target_os = "windows") {
-        get("LOCALAPPDATA").map(|p| p.join("arcsec").join("catalogs"))
-    } else if cfg!(target_os = "macos") {
-        get("HOME").map(|h| {
-            h.join("Library")
-                .join("Application Support")
-                .join("arcsec")
-                .join("catalogs")
-        })
-    } else {
-        get("XDG_DATA_HOME")
-            .map(|p| p.join("arcsec").join("catalogs"))
-            .or_else(|| {
-                get("HOME").map(|h| {
-                    h.join(".local")
-                        .join("share")
-                        .join("arcsec")
-                        .join("catalogs")
-                })
-            })
-    };
-
-    platform.unwrap_or_else(|| {
-        get("HOME").or_else(|| get("USERPROFILE")).map_or_else(
-            || PathBuf::from("catalogs"),
-            |h| h.join(".arcsec").join("catalogs"),
-        )
-    })
+    arcsec_core::auto::default_catalog_dir()
 }
 
 /// Bytes, in decimal units, to one decimal place: `901.3 MB`.
@@ -573,44 +529,6 @@ fn install_archive(dir: &Path, e: &Entry, keep: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_dir_is_namespaced() {
-        // Deliberately not asserting the exact path: it is platform dependent.
-        let d = default_dir();
-        assert!(
-            d.to_string_lossy().contains("arcsec"),
-            "catalogue dir should be namespaced: {}",
-            d.display()
-        );
-    }
-
-    #[test]
-    fn env_override_wins() {
-        let env = |k: &str| match k {
-            "ARCSEC_CATALOG_DIR" => Some("/data/catalogs".to_string()),
-            "HOME" => Some("/home/u".to_string()),
-            _ => None,
-        };
-        assert_eq!(default_dir_from(env), PathBuf::from("/data/catalogs"));
-    }
-
-    #[test]
-    fn empty_variables_count_as_unset() {
-        let env = |k: &str| match k {
-            "ARCSEC_CATALOG_DIR" | "XDG_DATA_HOME" | "LOCALAPPDATA" => Some(String::new()),
-            "HOME" => Some("/home/u".to_string()),
-            _ => None,
-        };
-        let d = default_dir_from(env);
-        assert!(d.starts_with("/home/u"), "got {}", d.display());
-        assert!(d.ends_with("catalogs"));
-    }
-
-    #[test]
-    fn no_home_at_all_still_yields_a_path() {
-        assert_eq!(default_dir_from(|_| None), PathBuf::from("catalogs"));
-    }
 
     #[test]
     fn human_sizes_read_sensibly() {

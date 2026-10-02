@@ -22,9 +22,7 @@ clap = "4.6.7"
 env_logger = { workspace = true }
 log = { workspace = true }
 arcsec-core = { workspace = true }
-rsfitsio = "0.470.3"
-bytemuck = "1.25"
-libc = "0.2"
+arcsec-io = { workspace = true }
 ureq = "3.4.2"
 # ASTAP's catalogue zips are all deflate (checked 2026-09-26), so only that
 # method is enabled. The defaults add zstd, bzip2, lzma, ppmd and AES, and zstd
@@ -32,8 +30,6 @@ ureq = "3.4.2"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4.46"
 lzma-rs = "0.3.0"
-xisf = "0.5.1"
-asdf-rs = "0.2.1"
 
 # Gives arcsec.exe a Windows version resource; see build.rs.
 [target.'cfg(windows)'.build-dependencies]

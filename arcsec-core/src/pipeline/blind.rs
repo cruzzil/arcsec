@@ -646,6 +646,9 @@ pub fn blind_solve(
     let mut best_score = 0usize;
 
     for parity_flip in [false, true] {
+        if crate::cancel::is_cancelled() {
+            return Err(ArcsecError::Cancelled);
+        }
         let (ra, dec, score) = run_blind_pass(
             img,
             index,

@@ -1328,6 +1328,8 @@ fn seeded_fallback(ctx: &SpiralCtx<'_>, deep: &StarList) -> Option<PositionOutco
 /// - [`ArcsecError::CatalogNotFound`] if `db_path` holds no database called `db_name`.
 /// - [`ArcsecError::InsufficientStars`] if fewer than 5 stars are detected.
 /// - [`ArcsecError::InsufficientQuads`] if no spiral position yields a verified match.
+/// - [`ArcsecError::Cancelled`] if the ambient [`crate::cancel::CancelToken`] fired
+///   before a position verified.
 pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Result<WcsSolution> {
     // The spiral steps by one FOV out to the search radius, so a zero, negative or
     // NaN FOV would make the step count infinite (and saturate to i32::MAX).
@@ -1350,6 +1352,13 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     // solution" - when the image is fine and the database is the problem.
     if !crate::catalog::catalog_present(&params.db_path, &params.db_name) {
         return Err(ArcsecError::CatalogNotFound(params.db_path.clone()));
+    }
+
+    // Polled before each spiral position, on whichever worker takes it.
+    let cancel = crate::cancel::current();
+    let cancelled = || crate::cancel::fired(cancel.as_ref());
+    if cancelled() {
+        return Err(ArcsecError::Cancelled);
     }
 
     // --- Phase A: star detection ---
@@ -1393,6 +1402,9 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         );
     }
 
+    if cancelled() {
+        return Err(ArcsecError::Cancelled);
+    }
     let nrstars_image = stars.len();
     if nrstars_image < 5 {
         return Err(ArcsecError::InsufficientStars {
@@ -1495,11 +1507,18 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
 
     let positions: Vec<(i32, i32)> = SpiralSearch::new(max_distance).collect();
     let (step_distances, winner) = search_in_order(positions.len(), n_threads, |idx| {
+        // A cancelled search runs out the remaining positions as no-ops.
+        if cancelled() {
+            return (None, None);
+        }
         let (sx, sy) = positions[idx];
         let t = try_position(&ctx, idx, sx, sy);
         (t.sep_deg, t.outcome)
     });
     let mut winner = winner.map(|(_, o)| o);
+    if winner.is_none() && cancelled() {
+        return Err(ArcsecError::Cancelled);
+    }
 
     // Nothing verified anywhere: the catalogue-seeded fallback, once, about the hint.
     if winner.is_none() && params.method == SolveMethod::Quads {
@@ -2288,6 +2307,61 @@ mod tests {
         // The pixel scale and rotation come back too.
         assert!((wcs.cdelt2 * 3600.0 - 5.0).abs() < 0.01, "{}", wcs.cdelt2);
         assert!((wcs.crota2 - 23.0).abs() < 0.05, "crota2 {}", wcs.crota2);
+    }
+
+    #[test]
+    fn a_cancelled_token_stops_the_search() {
+        use crate::cancel::{CancelToken, with_token};
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        let p = params_for(&s, deg(84.3 + 0.6), deg(-5.2 - 0.45));
+
+        let token = CancelToken::new();
+        token.cancel();
+        let r = with_token(&token, || solve_image(&s.img, &p));
+        assert!(matches!(r, Err(ArcsecError::Cancelled)), "{r:?}");
+
+        // Cancelled part-way, from inside the search: the hint (position 0, which
+        // does not verify from this offset) runs, and the poll fires before any
+        // other position, on every worker.
+        let polls = alloc::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let n = alloc::sync::Arc::clone(&polls);
+        let token = CancelToken::with_poll(move || {
+            n.fetch_add(1, core::sync::atomic::Ordering::Relaxed) >= 1
+        });
+        let mut p4 = p.clone();
+        p4.threads = 4;
+        let r = with_token(&token, || solve_image(&s.img, &p4));
+        assert!(matches!(r, Err(ArcsecError::Cancelled)), "{r:?}");
+
+        // A token that never fires changes nothing.
+        let wcs = with_token(&CancelToken::new(), || solve_image(&s.img, &p)).expect("solve");
+        assert_solved(&s, &wcs, 1.0);
+    }
+
+    #[test]
+    fn the_auto_plan_solves_a_synthetic_field() {
+        use crate::auto::{Plan, SolveRequest};
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        let req = SolveRequest {
+            hint: Some((deg(84.3 + 0.3), deg(-5.2))),
+            pixel_scale: Some(5.0),
+            search_radius: deg(2.0),
+            db_path: Some(s.dir.path().to_path_buf()),
+            db_name: Some("t50".into()),
+            threads: 2,
+            sip: true,
+            ..SolveRequest::default()
+        };
+        let plan = Plan::new(&req, s.img.width, s.img.height).unwrap();
+        assert_eq!(plan.binning, 1);
+        let solved = plan.solve(&s.img).expect("solve");
+        let mut wcs = solved.wcs;
+        // A distortion-free field has nothing for SIP to fit, so it may be absent.
+        wcs.sip = None;
+        assert_solved(&s, &wcs, 1.0);
+        assert!(solved.index_estimate.is_none());
     }
 
     #[test]

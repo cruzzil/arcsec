@@ -1,21 +1,22 @@
-//! `-i/--index`: rank Astrometry.net index files and run the blind solver over them
-//! to estimate the image position for the catalogue solve.
+//! Blind solving for [`super::Plan`]: rank Astrometry.net index files and run the
+//! blind solver over them to estimate the image position for the catalogue solve,
+//! and decide when and how arcsec's own index is used.
 
 use alloc::sync::Arc;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use arcsec_core::ArcsecError;
-use arcsec_core::catalog::{load_anet_index, peek_anet_scale};
-use arcsec_core::pipeline::{BlindSolveParams, blind_solve};
-use arcsec_core::types::ImageBuffer;
+use crate::ArcsecError;
+use crate::catalog::{load_anet_index, peek_anet_scale};
+use crate::pipeline::{BlindSolveParams, blind_solve};
+use crate::types::ImageBuffer;
 
 /// Index files tried per solve. They run on separate threads, so total blind time is
 /// `max(t_index0, t_index1)` rather than the sum.
 const BLIND_MAX_INDEXES: usize = 2;
 
 /// What the blind stage concluded.
-pub enum BlindOutcome {
+pub(crate) enum BlindOutcome {
     /// Position estimate (RA, Dec) in radians, from the best-scoring index.
     Found(f64, f64),
     /// No index produced a position.
@@ -38,6 +39,7 @@ fn is_index_name(name: &str) -> bool {
 ///
 /// When `fov_deg <= 0` the scale filter is skipped and files are returned
 /// in ascending filename order.
+#[must_use]
 pub fn collect_index_files(path: &Path, fov_deg: f64) -> Vec<PathBuf> {
     if path.is_file() {
         return vec![path.to_path_buf()];
@@ -95,14 +97,17 @@ pub fn collect_index_files(path: &Path, fov_deg: f64) -> Vec<PathBuf> {
 /// highest-scoring position.
 ///
 /// The number of concurrent indexes is capped by the thread limit, so
-/// `--threads 1` stays genuinely single-threaded.
-pub fn estimate_position(
+/// `--threads 1` stays genuinely single-threaded. Each index thread inherits the
+/// caller's thread limit and cancellation token.
+pub(crate) fn estimate_position(
     img: &ImageBuffer,
     index_files: &[PathBuf],
     params: &BlindSolveParams,
 ) -> BlindOutcome {
-    let max_indexes = BLIND_MAX_INDEXES.min(arcsec_core::max_threads().max(1));
+    let max_indexes = BLIND_MAX_INDEXES.min(crate::max_threads().max(1));
     let img = Arc::new(img.clone());
+    let cancel = crate::cancel::current();
+    let local_threads = crate::local_max_threads();
 
     let handles: Vec<_> = index_files
         .iter()
@@ -111,10 +116,15 @@ pub fn estimate_position(
             let idx_path = idx_path.clone();
             let img = Arc::clone(&img);
             let params = params.clone();
+            let cancel = cancel.clone();
             std::thread::spawn(move || -> Result<(f64, f64, usize), ArcsecError> {
                 log::info!("Blind: trying index {}", idx_path.display());
                 let anet_index = load_anet_index(&idx_path)?;
-                let res = blind_solve(&img, &anet_index, &params);
+                let res = crate::cancel::with_optional(cancel.as_ref(), || {
+                    crate::with_max_threads(local_threads, || {
+                        blind_solve(&img, &anet_index, &params)
+                    })
+                });
                 if let Ok((ra, dec, score)) = &res {
                     log::info!(
                         "Blind: {} → RA={:.3}° Dec={:.3}° score={score}",
@@ -169,20 +179,21 @@ const SCALE_UNKNOWN: (f64, f64) = (0.3, 60.0);
 /// The arcsec blind index `path` names: the file itself, or the first `*.arcsecix`
 /// in a directory. `None` when there is none (the path may still hold
 /// Astrometry.net files).
+#[must_use]
 pub fn find_arcsec_index(path: &Path) -> Option<PathBuf> {
     if path.is_file() {
-        return arcsec_core::index::is_blind_index(path).then(|| path.to_path_buf());
+        return crate::index::is_blind_index(path).then(|| path.to_path_buf());
     }
-    crate::catalog_cmd::index_cmd::index_files(path)
+    super::index_files(path)
         .into_iter()
-        .find(|p| arcsec_core::index::is_blind_index(p))
+        .find(|p| crate::index::is_blind_index(p))
 }
 
 /// Search radius, in fields, that the spiral covers before an automatically found
 /// index is consulted. Inside it the result is exactly the spiral's, so a usable
 /// hint solves as it always did; beyond it the spiral's cost grows with the square
 /// of the radius, while the index's does not grow at all.
-pub const AUTO_SPIRAL_FIELDS: f64 = 5.0;
+pub(crate) const AUTO_SPIRAL_FIELDS: f64 = 5.0;
 
 /// The smallest stage-one spiral radius, radians (1°).
 const AUTO_SPIRAL_MIN: f64 = 1.0 * core::f64::consts::PI / 180.0;
@@ -194,7 +205,7 @@ const AUTO_SPIRAL_MIN: f64 = 1.0 * core::f64::consts::PI / 180.0;
 const AUTO_MIN_RADIUS: f64 = 10.0 * core::f64::consts::PI / 180.0;
 
 /// An arcsec index to use, and whether the user named it.
-pub struct OwnIndex {
+pub(crate) struct OwnIndex {
     path: PathBuf,
     explicit: bool,
 }
@@ -203,9 +214,9 @@ pub struct OwnIndex {
 /// otherwise, when the search radius reaches past [`AUTO_SPIRAL_FIELDS`] fields and
 /// is at least 10°, one installed in the catalogue directory or beside the star
 /// database.
-pub fn arcsec_index_for(
+pub(crate) fn arcsec_index_for(
     explicit: Option<&PathBuf>,
-    template: &arcsec_core::pipeline::SolveParams,
+    template: &crate::pipeline::SolveParams,
 ) -> Option<OwnIndex> {
     if let Some(p) = explicit {
         return find_arcsec_index(p).map(|path| OwnIndex {
@@ -218,7 +229,7 @@ pub fn arcsec_index_for(
     {
         return None;
     }
-    find_arcsec_index(&crate::catalog_cmd::default_dir())
+    find_arcsec_index(&super::default_catalog_dir())
         .or_else(|| find_arcsec_index(&template.db_path))
         .map(|path| OwnIndex {
             path,
@@ -226,21 +237,23 @@ pub fn arcsec_index_for(
         })
 }
 
-fn stage_one_radius(template: &arcsec_core::pipeline::SolveParams) -> f64 {
+fn stage_one_radius(template: &crate::pipeline::SolveParams) -> f64 {
     (template.fov * AUTO_SPIRAL_FIELDS).max(AUTO_SPIRAL_MIN)
 }
 
 /// What [`index_stage`] concluded.
-pub enum IndexOutcome {
+pub(crate) enum IndexOutcome {
     /// A verified solution within the search radius (or anywhere, for a named
     /// index).
-    Solved(Box<arcsec_core::types::WcsSolution>),
+    Solved(Box<crate::types::WcsSolution>),
     /// The index verified the field outside the search radius, at this distance
     /// from the hint (degrees): the ordinary search cannot find it within `-r`,
     /// and there is no need to run it.
     Elsewhere(f64),
     /// Nothing verified; the caller runs the ordinary search.
     NotFound,
+    /// The solve was cancelled.
+    Cancelled,
 }
 
 /// Solve with an arcsec index.
@@ -261,10 +274,10 @@ pub enum IndexOutcome {
 /// `scale` is arcseconds per pixel of the image as solved (after binning);
 /// `scale_known` says whether it came from the user or the header rather than the
 /// 1″/px fallback.
-pub fn index_stage(
+pub(crate) fn index_stage(
     img: &ImageBuffer,
     ix: &OwnIndex,
-    template: &arcsec_core::pipeline::SolveParams,
+    template: &crate::pipeline::SolveParams,
     has_hint: bool,
     scale: f64,
     scale_known: bool,
@@ -276,12 +289,14 @@ pub fn index_stage(
             "Searching {:.1}° round the hint before the blind index.",
             r0.to_degrees()
         );
-        let near = arcsec_core::pipeline::SolveParams {
+        let near = crate::pipeline::SolveParams {
             search_radius: r0,
             ..template.clone()
         };
-        if let Ok(w) = arcsec_core::pipeline::solve_image(img, &near) {
-            return IndexOutcome::Solved(Box::new(w));
+        match crate::pipeline::solve_image(img, &near) {
+            Ok(w) => return IndexOutcome::Solved(Box::new(w)),
+            Err(ArcsecError::Cancelled) => return IndexOutcome::Cancelled,
+            Err(_) => {}
         }
     }
     // Named with --index the solve is blind, as with Astrometry.net files; found
@@ -291,8 +306,8 @@ pub fn index_stage(
         template.dec_hint,
         template.search_radius + template.fov,
     ));
-    let from_hint = |w: &arcsec_core::types::WcsSolution| {
-        arcsec_core::math::coords::ang_sep(w.ra0, w.dec0, template.ra_hint, template.dec_hint)
+    let from_hint = |w: &crate::types::WcsSolution| {
+        crate::math::coords::ang_sep(w.ra0, w.dec0, template.ra_hint, template.dec_hint)
     };
     if let Some(mut wcs) =
         solve_with_arcsec_index(img, &ix.path, template, scale, scale_known, within)
@@ -318,6 +333,9 @@ pub fn index_stage(
             return IndexOutcome::Elsewhere(sep.to_degrees());
         }
     }
+    if crate::cancel::is_cancelled() {
+        return IndexOutcome::Cancelled;
+    }
     IndexOutcome::NotFound
 }
 
@@ -329,7 +347,7 @@ const ELSEWHERE_FIELDS: f64 = 2.0;
 
 /// Whether a field centred `sep` radians from the hint is out of the ordinary
 /// search's reach.
-fn beyond_reach(sep: f64, template: &arcsec_core::pipeline::SolveParams) -> bool {
+fn beyond_reach(sep: f64, template: &crate::pipeline::SolveParams) -> bool {
     sep > template.search_radius + ELSEWHERE_FIELDS * template.fov
 }
 
@@ -337,16 +355,16 @@ fn beyond_reach(sep: f64, template: &arcsec_core::pipeline::SolveParams) -> bool
 fn solve_with_arcsec_index(
     img: &ImageBuffer,
     path: &Path,
-    template: &arcsec_core::pipeline::SolveParams,
+    template: &crate::pipeline::SolveParams,
     scale: f64,
     scale_known: bool,
     within: Option<(f64, f64, f64)>,
-) -> Option<arcsec_core::types::WcsSolution> {
+) -> Option<crate::types::WcsSolution> {
     let t0 = std::time::Instant::now();
-    let index = match arcsec_core::index::BlindIndex::open(path) {
+    let index = match crate::index::BlindIndex::open(path) {
         Ok(ix) => ix,
         Err(e) => {
-            eprintln!("Blind index {}: {e}", path.display());
+            log::warn!("Blind index {}: {e}", path.display());
             return None;
         }
     };
@@ -360,12 +378,12 @@ fn solve_with_arcsec_index(
         path.display(),
         index.n_patterns()
     );
-    let params = arcsec_core::pipeline::IndexSolveParams {
+    let params = crate::pipeline::IndexSolveParams {
         scale_lo,
         scale_hi,
         within,
     };
-    match arcsec_core::pipeline::index_solve(img, &index, template, &params) {
+    match crate::pipeline::index_solve(img, &index, template, &params) {
         Ok((wcs, stats)) => {
             log::info!(
                 "Blind index: solved in {:.2} s (hypothesis rank {:?}, score {}, {} hinted solves)",
@@ -400,7 +418,7 @@ mod tests {
 
     #[test]
     fn only_a_field_two_fields_past_the_radius_is_beyond_reach() {
-        use arcsec_core::pipeline::{SearchSpeed, SolveMethod, SolveParams};
+        use crate::pipeline::{SearchSpeed, SolveMethod, SolveParams};
         let deg = f64::to_radians;
         let t = SolveParams {
             ra_hint: 0.0,

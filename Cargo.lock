@@ -81,18 +81,14 @@ name = "arcsec"
 version = "0.4.0"
 dependencies = [
  "arcsec-core",
- "asdf-rs",
- "bytemuck",
+ "arcsec-io",
  "clap",
  "env_logger",
- "libc",
  "log",
  "lzma-rs",
- "rsfitsio",
  "tar",
  "ureq",
  "winresource",
- "xisf",
  "zip",
 ]
 
@@ -104,6 +100,17 @@ dependencies = [
  "log",
  "memmap2",
  "rsfitsio",
+]
+
+[[package]]
+name = "arcsec-io"
+version = "0.4.0"
+dependencies = [
+ "arcsec-core",
+ "asdf-rs",
+ "libc",
+ "rsfitsio",
+ "xisf",
 ]
 
 [[package]]

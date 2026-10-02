@@ -672,7 +672,8 @@ fn debug_truth(scored: &[(usize, usize, usize, Hyp)], fov: f64) {
 /// [`ArcsecError::InsufficientStars`] with fewer than 6 detected stars;
 /// [`ArcsecError::InsufficientQuads`] when no hypothesis verifies (`found` is the
 /// best projection score); [`ArcsecError::InvalidParameter`] for a bad scale range;
-/// errors from the hinted solver's catalogue access.
+/// errors from the hinted solver's catalogue access; [`ArcsecError::Cancelled`] when the
+/// ambient [`crate::cancel::CancelToken`] fires.
 pub fn index_solve(
     img: &ImageBuffer,
     index: &BlindIndex,
@@ -689,6 +690,8 @@ pub fn index_solve(
     }
     let (scale_lo, scale_hi) = (params.scale_lo * as2rad, params.scale_hi * as2rad);
     let mut stats = IndexSolveStats::default();
+    let cancel = crate::cancel::current();
+    let cancelled = || crate::cancel::fired(cancel.as_ref());
 
     // ── Detect ────────────────────────────────────────────────────────────────
     // Every detection, not the `-s` brightest by SNR: the index's patterns are
@@ -792,6 +795,9 @@ pub fn index_solve(
             votes.add(hy.ra, hy.dec, hy.scale, hy);
         }
     }
+    if cancelled() {
+        return Err(ArcsecError::Cancelled);
+    }
     let regions = votes.regions(MAX_REGIONS);
     stats.regions = regions.len();
     log::info!(
@@ -868,6 +874,9 @@ pub fn index_solve(
         if check < MIN_CHECK {
             break;
         }
+        if cancelled() {
+            return Err(ArcsecError::Cancelled);
+        }
         stats.verified += 1;
         let fov = hy.scale * w.max(h);
         log::info!(
@@ -895,7 +904,11 @@ pub fn index_solve(
                 stats.best_score = sc;
                 return Ok((wcs, stats));
             }
-            Err(e @ (ArcsecError::CatalogNotFound(_) | ArcsecError::CatalogIo(_))) => {
+            Err(
+                e @ (ArcsecError::CatalogNotFound(_)
+                | ArcsecError::CatalogIo(_)
+                | ArcsecError::Cancelled),
+            ) => {
                 return Err(e);
             }
             Err(e) => last_err = Some(e),

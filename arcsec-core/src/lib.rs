@@ -88,15 +88,52 @@ pub fn set_max_threads(n: usize) {
     MAX_THREADS.store(n, Ordering::Relaxed);
 }
 
-/// Resolve the thread limit: the configured value, or one per core if unset.
+std::thread_local! {
+    /// Per-thread override of [`MAX_THREADS`]; 0 = none. See [`with_max_threads`].
+    static LOCAL_MAX_THREADS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Resolve the thread limit: this thread's override from [`with_max_threads`], else
+/// the process-wide value from [`set_max_threads`], else one per core.
 #[must_use]
 pub fn max_threads() -> usize {
-    match MAX_THREADS.load(Ordering::Relaxed) {
-        0 => std::thread::available_parallelism().map_or(1, core::num::NonZero::get),
+    match LOCAL_MAX_THREADS.with(core::cell::Cell::get) {
+        0 => match MAX_THREADS.load(Ordering::Relaxed) {
+            0 => std::thread::available_parallelism().map_or(1, core::num::NonZero::get),
+            n => n,
+        },
         n => n,
     }
 }
 
+/// Run `f` with the thread limit set to `n` on this thread only (0 = no override).
+///
+/// [`set_max_threads`] is process-wide, which is right for a command-line tool and
+/// wrong for a library host running several solves at once with different
+/// budgets. Every stage reads the limit on the thread that called the solver, and
+/// the solvers that hand work to their own threads pass the override on, so a
+/// solve inside `f` keeps to `n` threads whatever the rest of the process does.
+/// The previous value is restored when `f` returns or unwinds.
+pub fn with_max_threads<R>(n: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LOCAL_MAX_THREADS.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(LOCAL_MAX_THREADS.with(|c| c.replace(n)));
+    f()
+}
+
+/// This thread's override from [`with_max_threads`], 0 if none: what a solver
+/// passes on to a thread it spawns.
+#[must_use]
+pub fn local_max_threads() -> usize {
+    LOCAL_MAX_THREADS.with(core::cell::Cell::get)
+}
+
+pub mod auto;
+pub mod cancel;
 pub mod catalog;
 pub mod detection;
 pub mod error;
