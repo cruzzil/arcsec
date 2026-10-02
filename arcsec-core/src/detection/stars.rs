@@ -97,6 +97,14 @@ pub fn measure_star_with_flux(img: &ImageBuffer, x1: i32, y1: i32) -> Option<(St
     measure::<true>(img, x1, y1).ok()
 }
 
+/// [`measure`] as the detection scan calls it, kept out of line: inlined, it
+/// swells the scan's per-pixel loop, which every pixel of the frame runs through,
+/// and on a frame that solves in 0.1 s the scan alone took 10 ms longer.
+#[inline(never)]
+fn measure_for_scan(img: &ImageBuffer, x1: i32, y1: i32) -> Result<(Star, f64), Reject> {
+    measure::<false>(img, x1, y1)
+}
+
 /// Why [`measure`] turned a candidate down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reject {
@@ -1186,7 +1194,7 @@ fn detect_pass_scan<M: Markers>(
                 continue;
             }
 
-            let measured = match measure::<false>(img, fx as i32, fy as i32) {
+            let measured = match measure_for_scan(img, fx as i32, fy as i32) {
                 Ok((star, _)) => {
                     let mark = (3.0 * star.hfd).round() as i32;
                     Some((star, mark, false))

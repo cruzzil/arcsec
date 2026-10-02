@@ -134,9 +134,9 @@ const NEAR_MAX_CELLS_PER_SIDE: f64 = 1024.0;
 /// least `probe_tol` wide, so a point whose cell is clear has no star within
 /// `probe_tol`.
 struct NearMap {
-    min_x: f64,
-    min_y: f64,
-    inv_cell: f64,
+    min_x: f32,
+    min_y: f32,
+    inv_cell: f32,
     nx: usize,
     ny: usize,
     bits: Vec<u64>,
@@ -148,7 +148,11 @@ impl NearMap {
             grid.nx as f64 / grid.inv_cell,
             grid.ny as f64 / grid.inv_cell,
         );
-        let cell = probe_tol.max(w.max(h) / NEAR_MAX_CELLS_PER_SIDE).max(0.5);
+        // A little over `probe_tol`, so that rounding the f32 probes cannot carry
+        // a point within `probe_tol` of a star two cells from it.
+        let cell = (1.01 * probe_tol)
+            .max(w.max(h) / NEAR_MAX_CELLS_PER_SIDE)
+            .max(0.5);
         let inv_cell = 1.0 / cell;
         let nx = (w * inv_cell) as usize + 1;
         let ny = (h * inv_cell) as usize + 1;
@@ -164,19 +168,20 @@ impl NearMap {
             }
         }
         Self {
-            min_x: grid.min_x,
-            min_y: grid.min_y,
-            inv_cell,
+            min_x: grid.min_x as f32,
+            min_y: grid.min_y as f32,
+            inv_cell: inv_cell as f32,
             nx,
             ny,
             bits,
         }
     }
 
+    /// False if no star can be within `probe_tol` of `(x, y)`.
     #[inline]
-    fn maybe(&self, q: (f64, f64)) -> bool {
-        let fx = (q.0 - self.min_x) * self.inv_cell;
-        let fy = (q.1 - self.min_y) * self.inv_cell;
+    fn maybe(&self, x: f32, y: f32) -> bool {
+        let fx = (x - self.min_x) * self.inv_cell;
+        let fy = (y - self.min_y) * self.inv_cell;
         if !(fx >= 0.0 && fy >= 0.0) {
             // Within one cell outside the map can still be within tol of a star.
             return fx > -1.0 && fy > -1.0;
@@ -197,8 +202,12 @@ pub struct ImageIndex {
     grid: PosGrid,
     /// A point whose cell here is clear has no star within `probe_tol`.
     near: NearMap,
-    /// `(length, i, j)`, sorted by length.
-    pairs: Vec<(f32, u32, u32)>,
+    /// The pairs' lengths, sorted, for the binary search ...
+    pair_len: Vec<f32>,
+    /// ... each pair's first star and the vector to its second, for the probes ...
+    pair_vec: Vec<[f32; 4]>,
+    /// ... and the two stars.
+    pair_idx: Vec<(u32, u32)>,
     probe_tol: f64,
 }
 
@@ -229,20 +238,24 @@ impl ImageIndex {
             }
         }
         pairs.sort_unstable_by(|p, q| p.0.total_cmp(&q.0));
+        let pair_len = pairs.iter().map(|p| p.0).collect();
+        let pair_vec = pairs
+            .iter()
+            .map(|&(_, a, b)| {
+                let ((ax, ay), (bx, by)) = (pos[a as usize], pos[b as usize]);
+                [ax as f32, ay as f32, (bx - ax) as f32, (by - ay) as f32]
+            })
+            .collect();
+        let pair_idx = pairs.iter().map(|&(_, a, b)| (a, b)).collect();
         Self {
             pos,
             grid,
             near,
-            pairs,
+            pair_len,
+            pair_vec,
+            pair_idx,
             probe_tol,
         }
-    }
-
-    /// False if no star can be within `probe_tol` of `q` (a cheap test that
-    /// rejects most probes before [`Self::hit`]).
-    #[inline]
-    fn maybe(&self, q: (f64, f64)) -> bool {
-        self.near.maybe(q)
     }
 
     /// Number of indexed stars.
@@ -260,7 +273,7 @@ impl ImageIndex {
     /// Number of indexed pairs.
     #[must_use]
     pub fn n_pairs(&self) -> usize {
-        self.pairs.len()
+        self.pair_len.len()
     }
 
     fn hit(&self, x: f64, y: f64, tol: f64) -> Option<usize> {
@@ -483,8 +496,8 @@ pub fn search(
         let backbone = (p2.0 - p1.0).hypot(p2.1 - p1.1);
         let lo = (backbone / (p.scale * (1.0 + p.scale_tol)) - tol) as f32;
         let hi = (backbone / (p.scale * (1.0 - p.scale_tol)) + tol) as f32;
-        let from = index.pairs.partition_point(|q| q.0 < lo);
-        let to = index.pairs.partition_point(|q| q.0 <= hi);
+        let from = index.pair_len.partition_point(|&l| l < lo);
+        let to = index.pair_len.partition_point(|&l| l <= hi);
         for mirrored in [false, true] {
             // Per quad and parity: with w = z_cat (or its mirror image), the
             // transform taking w1, w2 to pixels a, b has s = (b - a) / (w2 - w1),
@@ -498,20 +511,34 @@ pub fn search(
             }
             let (ir, ii) = (dwr / den, -dwi / den); // 1 / (w2 - w1)
             let (d3, d4) = ((w3.0 - w1.0, w3.1 - w1.1), (w4.0 - w1.0, w4.1 - w1.1));
-            for &(_, i, j) in &index.pairs[from..to] {
-                let (a, b) = (index.pos[i as usize], index.pos[j as usize]);
-                for (za, zb) in [(a, b), (b, a)] {
+            // The same in f32 for the first test, which rejects almost every probe.
+            let (ir32, ii32) = (ir as f32, ii as f32);
+            let (d3x, d3y, d4x, d4y) = (d3.0 as f32, d3.1 as f32, d4.0 as f32, d4.1 as f32);
+            for (k, &[ax, ay, dx, dy]) in index.pair_vec[from..to].iter().enumerate() {
+                // From a to b, s = d / (w2 - w1) puts w3 at a + s (w3 - w1); from b
+                // to a, s is negated and w3 lands at b - s (w3 - w1).
+                let (sr, si) = (dx * ir32 - dy * ii32, dx * ii32 + dy * ir32);
+                let (e3x, e3y) = (sr * d3x - si * d3y, sr * d3y + si * d3x);
+                let (e4x, e4y) = (sr * d4x - si * d4y, sr * d4y + si * d4x);
+                let (bx, by) = (ax + dx, ay + dy);
+                for (forward, zx, zy, sign) in [(true, ax, ay, 1.0f32), (false, bx, by, -1.0)] {
                     if *budget == 0 {
                         return None;
                     }
                     *budget -= 1;
+                    if !(index.near.maybe(zx + sign * e3x, zy + sign * e3y)
+                        && index.near.maybe(zx + sign * e4x, zy + sign * e4y))
+                    {
+                        continue;
+                    }
+                    // Exactly, in f64, from the stars themselves.
+                    let (i, j) = index.pair_idx[from + k];
+                    let (a, b) = (index.pos[i as usize], index.pos[j as usize]);
+                    let (za, zb) = if forward { (a, b) } else { (b, a) };
                     let (dzr, dzi) = (zb.0 - za.0, zb.1 - za.1);
                     let (sr, si) = (dzr * ir - dzi * ii, dzr * ii + dzi * ir);
                     let q3 = (za.0 + sr * d3.0 - si * d3.1, za.1 + sr * d3.1 + si * d3.0);
                     let q4 = (za.0 + sr * d4.0 - si * d4.1, za.1 + sr * d4.1 + si * d4.0);
-                    if !(index.maybe(q3) && index.maybe(q4)) {
-                        continue;
-                    }
                     if index.hit(q3.0, q3.1, tol).is_none() || index.hit(q4.0, q4.1, tol).is_none()
                     {
                         continue;
