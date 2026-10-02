@@ -26,6 +26,10 @@ one is called out as such.
 
 ### Fixed
 
+- The Astrometry.net index loader read each table at a fixed row width, so a table
+  declaring narrower rows could make it allocate up to 16 times the file's size before
+  the read failed. Row counts are now checked against the file (with overflow checks)
+  before allocating, and a negative row count is refused.
 - **A malformed image is an unreadable file (exit 16), never a crash.** Header
   dimensions that the file is too short to hold, or beyond 2³⁰ pixels, are refused before
   anything is allocated for them; a 5 KB FITS file could ask for 4 GB, and an XISF or
