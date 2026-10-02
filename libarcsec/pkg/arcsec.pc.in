@@ -1,0 +1,13 @@
+# pkg-config file for libarcsec, the arcsec plate solver's C library.
+# Relocatable: paths are relative to this file's directory (<prefix>/lib/pkgconfig).
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: arcsec
+Description: Astrometric plate solver (libarcsec)
+URL: https://github.com/cruzzil/arcsec
+Version: @VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -larcsec@LIBS_EXTRA@
+Libs.private: @NATIVE_STATIC_LIBS@

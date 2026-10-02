@@ -4,6 +4,7 @@ members = [
     "arcsec",
     "arcsec-core",
     "arcsec-io",
+    "libarcsec",
 ]
 
 # Shared by both crates; each opts in with `field.workspace = true`. Bump `version`
