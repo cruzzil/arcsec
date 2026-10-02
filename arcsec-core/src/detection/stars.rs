@@ -473,6 +473,35 @@ fn measure_large(
     found
 }
 
+/// Pixel offsets grouped by ring, and where each ring starts ([`ring_offsets`]).
+type Rings = (Vec<(i32, i32)>, Vec<usize>);
+
+/// The pixel offsets within [`LARGE_RS`] of a centre, grouped by rounded
+/// distance: ring `d` is `offsets[starts[d]..starts[d + 1]]`.
+fn ring_offsets() -> &'static Rings {
+    static RINGS: std::sync::OnceLock<Rings> = std::sync::OnceLock::new();
+    RINGS.get_or_init(|| {
+        let mut all: Vec<(usize, i32, i32)> = Vec::new();
+        for j in -LARGE_RS..=LARGE_RS {
+            for i in -LARGE_RS..=LARGE_RS {
+                let d = round_sqrt(i * i + j * j);
+                if d <= LARGE_RS as usize {
+                    all.push((d, i, j));
+                }
+            }
+        }
+        all.sort_by_key(|&(d, i, j)| (d, j, i));
+        let mut starts = vec![0usize; LARGE_RS as usize + 2];
+        for &(d, _, _) in &all {
+            starts[d + 1] += 1;
+        }
+        for d in 0..=LARGE_RS as usize {
+            starts[d + 1] += starts[d];
+        }
+        (all.into_iter().map(|(_, i, j)| (i, j)).collect(), starts)
+    })
+}
+
 /// Side, in pixels, of the cells [`measure_large`] remembers as measured.
 const VISITED_CELL: i32 = 4;
 
@@ -569,22 +598,25 @@ fn measure_large_at(
     // Also, per ring, the pixels above the detection threshold, and all pixels:
     // the star's area is marked out to where its wings fall below the threshold,
     // so that the scan does not take them for stars of their own.
+    // Rings are counted as the walk reaches them: most sources it is run on are
+    // a few pixels across, and the whole box is 4225 pixels.
+    let (offsets, starts) = ring_offsets();
     let mut hist = [0u32; LARGE_RS as usize + 1];
     let mut above = [0u32; LARGE_RS as usize + 1];
-    let mut ring = [0u32; LARGE_RS as usize + 1];
-    for j in -LARGE_RS..=LARGE_RS {
-        for i in -LARGE_RS..=LARGE_RS {
-            let d = round_sqrt(i * i + j * j);
-            if d <= LARGE_RS as usize {
+    let mut counted = 0usize;
+    let mut count_to = |d: usize, hist: &mut [u32], above: &mut [u32]| {
+        while counted <= d {
+            for &(i, j) in &offsets[starts[counted]..starts[counted + 1]] {
                 let v = at(px + i, py + j);
-                ring[d] += 1;
-                hist[d] += u32::from(v - bg > cut);
-                above[d] += u32::from(v > detect_abs);
+                hist[counted] += u32::from(v - bg > cut);
+                above[counted] += u32::from(v > detect_abs);
             }
+            counted += 1;
         }
-    }
+    };
     let (mut r_ap, mut top, mut illuminated) = (0usize, 0u32, 0u32);
     loop {
+        count_to(r_ap, &mut hist, &mut above);
         illuminated += hist[r_ap];
         top = top.max(hist[r_ap]);
         if r_ap >= LARGE_RS as usize || hist[r_ap] * 10 <= top {
@@ -668,8 +700,12 @@ fn measure_large_at(
     };
     // Marked out to the first ring less than half above the detection threshold,
     // and never further than the ordinary measurement would mark.
+    let ring = |d: usize| (starts[d + 1] - starts[d]) as u32;
     let mark = (r_ap..=LARGE_RS as usize)
-        .find(|&d| above[d] * 2 < ring[d])
+        .find(|&d| {
+            count_to(d, &mut hist, &mut above);
+            above[d] * 2 < ring(d)
+        })
         .unwrap_or(LARGE_RS as usize) as i32
         + 1;
     let mark = mark.min((3.0 * hfd).round() as i32);
