@@ -302,7 +302,11 @@ impl Progress {
         } else {
             (self.est_secs - elapsed).max(self.est_secs * (1.0 - frac) * 0.5)
         };
-        format!("about {} left", duration(secs).trim_start_matches('~'))
+        if secs < 10.0 {
+            "a few seconds left".to_string()
+        } else {
+            format!("about {} left", duration(secs).trim_start_matches('~'))
+        }
     }
 
     fn event(&mut self, p: &BuildProgress) {
@@ -367,11 +371,13 @@ mod interrupt {
     use std::path::Path;
 
     /// While alive, SIGINT/SIGTERM/SIGHUP remove the file before the process dies
-    /// of the signal. A no-op off Unix, where the next build removes a stale
-    /// `.part` instead.
+    /// of the signal. A signal the process was started ignoring (`nohup`, a
+    /// background job) stays ignored. A no-op off Unix, where the next build
+    /// removes a stale `.part` instead.
     pub struct RemoveOnInterrupt {
+        /// The dispositions replaced, restored on drop; empty if not armed.
         #[cfg(unix)]
-        armed: bool,
+        previous: Vec<(libc::c_int, libc::sighandler_t)>,
     }
 
     #[cfg(unix)]
@@ -403,17 +409,26 @@ mod interrupt {
             use core::sync::atomic::Ordering;
             use std::os::unix::ffi::OsStrExt as _;
             let Ok(c) = alloc::ffi::CString::new(path.as_os_str().as_bytes()) else {
-                return Self { armed: false };
+                return Self {
+                    previous: Vec::new(),
+                };
             };
             imp::PATH.store(c.into_raw(), Ordering::SeqCst);
             let handler: extern "C" fn(libc::c_int) = imp::on_signal;
+            let mut previous = Vec::new();
             for s in imp::SIGNALS {
-                // Safety: the handler only makes async-signal-safe calls.
+                // Safety: the handler only makes async-signal-safe calls; an
+                // ignored signal is put straight back to ignored.
                 unsafe {
-                    libc::signal(s, handler as libc::sighandler_t);
+                    let prev = libc::signal(s, handler as libc::sighandler_t);
+                    if prev == libc::SIG_IGN {
+                        libc::signal(s, libc::SIG_IGN);
+                    } else {
+                        previous.push((s, prev));
+                    }
                 }
             }
-            Self { armed: true }
+            Self { previous }
         }
 
         #[cfg(not(unix))]
@@ -425,12 +440,12 @@ mod interrupt {
     impl Drop for RemoveOnInterrupt {
         fn drop(&mut self) {
             #[cfg(unix)]
-            if self.armed {
+            {
                 use core::sync::atomic::Ordering;
-                for s in imp::SIGNALS {
-                    // Safety: restores the default disposition.
+                for &(s, prev) in &self.previous {
+                    // Safety: restores the disposition `new` replaced.
                     unsafe {
-                        libc::signal(s, libc::SIG_DFL);
+                        libc::signal(s, prev);
                     }
                 }
                 let p = imp::PATH.swap(core::ptr::null_mut(), Ordering::SeqCst);

@@ -456,34 +456,76 @@ pub fn freshness(ex: &Existing, db_dir: &Path) -> Freshness {
     }
 }
 
+/// Why the index in a directory should be (re)built.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rebuild {
+    /// There is no index.
+    Missing,
+    /// A deeper database than the index's source is installed.
+    Deeper {
+        /// The deeper database.
+        new: String,
+        /// The index's source.
+        old: String,
+    },
+    /// The source database has changed since the build.
+    Changed(String),
+    /// The index does not serve every installed database's fields.
+    Narrow {
+        /// Fields the index serves.
+        have: (f64, f64),
+        /// Fields wanted.
+        want: (f64, f64),
+    },
+}
+
+impl core::fmt::Display for Rebuild {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Missing => write!(f, "no blind index is installed yet"),
+            Self::Deeper { new, old } => write!(
+                f,
+                "{} is deeper than {}, which the current index was built from",
+                new.to_uppercase(),
+                old.to_uppercase()
+            ),
+            Self::Changed(db) => write!(
+                f,
+                "{} has changed since the index was built",
+                db.to_uppercase()
+            ),
+            Self::Narrow { have, want } => write!(
+                f,
+                "the current index serves fields {}°–{}°, not {}°–{}°",
+                trim(have.0),
+                trim(have.1),
+                trim(want.0),
+                trim(want.1)
+            ),
+        }
+    }
+}
+
 /// Why the index in a directory should be (re)built for `plan`, or `None` if the one
 /// there already serves it.
-pub fn rebuild_reason(existing: Option<&Existing>, plan: &Plan, db_dir: &Path) -> Option<String> {
+pub fn rebuild_reason(existing: Option<&Existing>, plan: &Plan, db_dir: &Path) -> Option<Rebuild> {
     let Some(ex) = existing else {
-        return Some("no blind index is installed yet".to_string());
+        return Some(Rebuild::Missing);
     };
     if depth_rank(&plan.source) < depth_rank(&ex.source) {
-        return Some(format!(
-            "{} is deeper than {}, which the current index was built from",
-            plan.source.to_uppercase(),
-            ex.source.to_uppercase()
-        ));
+        return Some(Rebuild::Deeper {
+            new: plan.source.clone(),
+            old: ex.source.clone(),
+        });
     }
     if freshness(ex, db_dir) == Freshness::Changed {
-        return Some(format!(
-            "{} has changed since the index was built",
-            ex.source.to_uppercase()
-        ));
+        return Some(Rebuild::Changed(ex.source.clone()));
     }
     if !ex.covers(plan) {
-        let (lo, hi) = plan.coverage();
-        return Some(format!(
-            "the current index serves fields {}°–{}°, not {}°–{}°",
-            trim(ex.coverage.0),
-            trim(ex.coverage.1),
-            trim(lo),
-            trim(hi)
-        ));
+        return Some(Rebuild::Narrow {
+            have: ex.coverage,
+            want: plan.coverage(),
+        });
     }
     None
 }
@@ -704,11 +746,7 @@ mod tests {
         let stamp = SourceStamp::of_database(d, "d80").unwrap();
         let plan = Plan::for_databases(&["d80"], None, None).unwrap();
 
-        assert!(
-            rebuild_reason(None, &plan, d)
-                .unwrap()
-                .contains("no blind index")
-        );
+        assert_eq!(rebuild_reason(None, &plan, d), Some(Rebuild::Missing));
 
         let p = d.join("d80.arcsecix");
         write_index(&p, "d80", &[3.0, 1.5, 0.75, 0.4, 0.2, 0.1], stamp);
@@ -718,19 +756,19 @@ mod tests {
 
         // W08 added: the index stops at 36°, the plan wants 80°.
         let wide = Plan::for_databases(&["d80", "w08"], None, None).unwrap();
+        let r = rebuild_reason(Some(&ex), &wide, d).unwrap();
+        assert!(matches!(r, Rebuild::Narrow { .. }), "{r:?}");
         assert!(
-            rebuild_reason(Some(&ex), &wide, d)
-                .unwrap()
-                .contains("serves fields")
+            r.to_string().contains("serves fields 0.25°–36°, not"),
+            "{r}"
         );
 
         // The database changed underneath it.
         std::fs::write(d.join("d80_0101.1476"), vec![8u8; 200]).unwrap();
         assert_eq!(freshness(&ex, d), Freshness::Changed);
-        assert!(
-            rebuild_reason(Some(&ex), &plan, d)
-                .unwrap()
-                .contains("changed")
+        assert_eq!(
+            rebuild_reason(Some(&ex), &plan, d),
+            Some(Rebuild::Changed("d80".into()))
         );
 
         // An index from before fingerprints: not stale, just unrecorded.
@@ -749,11 +787,10 @@ mod tests {
         write_index(&g, "g05", &[3.0, 1.5, 0.75], SourceStamp::default());
         let gx = Existing::open(&g).unwrap();
         assert_eq!(freshness(&gx, d), Freshness::SourceMissing);
-        assert!(
-            rebuild_reason(Some(&gx), &plan, d)
-                .unwrap()
-                .contains("deeper")
-        );
+        assert!(matches!(
+            rebuild_reason(Some(&gx), &plan, d),
+            Some(Rebuild::Deeper { .. })
+        ));
 
         // The solver prefers the deepest source, whatever the names.
         assert_eq!(Existing::preferred(d).unwrap().source, "d80");

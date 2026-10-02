@@ -284,14 +284,18 @@ fn cmd_recommend(dir: &Path, fov_deg: f64, want_photometry: bool) {
             None => println!("  photometry   no catalogue covers this field size"),
         }
     }
-    match pick(Purpose::BlindIndex) {
-        Some(e) => println!(
-            "  blind        {:<10} {:>9}  optional: solve with no position hint{}",
+    // The blind index is built from the solving database on install, so there is
+    // nothing to choose; say what it will cost.
+    if let Some(e) = pick(Purpose::Solving)
+        && let Some(plan) = Plan::for_databases(&[e.id], None, None)
+    {
+        let est = Estimate::of(&plan, arcsec_core::max_threads());
+        println!(
+            "  blind index  built from {} on install, no download: ~{}, {}",
             e.id,
-            human(e.bytes),
-            installed_tag(dir, e)
-        ),
-        None => println!("  blind        no index set covers this field size"),
+            human(est.bytes),
+            plan::duration(est.secs)
+        );
     }
 
     let ids: Vec<&str> = [
@@ -349,6 +353,8 @@ fn print_index_status(dir: &Path) {
         }
     } else if let Some(plan) = Plan::for_databases(&sources, None, None)
         && let Some(why) = rebuild_reason(Existing::preferred(dir).as_ref(), &plan, dir)
+        // A changed database is already flagged STALE on the index's own line.
+        && !matches!(why, plan::Rebuild::Changed(_))
     {
         println!("  rebuild suggested: {why}; run `arcsec catalog index build`");
     }
@@ -486,14 +492,14 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
 
         if bad.is_empty() {
             println!(
-                "  {:<11} ok  ({} files, {})",
+                "  {:<12} ok  ({} files, {})",
                 e.id,
                 files.len(),
                 human(installed_size(dir, e))
             );
         } else {
             problems += bad.len();
-            println!("  {:<11} PROBLEMS:", e.id);
+            println!("  {:<12} PROBLEMS:", e.id);
             for b in bad {
                 println!("      {b}");
             }
@@ -516,13 +522,13 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
                     Some(plan::Freshness::Changed) => {
                         problems += 1;
                         println!(
-                            "  {name:<11} STALE: {} has changed since it was built - rebuild it with `arcsec catalog index build`",
+                            "  {name:<12} STALE: {} has changed since it was built - rebuild it with `arcsec catalog index build`",
                             ix.source().to_uppercase()
                         );
                     }
                     _ => {
                         println!(
-                            "  {name:<11} ok  ({} patterns, {})",
+                            "  {name:<12} ok  ({} patterns, {})",
                             ix.n_patterns(),
                             human(ix.file_size() as u64)
                         );
@@ -538,7 +544,7 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
             Err(e) => {
                 problems += 1;
                 println!(
-                    "  {name:<11} PROBLEM: {e} - rebuild it with `arcsec catalog index build`"
+                    "  {name:<12} PROBLEM: {e} - rebuild it with `arcsec catalog index build`"
                 );
             }
         }
@@ -550,7 +556,7 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
             (None, Some(s)) => println!("  blind index none: {s}"),
             (Some(_), _) => {
                 if let Some(why) = rebuild_reason(existing.as_ref(), &plan, dir)
-                    && !why.contains("has changed")
+                    && !matches!(why, plan::Rebuild::Changed(_))
                 {
                     println!("  blind index: {why}; `arcsec catalog index build` rebuilds it");
                 }
@@ -593,7 +599,7 @@ struct IndexAction {
     plan: Plan,
     est: Estimate,
     /// Why: no index yet, a deeper database, a stale or too-narrow index.
-    reason: String,
+    reason: plan::Rebuild,
     /// Indexes in the directory the new one supersedes (removed after it is built).
     replaces: Vec<PathBuf>,
 }
@@ -998,7 +1004,11 @@ mod tests {
         let opts = IndexOpts::default();
         let a = index_action(d, &["g05", "w08"], &opts, 2).unwrap();
         assert_eq!(a.plan.source, "g05");
-        assert!(a.reason.contains("deeper"), "{}", a.reason);
+        assert!(
+            matches!(a.reason, plan::Rebuild::Deeper { .. }),
+            "{}",
+            a.reason
+        );
         // Covers both: G05's 3° up to W08's 80°.
         assert_eq!((a.plan.min_fov, a.plan.max_fov), (3.0, 80.0));
         cmd_install(d, &ids(&["g05"]), true, false, &opts, &mut p).unwrap();
