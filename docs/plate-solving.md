@@ -970,8 +970,43 @@ alternative **triangle** matcher (§4.1).
              ├─ measure_star(): HFD in a 14-px annulus, sub-pixel bilinear
              │     centroid, SNR, flux; reject if not "boxed", single hot
              │     pixel, too large, or any result non-finite
-             └─ sort by SNR, keep the top `-s` (default 500)
+             ├─ too large or not a disc: measure_large() — re-centre on the
+             │     brightest pixel, 32-px box, extent at 5% of the peak;
+             │     reject if still too large, not a disc, or elongated
+             │     (second-moment eigenvalue ratio > 2.5); these stars do
+             │     not count towards the `-s` that ends the cascade
+             └─ sort by SNR, keep the top `-s` (default 500); the top 2000
+                   are kept as well for the catalogue-seeded fallback (§10.3d)
 ```
+
+**Bright stars too large for the box** (2026-10-02). `measure_star` takes a star's
+extent at 3σ of the local background, in a box 14 pixels from the seed, and refuses a
+star whose isophote reaches the edge. On a photographic plate a bright star is a
+saturated disc 10–40 pixels across; on an undersampled wide-field camera (TESS,
+21″/px) a bright star has a core three pixels wide and wings that stay 3σ above the
+sky past 16 pixels. Both were refused, and they are exactly the catalogue's brightest
+stars: of the 60 brightest catalogue stars in a 4° DSS field (`wide_dss_01`), 52 were
+refused as too large; on a 2.2° TESS crop 40 of 60. Such a candidate is now measured
+again (`measure_large`): re-centred on the brightest pixel within 16 pixels, measured in
+a box of 32, with its extent taken at 5% of its peak height above the local
+background (or 3σ, if higher), its aperture re-centred on its centroid until it settles
+(the brightest pixel of a saturated plateau can be anywhere on it), and refused if
+still too large, not a disc, or elongated. Every pixel of a large source above the
+threshold is a seed, so a bitmap of 4-pixel cells remembers where the measurement has
+run and a source is measured once. The area marked out around the star is its extent
+at the detection threshold rather than 3 × HFD, which for a disc 30 pixels across
+would blank out every faint star within 90 pixels. The stars only this measurement
+finds do not count towards the `-s` that ends the detection cascade: counting them made
+`wide_dss_05` stop at the first level with 525 stars instead of going on to the
+gridded level that finds 10 000, and lose its solve. Every star `measure_star` accepts
+is measured as before. The cost is small except in wide fields full of bright stars,
+where the ordinary measurement used to accept pieces of each disc as stars of their
+own: those pieces counted towards `-s`, the discs now replace them, the first level
+falls short of `-s`, and the cascade runs a second level. `stress_wide15` (15°) went
+from 502 stars at the first level (163 of the 282 it now finds there are discs) to
+2592 at the second, and from 0.27 s to 0.52 s of CPU; `fov_5p00` and `fov_10p0`
+take 10–15% longer. A large star's rings are counted only as far as the walk out
+reaches, since most sources it measures are blends a few pixels across.
 
 The detected list is not trimmed to a fraction. A brightest-half trim (`max(max_stars/2, 50)`)
 used to guard the 3-nearest-neighbour quads against faint stars missing from the
@@ -990,6 +1025,10 @@ With d80 it binds below ~0.25° fields; with g05 below ~1°, so never in g05's o
 with w08 on fields up to ~22°. On `rnd_080` (0.21°, galactic bulge) detection finds 973
 stars and keeps 500 where d80 holds 378 in the whole search window; capped at 344 it
 solves, verifying 132.
+
+The detection also keeps the brightest 2000 of every star the cascade found (the level
+that ends it is scanned whole, so it usually finds more than `-s`), for the
+catalogue-seeded fallback (§10.3d); the spiral uses the trimmed list as before.
 
 ### 10.3 The catalogue spiral solve (`pipeline/solver.rs`)
 
@@ -1050,15 +1089,22 @@ solves, verifying 132.
   │           plate, pair it with the nearest unused detected star within    │
   │           6 → 3 → 2 px, re-fit on those pairs at each radius             │
   │        reject unless ≥ min(30, max(10, ⌈0.15·n⌉)) stars matched and      │
-  │           their spread ≥ 0.20 of the image half-diagonal; below 30       │
-  │           also unless the plate scale is within 10% of FOV/long side     │
-  │           and the rms ≤ 0.5 px:  if ≥ 50 quads agreed, second chance     │
-  │           with the distortion model (§10.3b), else next position         │
+  │           their spread ≥ 0.20 of the image half-diagonal, at least 4     │
+  │           times the matches expected by chance, with an rms within the   │
+  │           last match radius (2 px); below 30 also unless the plate      │
+  │           scale is within 10% of FOV/long side and the rms ≤ 0.5 px:     │
+  │           if ≥ 50 quads agreed, second chance with the distortion model  │
+  │           (§10.3b), else next position                                   │
   │        recentre(): refit in the tangent plane at the image centre        │
   │        distortion model (§10.3b): re-read the catalogue about the        │
   │           image centre, fit a polynomial plate by re-matching; report    │
   │           the linear plate closest to it over the frame, keep the        │
-  │           verified plate, or refuse the solve                            │
+  │           verified plate (or refit it to the model's pairs when they     │
+  │           are 1.5 times as many), or refuse the solve                    │
+  │                                                                          │
+  │    no position verified: the catalogue-seeded fallback (§10.3d), once,   │
+  │    about the hint; a plate it finds is verified, re-centred and modelled │
+  │    as a position's                                                       │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ D. OUTPUT              derive_wcs(): tangent-plane inverse at the image  │
   │                        centre; un-scale CRPIX and CD/CDELT for binning   │
@@ -1125,7 +1171,17 @@ What is reported:
   field. The model's pairs become `WcsSolution::matched_stars` (they reach the corners,
   so `--sip` now fits SIP to them, `fit_sip` unchanged), and `RMS` is the model's.
 * **The verified plate, unchanged**, otherwise. Undistorted fields land here, so their
-  solutions are bit-identical to before.
+  solutions are bit-identical to before — unless the model's 2 px pairs number at
+  least `MODEL_PAIRS_REFIT` = 1.5 times the verified stars, in which case the linear
+  plate is refitted to them (2026-10-02). With the hint a third of a field off, the
+  position that verifies has catalogue stars over part of the frame only, and its plate
+  (and the re-centred one, which pairs stars as that plate predicts them) fits that
+  part; the model's catalogue is read about the image centre and covers it all. With
+  the offset hint this moved the corpus's median worst corner from 0.70″ to 0.59″
+  (107 images closer to the truth by more than 0.2″, 11 further, `sv2_01` the most:
+  0.87″ → 2.89″, still correct), and made `wide_shassa_03` (1.2 px out at a corner) and
+  `type_m45` (5.7″) correct; with the true-centre hint it changes three solves of 592,
+  none by a status.
 * **No solution** (exit 1, as any failed solve) when the model cannot be used but the
   field is plainly and strongly distorted where it has stars: a cubic fitted to the
   wide-radius pairs regardless of coverage beats a linear fit with F ≥ `REFUSE_F` = 100
@@ -1219,6 +1275,77 @@ cells half or a third of the tolerance (no gain); padding the `f32` codes to eig
 still visits every position: `-r` means "search this far", ASTAP does the same, and a
 work budget would have to be opt-in.
 
+### 10.3d The catalogue-seeded fallback (`quads/seeded.rs`)
+
+The spiral's quads are built on each side from that side's own brightest stars,
+nine-star neighbourhoods at a time, so they match only where the two brightness
+rankings agree well enough that a neighbourhood's stars are present on both sides.
+In a crowded or nebulous field they do not: in DSS fields of the galactic plane
+(`dens_carina`, `type_m8`, `type_sirius`) 0–2 of the 30 brightest catalogue stars in the
+frame were among the 500 detections — the bright stars are saturated, blended, or lost
+in nebulosity — and only 5–12% of the detections had a catalogue counterpart; a WISE
+frame in a mid-infrared band ranks stars differently from Gaia's BP; a cluster core the
+catalogue resolves and the image does not takes the catalogue's whole budget
+(`obj_47tuc`). The plate is still there to be found: the verification needs only 30 of
+the 500 detections to be catalogue stars, the quads need neighbourhoods of nine.
+
+So when the spiral finds nothing, one more search is made about the hint, the design
+of [seiza](https://github.com/theatrus/seiza)'s rank-robust fallback
+(`docs/design/rank-robust-matching.md`, Apache-2.0; the code is arcsec's own):
+
+1. **Catalogue quads.** The catalogue is read about the hint over `SEEDED_WINDOW` = 1.5
+   fields (so the field is inside it with the hint a third of a field off), at the
+   spiral's density. Each of its `SEEDED_CAT_STARS` = 150 brightest stars, with three of
+   its four nearest neighbours among them, makes a quad (at most `SEEDED_MAX_QUADS` =
+   600): brightness is used on the catalogue side only, where it can be trusted.
+2. **The image, unranked.** The brightest 2000 detections (by SNR, every star the
+   cascade found up to that) go into a position hash (cells of `SEEDED_PROBE_PX` =
+   2.5 px, with an occupancy bit map of at most 1024 × 1024 cells, small enough to
+   stay in cache, that rejects most probes without touching the hash) and a table of
+   every pair, sorted by length, no longer than the longest quad could need.
+3. **Probes.** For each catalogue quad, the image pairs as long as its widest pair at
+   the hint's pixel scale (± `SEEDED_SCALE_TOL` = 5%, ± 2.5 px) are found by binary
+   search. Each pair, in both orders and both parities, fixes a similarity transform;
+   the quad's other two stars must then land within 2.5 px of detections. The probes
+   run in f32 over a structure-of-arrays copy of the pair table, about 8 ns each; one
+   that passes the bit map is recomputed exactly in f64 before the hash is consulted.
+4. **Census.** A transform that passes puts the 150 bright catalogue stars on the
+   image; it must find a detection within 3.75 px for at least `SEEDED_MIN_CENSUS` = 10
+   of them (two thirds of those in the frame, if fewer, but at least 4), and at least
+   `CENSUS_SIGNIFICANCE` = 2 times as many as chance would give at the image's density,
+   plus the quad's own four. Without the second condition a dense TESS crop (470
+   detections on 384 × 384 pixels: a detection within 3.75 px of a random point 14% of
+   the time) passed thousands of wrong transforms to the verification.
+5. **Verification.** A transform that passes the census is fitted to its census pairs
+   and verified by `verify_and_refit` against the ordinary star list, exactly as a
+   spiral position's plate, with the same acceptance rules (including the significance
+   test below); a verified plate is re-centred and given the distortion model, and is
+   the solution.
+
+The search runs once per solve, after the whole spiral, so it changes nothing that the
+spiral solves, and its cost is bounded: every probe costs one unit of
+`SEEDED_BUDGET` = 3·10⁷, every census star one, and every verification 30 per
+catalogue star (measured: a verification costs about as much as 30 probes per
+catalogue star), and the search stops when the budget is spent — about a third of a
+second of one core, deterministic (the corpus's fallback solves spend at most 2.4·10⁷).
+It is not run for `--method tetra`.
+
+**Significance of a verification** (2026-10-02). The verification's 30-star minimum
+assumes that a wrong plate cannot pair 30 catalogue stars with detections by chance. In
+a dense frame it can: on a 2.2° TESS crop (500 detections on 384 × 384 pixels) a random
+point has a detection within 2 px 4% of the time, a plate that puts 450 catalogue stars
+in the frame finds 18 by chance, and the shrinking-radius refit, which follows them,
+reaches 30. The fallback's first version, which proposes hundreds of plates per solve,
+reported four such wrong TESS fields with the true-centre hint, eight with the offset
+hint, and two wrong plates with 4.4 px rms after the 2 px pass. So `verify_and_refit` now estimates the matches expected by chance in its
+last pass — the catalogue stars the plate puts in the frame times
+`1 − exp(−ρ π r²)` for detection density ρ and radius r — and a plate is accepted only
+with at least `MIN_SIGNIFICANCE` = 4 times that many, and an rms within the last match
+radius. The wrong TESS plates had 1.5–2.7 times the chance count; every correct solve
+on the corpus has at least 7.9 (the weakest, `tess_40`: 121 against 15.3), and no
+correct solve has an rms above 1.35 px. Neither rule changes the status of any image
+the spiral solved.
+
 ### 10.4 The blind solve (`pipeline/blind.rs`)
 
 ```
@@ -1301,6 +1428,18 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `TETRA_TOL_FACTOR` | 0.3 | `quads/tetra.rs` | triangle tolerance scaling |
 | `SCALE_STEP` / `ANGLE_STEP` | 0.05 / 10° | `quads/vote.rs` | vote bin sizes |
 | `BAND_OVERLAP` | 90 rows | `detection/stars.rs` | overlap between parallel detection bands |
+| `LARGE_RS` | 32 px | `detection/stars.rs` | half-width of the box a star too large for the 14-px measurement is measured again in (§10.2) |
+| `LARGE_PEAK_FRACTION` | 0.05 | `detection/stars.rs` | a large star's extent: this fraction of its peak above the local background, or 3σ if higher |
+| `LARGE_MAX_ELONGATION` | 2.5 | `detection/stars.rs` | largest eigenvalue ratio of a large star's second moments (trails, galaxies, nebula knots refused) |
+| `MIN_SIGNIFICANCE` | 4 | `solver.rs` | verified stars must be at least this many times the matches expected by chance (§10.3d) |
+| `MODEL_PAIRS_REFIT` | 1.5 | `solver.rs` | the distortion model's pairs this many times the verified stars: refit the linear plate to them (§10.3b) |
+| `SEEDED_MAX_STARS` | 2000 | `solver.rs` | detections the catalogue-seeded fallback indexes (§10.3d) |
+| `SEEDED_WINDOW` | 1.5 fields | `solver.rs` | the fallback's catalogue window about the hint |
+| `SEEDED_CAT_STARS` / `SEEDED_MAX_QUADS` | 150 / 600 | `solver.rs` | catalogue stars that seed quads and score a transform; quads tried |
+| `SEEDED_SCALE_TOL` / `SEEDED_PROBE_PX` | 5% / 2.5 px | `solver.rs` | pixel-scale tolerance; how close a predicted star must fall to a detection |
+| `SEEDED_MIN_CENSUS` | 10 | `solver.rs` | catalogue stars a transform must put on detections before it is verified |
+| `CENSUS_SIGNIFICANCE` | 2 | `quads/seeded.rs` | ... and at least this many times the hits expected by chance, plus the quad's own four |
+| `SEEDED_BUDGET` | 3·10⁷ | `solver.rs` | the fallback's work budget (probes, census stars, 30 per catalogue star per verification): about 0.35 s of one core |
 | `MIN_VERIFY_SCORE` | 18 | `blind.rs` | blind acceptance |
 | `EARLY_STOP_SCORE` | 20 | `blind.rs` | blind early exit |
 | `MATCH_PX` | 5.0 | `blind.rs` | verification match radius |

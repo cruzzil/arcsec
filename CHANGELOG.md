@@ -11,6 +11,18 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **Catalogue-seeded fallback search** for fields whose brightness ranking disagrees
+  with the catalogue's (crowded and nebulous fields, saturated bright stars, cluster
+  cores, infrared passbands). When the spiral finds nothing, quads are built from the
+  catalogue's brightest stars about the hint and looked for among the brightest 2000
+  detections without ranking them — a length-sorted table of image star pairs and a
+  position hash, as in [seiza](https://github.com/theatrus/seiza)'s rank-robust
+  fallback — and any plate found is verified exactly as a spiral position's. It runs
+  once, after the spiral, under a fixed work budget (about a third of a second of one
+  core), so it changes nothing the spiral solves.
+
 ### Changed
 
 - **Failed searches are several times faster, with identical results.** A search that
@@ -35,6 +47,28 @@ one is called out as such.
   once more without the limit, and if it verifies the field more than two fields beyond
   `-r`, the search stops there. The result is unchanged, "No solution found." and exit
   code 1, as `-r` requires; stderr says how far away the index placed the field.
+- **Bright stars too large for the measuring box are measured.** Detection refused any
+  star whose 3σ isophote reached 14 pixels from its seed — the saturated discs of a
+  photographic plate, and the wide wings of an undersampled TESS star — and those are
+  the catalogue's brightest stars. They are now measured again in a 32-pixel box, at
+  5% of their peak, and refused only if still too large, not a disc, or elongated.
+  They do not count towards the `-s` stars that end the detection cascade.
+- **Verification needs significance as well as a count.** A plate must verify at least
+  four times as many stars as chance would pair at the frame's star density, with an
+  rms within the last match radius. In a dense frame (a 2.2° TESS crop of 500 stars on
+  384 × 384 pixels) a wrong plate can otherwise reach the 30-star minimum by chance;
+  every correct solve on the benchmark corpus verifies at least 7.9 times the chance
+  count.
+- When the distortion model's full-frame match pairs at least 1.5 times as many stars
+  as the verified plate, the linear plate is refitted to those pairs: with the hint a
+  third of a field off, the verified plate fitted only the part of the frame its
+  search position's catalogue covered.
+- Benchmark corpus (635 images), against 0.3.0: with the true-centre hint 558 → 589
+  correct, false positives 1 → 1, no image lost; with the hint 0.3 fields off 537 → 580,
+  1 → 1. Tier-D controls still all refused. Of the 22 fields seiza solved and arcsec did
+  not, 17 now solve. On one thread the median solved image takes 2% longer (wide
+  fields full of saturated stars up to twice as long), a failed full spiral 0.5%
+  longer, and a quick failure 0.1–0.3 s longer for the fallback.
 
 ## [0.3.0] - 2026-10-02
 
