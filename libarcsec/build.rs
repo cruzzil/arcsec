@@ -11,6 +11,9 @@
 //!   otherwise have the two interpose each other at load time. The dependencies
 //!   reach the linker as archives (rlibs), so `--exclude-libs` hides them; with
 //!   LTO they would not, which is why no profile here enables it.
+//! - On macOS, sets the dylib's install name to `@rpath/libarcsec.dylib`. rustc
+//!   leaves it as the path the library was built at, which no installed copy has;
+//!   with `@rpath` a program finds it through its own rpath (`arcsec.pc` adds one).
 //! - Passes the target and host triples to the crate's tests, which compile a C
 //!   program against the library with the `cc` crate.
 
@@ -33,6 +36,9 @@ fn main() {
     if elf {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libarcsec.so.{ABI}");
         println!("cargo:rustc-cdylib-link-arg=-Wl,--exclude-libs=ALL");
+    }
+    if matches!(os.as_str(), "macos" | "ios") {
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libarcsec.dylib");
     }
     println!("cargo:rustc-env=ARCSEC_BUILD_ABI={ABI}");
     println!(
