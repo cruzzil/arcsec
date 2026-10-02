@@ -111,10 +111,15 @@ pub fn read_xisf_image(path: &Path) -> Result<ImageBuffer, String> {
     let image = &images[idx];
 
     let (width, height) = dimensions_of(image)?;
-    let channels = image.channels().max(1) as usize;
-    let npix = width
-        .checked_mul(height)
-        .ok_or_else(|| format!("XISF image dimensions {width}×{height} overflow"))?;
+    let channels = usize::try_from(image.channels().max(1)).unwrap_or(usize::MAX);
+    // Refuse an absurd geometry before the crate allocates for it. Further image
+    // dimensions beyond the first two are not read, but they are still decoded.
+    let depth = image.geometry()[2..]
+        .iter()
+        .try_fold(channels, |n, &d| n.checked_mul(usize::try_from(d).ok()?))
+        .unwrap_or(usize::MAX);
+    image_io::checked_pixel_count(width, height, depth)?;
+    let npix = width * height;
 
     let mut samples = samples_as_f32(image)?;
 
@@ -157,7 +162,7 @@ pub fn read_xisf_dimensions(path: &Path) -> Option<(u32, u32)> {
     let (file, idx) = open_primary(path).ok()?;
     let images = file.images();
     let (w, h) = dimensions_of(&images[idx]).ok()?;
-    Some((w as u32, h as u32))
+    Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?))
 }
 
 /// A numeric FITS keyword of the image, matched case-insensitively.
@@ -426,6 +431,37 @@ mod tests {
         std::fs::write(&p, writer.to_bytes().expect("to_bytes")).unwrap();
         let err = read_xisf_image(&p).expect_err("should refuse");
         assert!(err.contains("no images"), "unhelpful error: {err}");
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A geometry no file of this size could hold is refused before the crate
+    /// allocates for it; channels × width × height must not overflow either.
+    #[test]
+    fn an_absurd_geometry_is_refused_before_reading() {
+        let p = write_xisf(
+            "arcsec_x_huge.xisf",
+            4,
+            3,
+            1,
+            SampleFormat::UInt16,
+            vec![0; 24],
+            vec![],
+        );
+        let good = std::fs::read(&p).unwrap();
+        for geometry in ["70000:70000:1", "4294967295:4294967295:4294967295"] {
+            // The XML grows, so the header length (bytes 8..12) must follow.
+            let text = String::from_utf8_lossy(&good).into_owned();
+            let at = text.find("geometry=\"4:3:1\"").expect("fixture geometry");
+            let mut bytes = good[..at].to_vec();
+            bytes.extend_from_slice(format!("geometry=\"{geometry}\"").as_bytes());
+            bytes.extend_from_slice(&good[at + "geometry=\"4:3:1\"".len()..]);
+            let grow = (bytes.len() - good.len()) as u32;
+            let len = u32::from_le_bytes(good[8..12].try_into().unwrap()) + grow;
+            bytes[8..12].copy_from_slice(&len.to_le_bytes());
+            std::fs::write(&p, &bytes).unwrap();
+            let err = read_xisf_image(&p).expect_err(geometry);
+            assert!(err.contains("limit"), "{geometry}: {err}");
+        }
         std::fs::remove_file(&p).ok();
     }
 }

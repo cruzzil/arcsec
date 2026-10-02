@@ -89,40 +89,172 @@ pub fn detect_format(path: &Path) -> Result<ImageFormat, String> {
     }
 }
 
+// ── Limits on what a file may ask for ─────────────────────────────────────────
+
+/// The most pixels (times channels) arcsec will allocate for one image: 2³⁰, a
+/// 32768 × 32768 frame, 4 GiB as `f32`.
+///
+/// A header can declare any dimensions, and a compressed image (tile-compressed
+/// FITS, a compressed XISF block, a zlib ASDF block) can legitimately be far
+/// larger than its file, so the size on disk cannot bound it. This is several
+/// times the largest single-sensor astronomical camera, so it refuses only files
+/// that would exhaust memory rather than solve. Fuzzing builds use a much smaller
+/// limit so that the rejection path is exercised instead of the allocator.
+#[cfg(not(fuzzing))]
+pub const MAX_IMAGE_PIXELS: usize = 1 << 30;
+#[cfg(fuzzing)]
+pub const MAX_IMAGE_PIXELS: usize = 1 << 22;
+
+/// `width × height × channels`, refused if it overflows or exceeds
+/// [`MAX_IMAGE_PIXELS`].
+pub fn checked_pixel_count(width: usize, height: usize, channels: usize) -> Result<usize, String> {
+    width
+        .checked_mul(height)
+        .and_then(|n| n.checked_mul(channels))
+        .filter(|&n| n <= MAX_IMAGE_PIXELS)
+        .ok_or_else(|| {
+            format!(
+                "image dimensions {width}×{height}×{channels} exceed the {MAX_IMAGE_PIXELS}-pixel \
+                 limit"
+            )
+        })
+}
+
+/// A zeroed pixel buffer, or an error rather than an abort if memory runs out.
+pub fn try_alloc_pixels(npix: usize) -> Result<Vec<f32>, String> {
+    let mut data = Vec::new();
+    data.try_reserve_exact(npix)
+        .map_err(|_| format!("not enough memory for {npix} pixels"))?;
+    data.resize(npix, 0.0);
+    Ok(data)
+}
+
+// ── Reader boundary ───────────────────────────────────────────────────────────
+
+std::thread_local! {
+    /// Set while a [`guarded`] reader runs, so the panic hook stays quiet.
+    static IN_READER: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// Where the last quietened panic happened, for the error message.
+    static PANIC_SITE: core::cell::RefCell<String> = const { core::cell::RefCell::new(String::new()) };
+}
+
+/// Run a third-party reader, turning a panic into an error.
+///
+/// CFITSIO (rsfitsio), `xisf` and `asdf-rs` parse untrusted bytes, and a malformed
+/// file has been found to panic inside them. A panic would otherwise end the
+/// process with Rust's exit code 101 and no `.ini`, where the ASTAP contract says
+/// an unreadable image is exit 16, and a header keyword that panics would sink an
+/// image that is otherwise fine. The panic's message and location go into the
+/// error, which is what a bug report needs, rather than being printed by the hook
+/// as an apparent crash.
+fn guarded<T>(path: &Path, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    // Under the fuzzer a panic in a reader is a finding, to be fixed where it is.
+    #[cfg(fuzzing)]
+    if true {
+        let _ = path;
+        return read();
+    }
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if IN_READER.with(core::cell::Cell::get) {
+                let site = info
+                    .location()
+                    .map(|l| format!(" at {}:{}", l.file(), l.line()))
+                    .unwrap_or_default();
+                PANIC_SITE.with(|s| *s.borrow_mut() = site);
+            } else {
+                previous(info);
+            }
+        }));
+    });
+    let outer = IN_READER.with(|g| g.replace(true));
+    let result = std::panic::catch_unwind(core::panic::AssertUnwindSafe(read));
+    IN_READER.with(|g| g.set(outer));
+    result.unwrap_or_else(|panic| {
+        Err(format!(
+            "{}: the reader failed on this file, which is probably corrupt ({}{})",
+            path.display(),
+            panic_message(panic.as_ref()),
+            PANIC_SITE.with(core::cell::RefCell::take)
+        ))
+    })
+}
+
+/// The text of a panic payload, for an error message.
+pub fn panic_message(payload: &(dyn core::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("panic")
+}
+
 /// Load an image's pixels, whatever container they arrived in.
 pub fn read_image(path: &Path) -> Result<ImageBuffer, String> {
-    match detect_format(path)? {
+    let format = detect_format(path)?;
+    let img = guarded(path, || match format {
         ImageFormat::Fits => fits_io::read_fits_image(path),
         ImageFormat::Xisf => xisf_io::read_xisf_image(path),
         ImageFormat::Asdf => asdf_io::read_asdf_image(path),
+    })?;
+    // Every reader promises this; the solver indexes `data[y * width + x]`.
+    if img.data.len() != img.width * img.height {
+        return Err(format!(
+            "{}: the reader returned {} samples for a {}×{} image",
+            path.display(),
+            img.data.len(),
+            img.width,
+            img.height
+        ));
     }
+    Ok(img)
 }
 
 /// An approximate pointing from the file's metadata, in degrees.
 pub fn read_ra_dec(path: &Path) -> Option<(f64, f64)> {
-    match detect_format(path).ok()? {
-        ImageFormat::Fits => fits_io::read_fits_ra_dec(path),
-        ImageFormat::Xisf => xisf_io::read_xisf_ra_dec(path),
-        ImageFormat::Asdf => asdf_io::read_asdf_ra_dec(path),
-    }
+    let format = detect_format(path).ok()?;
+    guarded(path, || {
+        Ok(match format {
+            ImageFormat::Fits => fits_io::read_fits_ra_dec(path),
+            ImageFormat::Xisf => xisf_io::read_xisf_ra_dec(path),
+            ImageFormat::Asdf => asdf_io::read_asdf_ra_dec(path),
+        })
+    })
+    .inspect_err(|e| log::warn!("{e}"))
+    .ok()
+    .flatten()
 }
 
 /// Plate scale in arcsec/pixel from the file's metadata.
 pub fn read_pixel_scale(path: &Path) -> Option<f64> {
-    match detect_format(path).ok()? {
-        ImageFormat::Fits => fits_io::read_fits_pixel_scale(path),
-        ImageFormat::Xisf => xisf_io::read_xisf_pixel_scale(path),
-        ImageFormat::Asdf => asdf_io::read_asdf_pixel_scale(path),
-    }
+    let format = detect_format(path).ok()?;
+    guarded(path, || {
+        Ok(match format {
+            ImageFormat::Fits => fits_io::read_fits_pixel_scale(path),
+            ImageFormat::Xisf => xisf_io::read_xisf_pixel_scale(path),
+            ImageFormat::Asdf => asdf_io::read_asdf_pixel_scale(path),
+        })
+    })
+    .inspect_err(|e| log::warn!("{e}"))
+    .ok()
+    .flatten()
 }
 
 /// Image dimensions without loading the pixels.
 pub fn read_dimensions(path: &Path) -> Option<(u32, u32)> {
-    match detect_format(path).ok()? {
-        ImageFormat::Fits => fits_io::read_fits_dimensions(path),
-        ImageFormat::Xisf => xisf_io::read_xisf_dimensions(path),
-        ImageFormat::Asdf => asdf_io::read_asdf_dimensions(path),
-    }
+    let format = detect_format(path).ok()?;
+    guarded(path, || {
+        Ok(match format {
+            ImageFormat::Fits => fits_io::read_fits_dimensions(path),
+            ImageFormat::Xisf => xisf_io::read_xisf_dimensions(path),
+            ImageFormat::Asdf => asdf_io::read_asdf_dimensions(path),
+        })
+    })
+    .inspect_err(|e| log::warn!("{e}"))
+    .ok()
+    .flatten()
 }
 
 /// A TAN WCS already in the file's header (from an earlier solve), if any.
@@ -130,20 +262,33 @@ pub fn read_dimensions(path: &Path) -> Option<(u32, u32)> {
 /// Used by `--extract` for the RA and Dec columns. Like ASTAP, only a CD matrix
 /// counts: a header with CDELT but no CD gives none, and SIP keywords are ignored.
 pub fn read_header_wcs(path: &Path) -> Option<TanWcs> {
-    match detect_format(path).ok()? {
-        ImageFormat::Fits => fits_io::read_fits_header_wcs(path),
-        ImageFormat::Xisf => xisf_io::read_xisf_header_wcs(path),
-        ImageFormat::Asdf => None,
-    }
+    let format = detect_format(path).ok()?;
+    guarded(path, || {
+        Ok(match format {
+            ImageFormat::Fits => fits_io::read_fits_header_wcs(path),
+            ImageFormat::Xisf => xisf_io::read_xisf_header_wcs(path),
+            ImageFormat::Asdf => None,
+        })
+    })
+    .inspect_err(|e| log::warn!("{e}"))
+    .ok()
+    .flatten()
 }
 
 /// Number of colour channels the image had before it was reduced to one.
 pub fn read_channels(path: &Path) -> usize {
-    match detect_format(path) {
-        Ok(ImageFormat::Fits) => fits_io::read_fits_channels(path),
-        Ok(ImageFormat::Xisf) => xisf_io::read_xisf_channels(path),
-        Ok(ImageFormat::Asdf) | Err(_) => 1,
-    }
+    let Ok(format) = detect_format(path) else {
+        return 1;
+    };
+    guarded(path, || {
+        Ok(match format {
+            ImageFormat::Fits => fits_io::read_fits_channels(path),
+            ImageFormat::Xisf => xisf_io::read_xisf_channels(path),
+            ImageFormat::Asdf => 1,
+        })
+    })
+    .inspect_err(|e| log::warn!("{e}"))
+    .unwrap_or(1)
 }
 
 /// Write the solution back into the image file (`--update`).
@@ -155,7 +300,7 @@ pub fn read_channels(path: &Path) -> usize {
 /// `main` reports this as a warning rather than a failure.
 pub fn update_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
     match detect_format(path)? {
-        ImageFormat::Fits => fits_io::update_fits_wcs(path, wcs),
+        ImageFormat::Fits => guarded(path, || fits_io::update_fits_wcs(path, wcs)),
         other => Err(format!(
             "--update writes the solution into the image header, which is only \
              supported for FITS (this file is {}). The .wcs and .ini files were \
@@ -179,11 +324,19 @@ pub fn pixel_scale_from(
     xpixsz_um: Option<f64>,
     xbinning: Option<f64>,
 ) -> Option<f64> {
-    let fl = focallen_mm.filter(|v| *v > 0.0)?;
-    let ps = xpixsz_um.filter(|v| *v > 0.0)?;
-    let bin = xbinning.filter(|v| *v > 0.0).unwrap_or(1.0);
-    Some(ps * bin / fl * 206.265)
+    let usable = |v: &f64| v.is_finite() && *v > 0.0;
+    let fl = focallen_mm.filter(usable)?;
+    let ps = xpixsz_um.filter(usable)?;
+    let bin = xbinning.filter(usable).unwrap_or(1.0);
+    // The field size and the search step are derived from this, so a scale no
+    // instrument has (FOCALLEN = 1E300, say, from a corrupt header) is no guess at
+    // all: it would make the search step vanishingly small.
+    Some(ps * bin / fl * 206.265).filter(|s| PLAUSIBLE_PIXEL_SCALE.contains(s))
 }
+
+/// Pixel scales, arcseconds per pixel, that some real instrument could have: from
+/// a large telescope's adaptive optics to an all-sky fisheye, with a wide margin.
+const PLAUSIBLE_PIXEL_SCALE: core::ops::RangeInclusive<f64> = 1e-3..=1e4;
 
 /// A TAN WCS from header keywords, shared by the formats that carry them.
 ///
@@ -217,6 +370,9 @@ pub fn ra_dec_from(
     crval1: Option<f64>,
     crval2: Option<f64>,
 ) -> Option<(f64, f64)> {
+    let finite = |v: &f64| v.is_finite();
+    let (ra, dec) = (ra.filter(finite), dec.filter(finite));
+    let (crval1, crval2) = (crval1.filter(finite), crval2.filter(finite));
     Some((ra.or(crval1)?, dec.or(crval2)?))
 }
 
@@ -292,6 +448,17 @@ mod tests {
         assert!(pixel_scale_from(Some(250.0), None, None).is_none());
         assert!(pixel_scale_from(Some(0.0), Some(3.76), None).is_none());
         assert!(pixel_scale_from(Some(250.0), Some(-1.0), None).is_none());
+        // Nor do values no instrument has, which a corrupt header can hold: they
+        // would make the search step vanish (or the field cover the sky).
+        assert!(pixel_scale_from(Some(1e300), Some(3.76), None).is_none());
+        assert!(pixel_scale_from(Some(1e-300), Some(3.76), None).is_none());
+        assert!(pixel_scale_from(Some(f64::INFINITY), Some(3.76), None).is_none());
+        assert!(pixel_scale_from(Some(250.0), Some(f64::NAN), None).is_none());
+        // An unusable binning is ignored, as an absent one is.
+        assert_eq!(
+            pixel_scale_from(Some(250.0), Some(3.76), Some(f64::INFINITY)),
+            pixel_scale_from(Some(250.0), Some(3.76), None)
+        );
         // Absent binning is 1, not zero.
         assert!(pixel_scale_from(Some(250.0), Some(3.76), None).is_some());
     }
@@ -329,5 +496,35 @@ mod tests {
         );
         // A half-present pair is not a pointing.
         assert_eq!(ra_dec_from(Some(10.0), None, None, None), None);
+        // Nor is one that is not a number; CRVAL can stand in for it.
+        assert_eq!(ra_dec_from(Some(f64::NAN), Some(20.0), None, None), None);
+        assert_eq!(
+            ra_dec_from(Some(f64::INFINITY), Some(20.0), Some(30.0), Some(40.0)),
+            Some((30.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn a_panicking_reader_is_an_error_naming_where() {
+        let p = Path::new("x.fits");
+        let err = guarded::<()>(p, || panic!("boom {}", 42)).unwrap_err();
+        assert!(
+            err.starts_with("x.fits: ") && err.contains("boom 42"),
+            "{err}"
+        );
+        assert!(err.contains("image_io.rs"), "location missing: {err}");
+        // The hook is restored for panics outside a reader: nested use too.
+        assert_eq!(guarded(p, || guarded(p, || Ok(7))), Ok(7));
+        assert!(!IN_READER.with(core::cell::Cell::get));
+    }
+
+    #[test]
+    fn pixel_counts_are_checked_before_allocating() {
+        assert_eq!(checked_pixel_count(4, 3, 2), Ok(24));
+        assert!(checked_pixel_count(usize::MAX, 2, 1).is_err());
+        assert!(checked_pixel_count(1 << 20, 1 << 20, 1).is_err());
+        assert!(checked_pixel_count(MAX_IMAGE_PIXELS, 1, 1).is_ok());
+        assert!(checked_pixel_count(MAX_IMAGE_PIXELS, 1, 2).is_err());
+        assert_eq!(try_alloc_pixels(5).unwrap(), vec![0.0; 5]);
     }
 }

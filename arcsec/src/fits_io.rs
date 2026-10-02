@@ -88,6 +88,14 @@ impl FitsFile {
 
 impl Drop for FitsFile {
     fn drop(&mut self) {
+        // If CFITSIO panicked mid-call the handle may be inconsistent, and a second
+        // panic while unwinding would abort the process instead of letting
+        // `image_io` report the file as unreadable. Leak it instead: the process
+        // is about to exit with an error anyway.
+        if std::thread::panicking() {
+            core::mem::forget(self.0.take());
+            return;
+        }
         if let Some(b) = self.0.take() {
             let mut status: c_int = 0;
             fits_close_file(b, &mut status);
@@ -152,6 +160,18 @@ pub fn read_fits_pixel_scale(path: &Path) -> Option<f64> {
     )
 }
 
+/// Whether `path` is an uncompressed FITS file on disk (not gzip, bzip2 or
+/// `compress`, and not CFITSIO extended filename syntax), so that its length bounds
+/// the data it can hold.
+fn is_plain_fits(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut head = [0u8; 9];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && &head == b"SIMPLE  ="
+}
+
 /// Open a FITS image and return its pixel data as an `ImageBuffer`.
 ///
 /// A data cube (NAXIS = 3, e.g. an RGB image) is read as its first plane.
@@ -193,10 +213,30 @@ pub fn read_fits_image(path: &Path) -> Result<ImageBuffer, String> {
             naxes[0], naxes[1]
         ));
     };
-    let npix = width
-        .checked_mul(height)
-        .ok_or_else(|| format!("FITS image dimensions {width}×{height} overflow"))?;
-    let mut data: Vec<f32> = vec![0.0f32; npix];
+    let npix = image_io::checked_pixel_count(width, height, 1)?;
+
+    // A header can declare any size, so before allocating for it check that the
+    // file holds that much data. An uncompressed image's pixels sit in the file
+    // as they are; a tile-compressed or gzipped one can expand without limit, and
+    // is bounded by the pixel-count cap above alone.
+    let mut st: c_int = 0;
+    let compressed = fits_is_compressed_image(f.fp(), &mut st) != 0 || st != 0;
+    if !compressed && is_plain_fits(path) {
+        let mut datastart: LONGLONG = 0;
+        fits_get_hduaddrll(f.fp(), None, Some(&mut datastart), None, &mut status);
+        let file_len = std::fs::metadata(path).map_or(0, |m| m.len());
+        let bytes = u64::from(bitpix.unsigned_abs() / 8);
+        let needed = u64::try_from(datastart)
+            .ok()
+            .and_then(|start| start.checked_add((npix as u64).checked_mul(bytes)?));
+        if status != 0 || needed.is_none_or(|n| n > file_len) {
+            return Err(format!(
+                "FITS image declares {width}×{height} pixels but the file is too short \
+                 to hold them ({file_len} bytes)"
+            ));
+        }
+    }
+    let mut data = image_io::try_alloc_pixels(npix)?;
 
     // fits_read_img_flt = ffgpve_safe: reads directly as f32, any BITPIX
     fits_read_img_flt(
@@ -830,6 +870,110 @@ mod tests {
         }
         let text = String::from_utf8_lossy(&header[..2880]).to_string();
         assert!(text.contains("'RA---TAN'"), "CTYPE now plain TAN");
+    }
+
+    /// A FITS file from header cards, padded to whole blocks, with `data_bytes`
+    /// of zeros after the header.
+    fn fits_file(cards: &[&str], data_bytes: usize) -> Vec<u8> {
+        let mut bytes: Vec<u8> = cards
+            .iter()
+            .chain(&["END"])
+            .flat_map(|c| format!("{c:<80}").into_bytes())
+            .collect();
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, b' ');
+        bytes.resize(bytes.len() + data_bytes.div_ceil(2880) * 2880, 0);
+        bytes
+    }
+
+    /// Dimensions the file cannot hold are refused before the pixel buffer is
+    /// allocated: over the pixel limit outright, and under it when the file is
+    /// too short for the data (found by fuzzing: a 5 KB file asked for 4 GB).
+    #[test]
+    fn a_header_larger_than_its_file_is_refused_before_allocating() {
+        let path = std::env::temp_dir().join(format!("arcsec_big_{}.fits", std::process::id()));
+        for (naxis1, naxis2, want) in [
+            (100_000, 100_000, "limit"),
+            (20_000, 20_000, "too short"),
+            (4, 4, ""),
+        ] {
+            let n1 = format!("NAXIS1  = {naxis1:>20}");
+            let n2 = format!("NAXIS2  = {naxis2:>20}");
+            let cards = [
+                "SIMPLE  =                    T",
+                "BITPIX  =                  -32",
+                "NAXIS   =                    2",
+                &n1,
+                &n2,
+            ];
+            std::fs::write(&path, fits_file(&cards, 64)).unwrap();
+            match image_io::read_image(&path) {
+                Ok(_) => assert!(want.is_empty(), "{naxis1}x{naxis2} read"),
+                Err(e) => assert!(!want.is_empty() && e.contains(want), "{naxis1}: {e}"),
+            }
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A keyword value that is not text panicked inside rsfitsio 0.470.3. The
+    /// reader boundary turns that into a missing value; the image still reads.
+    #[test]
+    fn a_keyword_that_is_not_text_is_absent_not_a_crash() {
+        let path = std::env::temp_dir().join(format!("arcsec_utf8_{}.fits", std::process::id()));
+        let mut bytes = fits_file(
+            &[
+                "SIMPLE  =                    T",
+                "BITPIX  =                    8",
+                "NAXIS   =                    2",
+                "NAXIS1  =                    4",
+                "NAXIS2  =                    4",
+                "RA      = 150.0",
+                "DEC     = 2.0",
+                "FOCALLEN= 500.0",
+                "XPIXSZ  = 3.76",
+            ],
+            16,
+        );
+        // RA = 150.0<0xB2> and FOCALLEN = 500.0<0xFF>.
+        bytes[5 * 80 + 15] = 0xB2;
+        bytes[7 * 80 + 15] = 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(image_io::read_image(&path).is_ok());
+        assert_eq!(image_io::read_ra_dec(&path), None);
+        assert_eq!(image_io::read_pixel_scale(&path), None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A tile-compressed image whose GZIP tile inflates past what ZBITPIX
+    /// allows: rsfitsio 0.470.3 panics. It is an unreadable file (exit 16).
+    #[test]
+    fn a_corrupt_compressed_tile_is_an_error() {
+        use rsfitsio::fitsio::{GZIP_1, SHORT_IMG};
+        let path = std::env::temp_dir().join(format!("arcsec_fz_{}.fits", std::process::id()));
+        std::fs::remove_file(&path).ok();
+        let cpath = CString::new(path.to_str().unwrap()).unwrap();
+        let data: Vec<i16> = (0..128).map(|i| (i * 37 % 1000) as i16).collect();
+        let mut status: c_int = 0;
+        let mut fptr: Option<Box<fitsfile>> = None;
+        fits_create_diskfile(&mut fptr, cc(cpath.to_bytes_with_nul()), &mut status);
+        let f = fptr.as_mut().unwrap();
+        fits_set_compression_type(f, GZIP_1, &mut status);
+        fits_create_imgll(f, SHORT_IMG, 2, &[16, 8], &mut status);
+        fits_write_img_sht(f, 1, 1, 128, &data, &mut status);
+        fits_close_file(fptr.take().unwrap(), &mut status);
+        assert_eq!(status, 0);
+        assert_eq!(image_io::read_image(&path).unwrap().data.len(), 128);
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes
+            .chunks(80)
+            .position(|c| c.starts_with(b"ZBITPIX ="))
+            .unwrap()
+            * 80;
+        bytes[at..at + 80]
+            .copy_from_slice(format!("{:<80}", "ZBITPIX =                    8").as_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(image_io::read_image(&path).is_err());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

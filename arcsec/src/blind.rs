@@ -70,8 +70,11 @@ pub fn collect_index_files(path: &Path, fov_deg: f64) -> Vec<PathBuf> {
     let mut ranked: Vec<(PathBuf, f64)> = raw
         .into_iter()
         .filter_map(|p| {
-            // An unreadable file is skipped silently.
-            let (_dq, lo_rad, hi_rad) = peek_anet_scale(&p).ok()?;
+            // An unreadable file is skipped silently, as is one CFITSIO panics on
+            // (rsfitsio 0.470.3 does on a header value that is not text).
+            let (_dq, lo_rad, hi_rad) = std::panic::catch_unwind(|| peek_anet_scale(&p))
+                .ok()?
+                .ok()?;
             let lo_deg = lo_rad.to_degrees();
             let hi_deg = hi_rad.to_degrees();
             if hi_deg < fov_lo || lo_deg > fov_hi {
