@@ -229,8 +229,9 @@ pub struct QuadGrid {
     /// `start[c]..start[c + 1]` is cell `c`'s range in `codes` / `idx`
     /// (cell `c = a * n + b`).
     start: Vec<u32>,
-    /// The quads' five ratios, in cell order.
-    codes: Vec<[f64; 5]>,
+    /// The quads' five ratios, in cell order, as `f32` (see [`CatalogCodes`]):
+    /// a candidate that passes is re-checked at full precision.
+    codes: Vec<[f32; 5]>,
     /// Index into the image `QuadList` of each entry of `codes`.
     idx: Vec<u32>,
 }
@@ -271,7 +272,7 @@ impl QuadGrid {
         for (i, (&c, q)) in cells.iter().zip(&quads.0).enumerate() {
             let at = fill[c] as usize;
             fill[c] += 1;
-            grid.codes[at] = q.ratios;
+            grid.codes[at] = q.ratios.map(|r| r as f32);
             grid.idx[at] = i as u32;
         }
         grid
@@ -308,24 +309,33 @@ impl QuadGrid {
         // Widen the cell range by a hair so a value on a cell edge is never missed;
         // the exact test below decides.
         let pad = quad_tolerance * 1.000_01 + 1e-12;
+        // As in `find_matches_indexed`: f32 rounding moves a ratio by ~1e-7.
+        let tol_pad = quad_tolerance as f32 * 1.000_01 + f32::EPSILON;
         let n = self.n;
         let mut matches = Vec::new();
         for (j, cq) in cat_quads.0.iter().enumerate() {
             if cq.d1 < 1e-10 {
                 continue;
             }
+            let cr = cq.ratios.map(|r| r as f32);
             let (ka, kb) = (cq.ratios[GRID_RATIOS.0], cq.ratios[GRID_RATIOS.1]);
             let (b0, b1) = (self.cell(kb - pad), self.cell(kb + pad));
             for a in self.cell(ka - pad)..=self.cell(ka + pad) {
                 let lo = self.start[a * n + b0] as usize;
                 let hi = self.start[a * n + b1 + 1] as usize;
                 for (code, &i) in self.codes[lo..hi].iter().zip(&self.idx[lo..hi]) {
-                    if (0..5).all(|k| (code[k] - cq.ratios[k]).abs() <= quad_tolerance) {
-                        let i = i as usize;
+                    // All five at once, without branching on each: most candidates
+                    // fail, and an early exit is a mispredicted branch (10 % slower).
+                    if (0..5).fold(false, |bad, k| bad | ((code[k] - cr[k]).abs() > tol_pad)) {
+                        continue;
+                    }
+                    let i = i as usize;
+                    let iq = &img_quads.0[i];
+                    if (0..5).all(|k| (iq.ratios[k] - cq.ratios[k]).abs() <= quad_tolerance) {
                         matches.push(QuadMatch {
                             img_idx: i,
                             cat_idx: j,
-                            scale_ratio: img_quads.0[i].d1 / cq.d1,
+                            scale_ratio: iq.d1 / cq.d1,
                         });
                     }
                 }
