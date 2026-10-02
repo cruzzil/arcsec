@@ -692,6 +692,9 @@ pub fn index_solve(
     let mut stats = IndexSolveStats::default();
     let cancel = crate::cancel::current();
     let cancelled = || crate::cancel::fired(cancel.as_ref());
+    if let Some(c) = &cancel {
+        c.progress(crate::cancel::stage::BLIND_INDEX, -1.0);
+    }
 
     // ── Detect ────────────────────────────────────────────────────────────────
     // Every detection, not the `-s` brightest by SNR: the index's patterns are
@@ -758,12 +761,15 @@ pub fn index_solve(
         let handles: Vec<_> = quads
             .chunks(chunk)
             .map(|part| {
-                let (pts, tier_infos) = (&pts, &tier_infos);
+                let (pts, tier_infos, cancelled) = (&pts, &tier_infos, &cancelled);
                 scope.spawn(move || {
                     let mut keys = Vec::new();
                     let mut out = Vec::new();
                     let mut n = 0;
-                    for q in part {
+                    for (k, q) in part.iter().enumerate() {
+                        if k % 64 == 0 && cancelled() {
+                            break;
+                        }
                         let p = q.map(|i| pts[i]);
                         n += hypotheses_for(
                             index, tier_infos, &p, centre, scale_lo, scale_hi, &mut keys, &mut out,
@@ -825,10 +831,11 @@ pub fn index_solve(
             .chunks(chunk)
             .enumerate()
             .map(|(ci, part)| {
-                let det = &det;
+                let (det, cancelled) = (&det, &cancelled);
                 scope.spawn(move || {
                     part.iter()
                         .enumerate()
+                        .take_while(|_| !cancelled())
                         .map(|(k, (votes, hy))| {
                             let (s, refined) = score(index, deepest as u8, hy, det, w, h);
                             // Independent quads agreeing on a field are strong
@@ -850,6 +857,9 @@ pub fn index_solve(
             .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect()
     });
+    if cancelled() {
+        return Err(ArcsecError::Cancelled);
+    }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
     stats.best_score = scored.first().map_or(0, |s| s.0);
     debug_truth(&scored, w.max(h) * s_mid);
@@ -1045,5 +1055,48 @@ mod tests {
         assert!(t.max_error_arcsec(&wcs) < 2.0);
         let sep = crate::math::coords::ang_sep(wcs.ra0, wcs.dec0, hint_ra, hint_dec);
         assert!(sep > 2.0 * radius, "{:.1} deg", sep.to_degrees());
+    }
+
+    /// A named index comes first without a hint; with one, `index_first: false`
+    /// makes it a fallback the hinted search never needs here.
+    #[test]
+    fn a_named_index_is_first_or_a_fallback() {
+        use crate::auto::{Plan, SolveRequest};
+        use crate::cancel::{CancelToken, stage};
+        use alloc::sync::Arc;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("ixplan");
+        let t = TruthWcs::new(deg(310.0), deg(44.0), SCALE, 30.0, false, W, H);
+        let (img, _) = scene(&t, 5, dir.path());
+        let run = |hint: Option<(f64, f64)>, index_first: bool| {
+            let stages = Arc::new(Mutex::new(Vec::new()));
+            let s = Arc::clone(&stages);
+            let req = SolveRequest {
+                hint,
+                pixel_scale: Some(SCALE),
+                search_radius: deg(20.0),
+                db_path: Some(dir.path().to_path_buf()),
+                db_name: Some("t80".into()),
+                index: Some(dir.path().join("t80.arcsecix")),
+                index_first,
+                auto_index: false,
+                threads: 2,
+                cancel: Some(
+                    CancelToken::new().with_progress(move |st, _| s.lock().unwrap().push(st)),
+                ),
+                ..SolveRequest::default()
+            };
+            let solved = Plan::new(&req, W, H).unwrap().solve(&img).expect("solve");
+            assert!(t.max_error_arcsec(&solved.wcs) < 2.0);
+            stages.lock().unwrap().contains(&stage::BLIND_INDEX)
+        };
+        let near = Some((deg(310.2), deg(44.1)));
+        assert!(
+            !run(near, false),
+            "a hinted search should not need the index"
+        );
+        assert!(run(near, true), "index_first: the index runs first");
+        assert!(run(None, false), "no hint: the index runs first");
     }
 }

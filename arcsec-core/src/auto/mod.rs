@@ -184,8 +184,18 @@ pub struct SolveRequest {
     pub db_name: Option<String>,
     /// Blind index to use (the CLI's `--index`): an arcsec `.arcsecix` file, a
     /// directory holding one, or Astrometry.net `index-*.fits` files. `None` still
-    /// uses an arcsec index installed in the catalogue directory for a wide search.
+    /// uses an arcsec index installed in the catalogue directory for a wide search,
+    /// unless [`Self::auto_index`] is off.
     pub index: Option<PathBuf>,
+    /// With a hint, whether the index named in [`Self::index`] is tried before
+    /// the search round the hint (the CLI's `--index`: true, the default), or only
+    /// after the spiral has searched a few fields round it (false), as an
+    /// installed index is. Without a hint the index always comes first.
+    pub index_first: bool,
+    /// Consult an arcsec index installed in the catalogue directory (or beside the
+    /// star database) when the search is wider than a few fields and at least 10°.
+    /// On by default, as in the CLI.
+    pub auto_index: bool,
     /// Minimum star size (HFD), arcseconds.
     pub hfd_min_arcsec: f64,
     /// Pattern-matching tolerance.
@@ -218,6 +228,8 @@ impl Default for SolveRequest {
             db_path: None,
             db_name: None,
             index: None,
+            index_first: true,
+            auto_index: true,
             hfd_min_arcsec: 1.5,
             quad_tolerance: 0.007,
             max_stars: 500,
@@ -256,6 +268,8 @@ pub struct Plan {
     /// side, the database, and the minimum HFD in binned pixels.
     pub params: SolveParams,
     index: Option<PathBuf>,
+    index_first: bool,
+    auto_index: bool,
     sip: bool,
     cancel: Option<CancelToken>,
 }
@@ -349,6 +363,8 @@ impl Plan {
                 threads: req.threads,
             },
             index: req.index.clone(),
+            index_first: req.index_first,
+            auto_index: req.auto_index,
             sip: req.sip,
             cancel: req.cancel.clone(),
         })
@@ -419,7 +435,14 @@ impl Plan {
         // hinted solver accepts it (see blind::index_stage). With Astrometry.net
         // files, the blind solver estimates the position first, and that estimate
         // becomes the hint for the catalogue spiral solver.
-        let own_index = blind::arcsec_index_for(self.index.as_ref(), template);
+        // A hint, and an index named only as a fallback: the index waits until the
+        // spiral has searched round the hint, exactly as an installed one does.
+        let fallback = self.has_hint && !self.index_first;
+        let own_index = blind::arcsec_index_for(self.index.as_ref(), template, self.auto_index)
+            .map(|mut ix| {
+                ix.explicit &= !fallback;
+                ix
+            });
         let index_wcs = match own_index.as_ref().map(|ix| {
             blind::index_stage(
                 &img,
@@ -450,6 +473,37 @@ impl Plan {
                 let index_files = collect_index_files(idx_root, template.fov.to_degrees());
                 if index_files.is_empty() {
                     return Err(ArcsecError::IndexNotFound(idx_root.clone()));
+                }
+                // As a fallback, the index waits for a search round the hint.
+                if fallback {
+                    let near = SolveParams {
+                        search_radius: blind::stage_one_radius(template)
+                            .min(template.search_radius),
+                        ..template.clone()
+                    };
+                    log::info!(
+                        "Searching {:.1}° round the hint before the blind index.",
+                        near.search_radius.to_degrees()
+                    );
+                    match solve_image(&img, &near) {
+                        Ok(mut wcs) => {
+                            if self.sip {
+                                wcs.sip =
+                                    crate::wcs::fit_sip(&wcs, self.image_size.0, self.image_size.1);
+                            }
+                            return Ok(Solved {
+                                wcs,
+                                index_estimate: None,
+                            });
+                        }
+                        Err(
+                            e @ (ArcsecError::Cancelled
+                            | ArcsecError::CatalogNotFound(_)
+                            | ArcsecError::CatalogIo(_)
+                            | ArcsecError::InsufficientStars { .. }),
+                        ) => return Err(e),
+                        Err(_) => {}
+                    }
                 }
                 let params = BlindSolveParams {
                     quad_tolerance: template.quad_tolerance,

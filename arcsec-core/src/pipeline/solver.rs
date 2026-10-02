@@ -45,6 +45,13 @@ pub enum SearchSpeed {
     Slow,
 }
 
+/// `log` target of the messages the search writes at every spiral position
+/// ("Search 12, [2,-1], position: ...", "Found 40 references", ...): thousands in a
+/// wide search. They are logged at `info`, which `arcsec --progress` prints, as
+/// ASTAP's log does; a host that wants only a few lines per solve can filter this
+/// target out (the C library reports it at debug level).
+pub const SEARCH_LOG_TARGET: &str = "arcsec_core::search";
+
 /// Parameters for [`solve_image`].
 #[derive(Debug, Clone)]
 pub struct SolveParams {
@@ -464,6 +471,9 @@ struct SpiralCtx<'a> {
     accept: Acceptance,
     /// Long side over short side of the image.
     aspect: f64,
+    /// The ambient cancellation token, polled inside each position as well as
+    /// between them: a wide field's position can take a large part of a second.
+    cancel: Option<crate::cancel::CancelToken>,
 }
 
 /// A spiral position that produced a verified solution.
@@ -540,6 +550,9 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         Ok(v) if !v.is_empty() => v,
         Ok(_) | Err(_) => return PositionTry::NONE,
     };
+    if crate::cancel::fired(ctx.cancel.as_ref()) {
+        return PositionTry::NONE;
+    }
 
     let sep_deg = sep.to_degrees();
     let mag_limit = cat_raw
@@ -547,6 +560,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         .map(|s| s.mag)
         .fold(f64::NEG_INFINITY, f64::max);
     log::info!(
+        target: SEARCH_LOG_TARGET,
         "Search {}, [{},{}], position: {}  Down to magn {:.1}  {} database stars  {} database quads to compare.",
         idx,
         sx,
@@ -592,7 +606,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
                 .img_grid
                 .find_matches(ctx.img_quads, &cat_quads, params.quad_tolerance);
             let n_raw = raw.len();
-            log::info!("Found {n_raw} references");
+            log::info!(target: SEARCH_LOG_TARGET, "Found {n_raw} references");
             let mut filtered = vote_filter(ctx.img_quads, &cat_quads, &raw, params.quad_tolerance);
             if filtered.len() < ctx.min_quads {
                 let (by_scale, _) = filter_by_scale(&raw, params.quad_tolerance);
@@ -614,7 +628,7 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             let tol = params.quad_tolerance * TETRA_TOL_FACTOR;
             let raw = find_triangle_matches(ctx.img_tris, &cat_tris, tol);
             let n_raw = raw.len();
-            log::info!("Found {n_raw} triangle references");
+            log::info!(target: SEARCH_LOG_TARGET, "Found {n_raw} triangle references");
             let biject = bijective_filter(&raw, ctx.img_tris, &cat_tris);
             let (filtered, _) = filter_triangles_by_scale(&biject, params.quad_tolerance);
             if filtered.len() < ctx.min_quads {
@@ -633,6 +647,9 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         ra: ra_db,
         dec: dec_db,
     };
+    if crate::cancel::fired(ctx.cancel.as_ref()) {
+        return failed;
+    }
     let Some((plate, n_matched)) = fit_pattern_pairs(img_pos, cat_pos, ctx.min_quads) else {
         return failed;
     };
@@ -660,7 +677,10 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
         ctx.img.height,
         &ctx.accept,
     ) else {
-        log::info!("Verification failed at this position; continuing search.");
+        log::info!(
+            target: SEARCH_LOG_TARGET,
+            "Verification failed at this position; continuing search."
+        );
         if n_matched >= STRONG_VOTE
             && let Some((verified, ra_c, dec_c)) =
                 second_chance(ctx, &cat_raw, &seeds, &plate, ra_db, dec_db)
@@ -983,11 +1003,17 @@ fn second_chance(
     ra: f64,
     dec: f64,
 ) -> Option<(Verified, f64, f64)> {
-    log::info!("Strong pattern match: retrying verification with a distortion model.");
+    log::info!(
+        target: SEARCH_LOG_TARGET,
+        "Strong pattern match: retrying verification with a distortion model."
+    );
     let r = fit_distortion(ctx, cat_raw, seeds, plate, ra, dec)?;
     // As for a reported model: it must reach the frame it will be extrapolated to.
     if r.cells < if r.model.n_terms == 10 { 9 } else { 7 } {
-        log::info!("The distortion model's stars do not cover the frame.");
+        log::info!(
+            target: SEARCH_LOG_TARGET,
+            "The distortion model's stars do not cover the frame."
+        );
         return None;
     }
     let probe = Verified {
@@ -1000,7 +1026,7 @@ fn second_chance(
     };
     let spread = spread_of(&r.img_pos, ctx.img.width, ctx.img.height);
     if !ctx.accept.accepts(&probe, spread) {
-        log::info!("The distortion model did not verify either.");
+        log::info!(target: SEARCH_LOG_TARGET, "The distortion model did not verify either.");
         return None;
     }
     log::info!(
@@ -1362,6 +1388,9 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     }
 
     // --- Phase A: star detection ---
+    if let Some(c) = &cancel {
+        c.progress(crate::cancel::stage::DETECTING, -1.0);
+    }
     let bg = get_background(img, params.max_stars);
     log::info!("Start finding stars");
     let (stars, stars_raw, deep_stars) =
@@ -1496,6 +1525,7 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         step_size,
         accept: Acceptance::new(nrstars_image, params, img),
         aspect: img.width.max(img.height) as f64 / img.width.min(img.height).max(1) as f64,
+        cancel: cancel.clone(),
     };
 
     let n_threads = if params.threads > 0 {
@@ -1506,10 +1536,23 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     .clamp(1, 64);
 
     let positions: Vec<(i32, i32)> = SpiralSearch::new(max_distance).collect();
+    // Progress in at most 200 steps, each reported once, by whichever worker
+    // starts the first position past it.
+    let reported = core::sync::atomic::AtomicUsize::new(0);
+    let n_positions = positions.len().max(1);
     let (step_distances, winner) = search_in_order(positions.len(), n_threads, |idx| {
         // A cancelled search runs out the remaining positions as no-ops.
         if cancelled() {
             return (None, None);
+        }
+        if let Some(c) = &cancel {
+            let bucket = idx * 200 / n_positions;
+            if bucket > reported.fetch_max(bucket, core::sync::atomic::Ordering::Relaxed) {
+                c.progress(
+                    crate::cancel::stage::SEARCHING,
+                    idx as f64 / n_positions as f64,
+                );
+            }
         }
         let (sx, sy) = positions[idx];
         let t = try_position(&ctx, idx, sx, sy);
@@ -2674,6 +2717,7 @@ mod tests {
             step_size: p.fov,
             accept: Acceptance::new(n, p, img),
             aspect: img.width.max(img.height) as f64 / img.width.min(img.height) as f64,
+            cancel: None,
         };
         let o = seeded_fallback(&ctx, &deep)?;
         assert!(!o.refused);

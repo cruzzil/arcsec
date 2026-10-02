@@ -1,4 +1,4 @@
-//! Cooperative cancellation of a running solve.
+//! Cooperative cancellation of a running solve, and progress reports from it.
 //!
 //! A solve can take seconds (a wide spiral search, a blind index pass), and a host
 //! application — an imaging suite with a Stop button — needs to end one early
@@ -13,6 +13,11 @@
 //! [`current`] when they start, then hand it to any worker threads they spawn. That
 //! keeps every existing signature (and every `SolveParams` literal) unchanged, and a
 //! call made without a token behaves exactly as before.
+//!
+//! A token can also carry a progress observer ([`CancelToken::with_progress`]),
+//! told which [`stage`] the solve is in and, for the spiral search, how far through
+//! it is. Progress messages for people go through the `log` crate as before; this
+//! is for a progress bar.
 //!
 //! ```
 //! use arcsec_core::cancel::{CancelToken, with_token};
@@ -33,25 +38,39 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A poll function: returns `true` once the solve should stop.
 type Poll = dyn Fn() -> bool + Send + Sync;
+/// A progress observer: a [`stage`] name and a fraction in `[0, 1]`, or a negative
+/// value when the stage's extent is unknown.
+type Progress = dyn Fn(&'static str, f64) + Send + Sync;
 
-struct Inner {
-    flag: AtomicBool,
-    poll: Option<Box<Poll>>,
+/// Names of the stages a solve reports to a progress observer.
+pub mod stage {
+    /// Finding and measuring the image's stars. Fraction unknown.
+    pub const DETECTING: &str = "detecting stars";
+    /// The spiral search around the hint; the fraction is of the positions within
+    /// the search radius. A solve usually ends well before 1.
+    pub const SEARCHING: &str = "searching";
+    /// A blind index looking for the field. Fraction unknown.
+    pub const BLIND_INDEX: &str = "blind index";
 }
 
-/// A shared, thread-safe "please stop" flag.
+/// A shared, thread-safe "please stop" flag, with an optional progress observer.
 ///
 /// Clones share the flag: cancel any clone and every holder sees it. Optionally it
 /// also polls a caller-supplied function (see [`CancelToken::with_poll`]), so a
 /// host that already keeps its own stop flag need not mirror it into this one.
 #[derive(Clone)]
-pub struct CancelToken(Arc<Inner>);
+pub struct CancelToken {
+    flag: Arc<AtomicBool>,
+    poll: Option<Arc<Poll>>,
+    progress: Option<Arc<Progress>>,
+}
 
 impl fmt::Debug for CancelToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CancelToken")
-            .field("cancelled", &self.0.flag.load(Ordering::Relaxed))
-            .field("poll", &self.0.poll.is_some())
+            .field("cancelled", &self.flag.load(Ordering::Relaxed))
+            .field("poll", &self.poll.is_some())
+            .field("progress", &self.progress.is_some())
             .finish()
     }
 }
@@ -66,10 +85,11 @@ impl CancelToken {
     /// A token that has not been cancelled.
     #[must_use]
     pub fn new() -> Self {
-        Self(Arc::new(Inner {
-            flag: AtomicBool::new(false),
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
             poll: None,
-        }))
+            progress: None,
+        }
     }
 
     /// A token that is also cancelled once `poll` returns `true`.
@@ -80,30 +100,54 @@ impl CancelToken {
     /// `poll` is not called again.
     #[must_use]
     pub fn with_poll(poll: impl Fn() -> bool + Send + Sync + 'static) -> Self {
-        Self(Arc::new(Inner {
-            flag: AtomicBool::new(false),
-            poll: Some(Box::new(poll)),
-        }))
+        Self {
+            poll: Some(Arc::new(poll)),
+            ..Self::new()
+        }
+    }
+
+    /// This token (still sharing its flag and poll function with its clones),
+    /// with `progress` told of the solve's progress: a [`stage`] name and a
+    /// fraction in `[0, 1]`, or `-1` when the stage's extent is unknown.
+    ///
+    /// Called from the solver's worker threads, possibly several at once, so it
+    /// must be thread-safe. The search reports at most a few hundred times.
+    #[must_use]
+    pub fn with_progress(
+        self,
+        progress: impl Fn(&'static str, f64) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            progress: Some(Arc::new(progress)),
+            ..self
+        }
     }
 
     /// Ask every solve using this token to stop at its next checkpoint.
     pub fn cancel(&self) {
-        self.0.flag.store(true, Ordering::Relaxed);
+        self.flag.store(true, Ordering::Relaxed);
     }
 
     /// Whether the token has been cancelled (or its poll function says so).
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        if self.0.flag.load(Ordering::Relaxed) {
+        if self.flag.load(Ordering::Relaxed) {
             return true;
         }
-        if let Some(poll) = &self.0.poll
+        if let Some(poll) = &self.poll
             && poll()
         {
-            self.0.flag.store(true, Ordering::Relaxed);
+            self.flag.store(true, Ordering::Relaxed);
             return true;
         }
         false
+    }
+
+    /// Report progress to the observer, if there is one.
+    pub fn progress(&self, stage: &'static str, fraction: f64) {
+        if let Some(p) = &self.progress {
+            p(stage, fraction);
+        }
     }
 }
 
@@ -152,6 +196,15 @@ pub fn is_cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(CancelToken::is_cancelled))
 }
 
+/// Report progress to this thread's ambient token's observer, if any.
+pub fn progress(stage: &'static str, fraction: f64) {
+    CURRENT.with(|c| {
+        if let Some(t) = c.borrow().as_ref() {
+            t.progress(stage, fraction);
+        }
+    });
+}
+
 /// `Some(token)` cancelled, as a predicate the hot loops can capture by reference.
 pub(crate) fn fired(token: Option<&CancelToken>) -> bool {
     token.is_some_and(CancelToken::is_cancelled)
@@ -181,6 +234,23 @@ mod tests {
         assert!(t.is_cancelled());
         assert!(t.is_cancelled());
         assert_eq!(calls.load(Ordering::Relaxed), 3, "not polled once fired");
+    }
+
+    #[test]
+    fn progress_reaches_the_observer() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = Arc::clone(&seen);
+        let t = CancelToken::with_poll(|| false)
+            .with_progress(move |stage, f| s.lock().unwrap().push((stage, f)));
+        with_token(&t, || progress(stage::SEARCHING, 0.5));
+        t.progress(stage::DETECTING, -1.0);
+        progress(stage::SEARCHING, 0.9); // no ambient token: nowhere to go
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(stage::SEARCHING, 0.5), (stage::DETECTING, -1.0)]
+        );
+        // The poll function survived.
+        assert!(!t.is_cancelled());
     }
 
     #[test]

@@ -175,6 +175,8 @@ fn main() {
         db_path: Some(db_path),
         db_name: db_abbrev,
         index: matches.get_one::<PathBuf>("index").cloned(),
+        index_first: true,
+        auto_index: true,
         hfd_min_arcsec: arg::<f64>(&matches, "hfd-min"),
         quad_tolerance: quad_tol,
         max_stars,

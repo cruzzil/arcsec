@@ -207,16 +207,19 @@ const AUTO_MIN_RADIUS: f64 = 10.0 * core::f64::consts::PI / 180.0;
 /// An arcsec index to use, and whether the user named it.
 pub(crate) struct OwnIndex {
     path: PathBuf,
-    explicit: bool,
+    /// Tried first, and over the whole sky, as `--index` is; otherwise after the
+    /// spiral has searched round the hint, and only within the search radius.
+    pub(crate) explicit: bool,
 }
 
 /// The arcsec index for this solve: the one `--index` names, if it names one;
 /// otherwise, when the search radius reaches past [`AUTO_SPIRAL_FIELDS`] fields and
 /// is at least 10°, one installed in the catalogue directory or beside the star
-/// database.
+/// database. `automatic: false` turns the second case off.
 pub(crate) fn arcsec_index_for(
     explicit: Option<&PathBuf>,
     template: &crate::pipeline::SolveParams,
+    automatic: bool,
 ) -> Option<OwnIndex> {
     if let Some(p) = explicit {
         return find_arcsec_index(p).map(|path| OwnIndex {
@@ -224,7 +227,8 @@ pub(crate) fn arcsec_index_for(
             explicit: true,
         });
     }
-    if template.search_radius <= stage_one_radius(template)
+    if !automatic
+        || template.search_radius <= stage_one_radius(template)
         || template.search_radius < AUTO_MIN_RADIUS
     {
         return None;
@@ -237,7 +241,9 @@ pub(crate) fn arcsec_index_for(
         })
 }
 
-fn stage_one_radius(template: &crate::pipeline::SolveParams) -> f64 {
+/// How far round the hint the spiral searches before a blind index is consulted:
+/// [`AUTO_SPIRAL_FIELDS`] fields, at least 1°.
+pub(crate) fn stage_one_radius(template: &crate::pipeline::SolveParams) -> f64 {
     (template.fov * AUTO_SPIRAL_FIELDS).max(AUTO_SPIRAL_MIN)
 }
 

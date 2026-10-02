@@ -17,6 +17,11 @@ include = ["src/**/*.rs", "LICENSE"]
 [lints]
 workspace = true
 
+[features]
+# Exposes `arcsec_core::test_support` (synthetic skies, images and databases) to the
+# tests of other workspace crates. Not part of the public API.
+test-support = []
+
 [dependencies]
 libc = "0.2"
 log = { workspace = true }

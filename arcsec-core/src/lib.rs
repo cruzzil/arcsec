@@ -144,8 +144,12 @@ pub mod quads;
 pub mod types;
 pub mod wcs;
 
-#[cfg(test)]
-mod test_support;
+/// Synthetic skies, images and star databases for tests: compiled for this crate's
+/// own tests, and with the `test-support` feature for the tests of the crates built
+/// on it (the C library's end-to-end test). Not a stable API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 
 pub use catalog::{AnetIndex, AnetIndexEntry, AnetStar, load_anet_index, peek_anet_scale};
 pub use error::{ArcsecError, Result};
