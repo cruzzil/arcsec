@@ -537,7 +537,8 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             if cat_quads.is_empty() {
                 return failed;
             }
-            crate::quads::r#match::sort_catalog_quads(&mut cat_quads);
+            // No catalogue sort: the grid orders the matches as a sorted
+            // catalogue would (see `QuadGrid::find_matches`).
             let raw = ctx
                 .img_grid
                 .find_matches(ctx.img_quads, &cat_quads, params.quad_tolerance);

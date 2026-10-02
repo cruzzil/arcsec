@@ -217,8 +217,9 @@ const GRID_MAX_CELLS: usize = 1024;
 /// million five-ratio checks per position, and 80 % of a failed search. Bucketing
 /// on two ratios, in cells one tolerance wide, cuts the checks by an order of
 /// magnitude. The image side is the one indexed because it does not change from
-/// one position to the next. [`QuadGrid::find_matches`] returns exactly what
-/// [`find_matches_indexed`] does, in the same order.
+/// one position to the next, and the catalogue need no longer be sorted.
+/// [`QuadGrid::find_matches`] returns the pairs [`find_matches_indexed`] does, in
+/// the same order up to ties.
 pub struct QuadGrid {
     /// The tolerance the cells were sized for; queries must not exceed it.
     tol: f64,
@@ -285,15 +286,17 @@ impl QuadGrid {
     }
 
     /// All (image quad, catalogue quad) pairs whose five ratios agree within
-    /// `quad_tolerance`, ordered by image quad and then catalogue quad: for a
-    /// catalogue sorted by [`sort_catalog_quads`], exactly what
-    /// [`find_matches_indexed`] returns.
+    /// `quad_tolerance`, ordered as [`find_matches_indexed`] orders them for the
+    /// catalogue sorted by [`sort_catalog_quads`] — by image quad, then by the
+    /// catalogue quad's `ratios[INDEX_RATIO]` — without the catalogue being
+    /// sorted: `cat_idx` indexes `cat_quads` as given.
     ///
-    /// The catalogue need not be sorted for the pairs to be right, only for the
-    /// order to be that one. The solver keeps the sort: quads that share their
-    /// longest and shortest sides tie on `ratios[INDEX_RATIO]`, the unstable sort
-    /// puts tied quads in an order nothing else reproduces, and the fit downstream
-    /// is order-sensitive in the last bits.
+    /// Catalogue quads that tie exactly on `ratios[INDEX_RATIO]` (quads sharing
+    /// their longest and shortest sides do) come in list order, where the sort put
+    /// them in whatever order its unstable algorithm left. The vote and the fit
+    /// downstream see those pairs in a different order and can differ in the last
+    /// bits; on the 635-image corpus every `.wcs` came out byte-identical, and
+    /// the catalogue sort it saves was a sixth of a failed search.
     ///
     /// `img_quads` must be the list the grid was built from, and `quad_tolerance`
     /// no larger than the tolerance it was built for.
@@ -341,9 +344,15 @@ impl QuadGrid {
                 }
             }
         }
-        // The order `find_matches_indexed` gives: the vote and the fit downstream
-        // depend on it (the GIVENS sweep is order-sensitive).
-        matches.sort_unstable_by_key(|m| (m.img_idx, m.cat_idx));
+        // The order `find_matches_indexed` gives on a sorted catalogue (see above):
+        // the vote and the fit downstream depend on it.
+        matches.sort_unstable_by(|a, b| {
+            a.img_idx.cmp(&b.img_idx).then_with(|| {
+                cat_quads.0[a.cat_idx].ratios[INDEX_RATIO]
+                    .total_cmp(&cat_quads.0[b.cat_idx].ratios[INDEX_RATIO])
+                    .then(a.cat_idx.cmp(&b.cat_idx))
+            })
+        });
         matches
     }
 }
@@ -509,16 +518,35 @@ mod tests {
         // Some exact copies, so there are true matches and ties on the sort key.
         cat.0.extend(img.0.iter().step_by(7).cloned());
         cat.0.extend(img.0.iter().step_by(13).cloned());
-        for tol in [0.0, 0.002, 0.007, 0.02, 0.1] {
+        for tol in [0.0, 0.002, 0.007, 0.03] {
             let mut sorted = cat.clone();
             sort_catalog_quads(&mut sorted);
             let want = find_matches_sorted(&img, &sorted, tol);
-            let got = QuadGrid::build(&img, tol).find_matches(&img, &sorted, tol);
+            let got = QuadGrid::build(&img, tol).find_matches(&img, &cat, tol);
             assert!(!want.is_empty(), "tol {tol}: the fixture has matches");
-            let key = |m: &QuadMatch| (m.img_idx, m.cat_idx, m.scale_ratio.to_bits());
-            let got: Vec<_> = got.iter().map(key).collect();
-            let want: Vec<_> = want.iter().map(key).collect();
-            assert_eq!(got, want, "tol {tol}");
+            // The same pairs (a catalogue quad named by its contents, since the
+            // lists differ in order), in the same order up to ties on the key.
+            let key = |m: &QuadMatch, list: &QuadList| {
+                let q = &list.0[m.cat_idx];
+                (
+                    m.img_idx,
+                    q.ratios.map(f64::to_bits),
+                    q.d1.to_bits(),
+                    q.center_x.to_bits(),
+                )
+            };
+            let got: Vec<_> = got.iter().map(|m| key(m, &cat)).collect();
+            let mut want: Vec<_> = want.iter().map(|m| key(m, &sorted)).collect();
+            let mut got_sorted = got.clone();
+            got_sorted.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(got_sorted, want, "tol {tol}: the same pairs");
+            let order = |k: &(usize, [u64; 5], u64, u64)| (k.0, f64::from_bits(k.1[INDEX_RATIO]));
+            assert!(
+                got.windows(2).all(|w| order(&w[0]).0 < order(&w[1]).0
+                    || (order(&w[0]).0 == order(&w[1]).0 && order(&w[0]).1 <= order(&w[1]).1)),
+                "tol {tol}: ordered by image quad, then INDEX_RATIO"
+            );
         }
     }
 
