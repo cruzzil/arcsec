@@ -1010,4 +1010,27 @@ mod tests {
             assert!(err < 2.0, "worst error {err:.2}\" ({stats:?})");
         }
     }
+
+    /// What the CLI's index stage relies on to skip a hopeless spiral: limited to
+    /// `-r` round a hint far from the field, the index finds nothing; unlimited, it
+    /// finds the field, far outside the radius.
+    #[test]
+    fn a_field_outside_the_radius_is_found_only_without_the_limit() {
+        let dir = TempDir::new("ixwithin");
+        let t = TruthWcs::new(deg(310.0), deg(44.0), SCALE, 30.0, false, W, H);
+        let (img, ix) = scene(&t, 5, dir.path());
+        let (hint_ra, hint_dec, radius) = (deg(340.0), deg(30.0), deg(10.0));
+        let params = |within| IndexSolveParams {
+            scale_lo: SCALE / 1.2,
+            scale_hi: SCALE * 1.2,
+            within,
+        };
+        let tpl = template(dir.path());
+        let limited = params(Some((hint_ra, hint_dec, radius)));
+        assert!(index_solve(&img, &ix, &tpl, &limited).is_err());
+        let (wcs, _) = index_solve(&img, &ix, &tpl, &params(None)).unwrap();
+        assert!(t.max_error_arcsec(&wcs) < 2.0);
+        let sep = crate::math::coords::ang_sep(wcs.ra0, wcs.dec0, hint_ra, hint_dec);
+        assert!(sep > 2.0 * radius, "{:.1} deg", sep.to_degrees());
+    }
 }
