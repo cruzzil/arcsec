@@ -152,7 +152,7 @@ fn get_num_rows(fp: &mut fitsfile) -> Result<usize, String> {
     let mut st: c_int = 0;
     fits_get_num_rowsll(fp, &mut nrows, &mut st);
     if st == 0 {
-        Ok(nrows as usize)
+        usize::try_from(nrows).map_err(|_| format!("negative row count {nrows}"))
     } else {
         Err(format!("fits_get_num_rows: {st}"))
     }
@@ -169,7 +169,26 @@ fn get_colnum(fp: &mut fitsfile, name: &[u8]) -> Result<c_int, String> {
     }
 }
 
-fn read_raw_bytes(fp: &mut fitsfile, col: c_int, n: usize) -> Result<Vec<u8>, String> {
+/// Read `rows × row_bytes` bytes of column `col`, refusing first if that is more
+/// than the whole file (`file_len`) could hold. The row count is the header's and
+/// `row_bytes` is the width this loader expects, not the width the table declares,
+/// so a table of narrower rows can ask for many times the file; the buffer would
+/// otherwise be allocated before the read failed.
+fn read_raw_bytes(
+    fp: &mut fitsfile,
+    col: c_int,
+    rows: usize,
+    row_bytes: usize,
+    file_len: usize,
+) -> Result<Vec<u8>, String> {
+    let n = rows
+        .checked_mul(row_bytes)
+        .filter(|&n| n <= file_len)
+        .ok_or_else(|| {
+            format!(
+                "table of {rows} rows × {row_bytes} bytes is larger than the file ({file_len} bytes)"
+            )
+        })?;
     let mut bytes = vec![0u8; n];
     let mut st: c_int = 0;
     // nelem is LONGLONG, not c_long — the two differ on Windows, where c_long is i32.
@@ -464,6 +483,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
     // One bulk read — Vec stays alive for the entire CFITSIO session below.
     let mut file_bytes = std::fs::read(path).map_err(ArcsecError::CatalogIo)?;
     let mut buf_size = file_bytes.len();
+    let file_len = buf_size;
     // Taken as *mut because that is what fits_open_memfile's signature wants; the
     // file is opened READONLY with deltasize = 0 and a no-op realloc, so CFITSIO
     // never writes through it or tries to grow it.
@@ -539,7 +559,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
         move_to_hdu(fp, b"kdtree_data_stars\0").map_err(io_err)?;
         let n_star_rows = get_num_rows(fp).map_err(io_err)?;
         let star_col = get_colnum(fp, b"kdtree_data_stars\0").map_err(io_err)?;
-        let star_bytes = read_raw_bytes(fp, star_col, n_star_rows * 12).map_err(io_err)?;
+        let star_bytes = read_raw_bytes(fp, star_col, n_star_rows, 12, file_len).map_err(io_err)?;
         let stars = parse_stars(&star_bytes);
 
         // ── Read quad star indices from "quads" ───────────────────────────────────
@@ -547,7 +567,8 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
         let n_quad_rows = get_num_rows(fp).map_err(io_err)?;
         let quad_col = get_colnum(fp, b"quads\0").map_err(io_err)?;
         let row_bytes = dim_quads * 4;
-        let quad_bytes = read_raw_bytes(fp, quad_col, n_quad_rows * row_bytes).map_err(io_err)?;
+        let quad_bytes =
+            read_raw_bytes(fp, quad_col, n_quad_rows, row_bytes, file_len).map_err(io_err)?;
         let quad_indices = parse_quad_indices(&quad_bytes);
 
         // ── Read codes from "kdtree_data_codes" ──────────────────────────────────
@@ -555,7 +576,7 @@ pub fn load_anet_index(path: &Path) -> Result<AnetIndex, ArcsecError> {
         let n_code_rows = get_num_rows(fp).map_err(io_err)?;
         let code_col = get_colnum(fp, b"kdtree_data_codes\0").map_err(io_err)?;
         let code_bytes =
-            read_raw_bytes(fp, code_col, n_code_rows * n_code_dims * 2).map_err(io_err)?;
+            read_raw_bytes(fp, code_col, n_code_rows, n_code_dims * 2, file_len).map_err(io_err)?;
         let codes = parse_codes(&code_bytes, n_code_dims, code_lo, code_scale);
 
         Ok(AnetParts {
@@ -892,6 +913,16 @@ mod tests {
 
     /// Copy every HDU of a FITS byte stream except the table called `skip`.
     fn copy_hdus_except(bytes: &[u8], skip: &str, out: &mut FitsWriter) {
+        for (name, hdu) in hdus(bytes) {
+            if name != skip {
+                out.bytes.extend_from_slice(hdu);
+            }
+        }
+    }
+
+    /// The HDUs of a FITS byte stream, each with its TTYPE1 (empty for none).
+    fn hdus(bytes: &[u8]) -> Vec<(String, &[u8])> {
+        let mut out = Vec::new();
         let mut pos = 0;
         while pos < bytes.len() {
             let start = pos;
@@ -921,10 +952,9 @@ mod tests {
             if is_ext {
                 pos += (naxis1 * naxis2).next_multiple_of(2880);
             }
-            if name != skip {
-                out.bytes.extend_from_slice(&bytes[start..pos]);
-            }
+            out.push((name, &bytes[start..pos]));
         }
+        out
     }
 
     fn err_kind(r: Result<AnetIndex, ArcsecError>) -> io::ErrorKind {
@@ -1022,6 +1052,46 @@ mod tests {
                 io::ErrorKind::InvalidData,
                 "without {table}"
             );
+        }
+    }
+
+    /// The loader reads a fixed width per row (12 bytes a star, 16 a quad, 8 a
+    /// code), whatever row width the table declares, so a table of one-byte rows
+    /// that CFITSIO accepts as fitting the file can still ask the loader for many
+    /// times the file. That is refused before anything is allocated for it.
+    #[test]
+    fn a_row_count_beyond_the_file_is_refused_before_allocating() {
+        let dir = TempDir::new("anet-rows");
+        let full = raw_index(4, 20, 5).fits_bytes();
+        let parts = hdus(&full);
+        for table in ["kdtree_data_stars", "quads", "kdtree_data_codes"] {
+            let mut w = FitsWriter::default();
+            for (name, hdu) in &parts {
+                if name != table && name != "sweep" {
+                    w.bytes.extend_from_slice(hdu);
+                }
+            }
+            // Twice the rest of the file in one-byte rows: at 8 bytes a row or
+            // more, the loader would need over 16 times the rest, and the file is
+            // only three times it.
+            let rows = 2 * w.bytes.len();
+            w.table(table, 1, &vec![0u8; rows]);
+            // Not last: the loader cannot reach the last HDU of a file (see
+            // load_anet_index_reads_a_required_table_in_the_last_hdu).
+            let (_, sweep) = parts.iter().find(|(name, _)| name == "sweep").unwrap();
+            w.bytes.extend_from_slice(sweep);
+            let path = write(&dir, &format!("rows-{table}.fits"), &w.bytes);
+            match load_anet_index(&path) {
+                Err(ArcsecError::CatalogIo(e)) => {
+                    assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{table}: {e}");
+                    assert!(
+                        e.to_string().contains("larger than the file"),
+                        "{table}: {e}"
+                    );
+                }
+                Err(e) => panic!("{table}: {e}"),
+                Ok(_) => panic!("{table}: loaded"),
+            }
         }
     }
 
