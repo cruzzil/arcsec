@@ -315,6 +315,34 @@ pub fn catalog_command() -> Command {
                         .long("keep-archive")
                         .action(ArgAction::SetTrue)
                         .help("Keep the downloaded archive after extracting"),
+                )
+                .arg(
+                    Arg::new("no-index")
+                        .long("no-index")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with_all(["index-min-fov", "index-max-fov"])
+                        .help("Do not build the blind index after installing a solving database"),
+                )
+                .arg(
+                    Arg::new("index-min-fov")
+                        .long("index-min-fov")
+                        .value_name("DEG")
+                        .value_parser(value_parser!(f64))
+                        .help("Smallest field (short side, degrees) the blind index serves [default: from the databases, e.g. 0.3 for D80]"),
+                )
+                .arg(
+                    Arg::new("index-max-fov")
+                        .long("index-max-fov")
+                        .value_name("DEG")
+                        .value_parser(value_parser!(f64))
+                        .help("Largest field (short side, degrees) the blind index serves [default: from the databases, 30 or 80 with W08]"),
+                )
+                .after_help(
+                    "Installing a solving database (d05, d20, d50, d80, g05, w08) also builds arcsec's \
+                     blind index from it, which lets the solver find a field with no position hint. \
+                     The confirmation shows its size, build time and memory first; a large build \
+                     (over 1 GB, over 5 minutes, or more than half the free memory) is asked about \
+                     separately.",
                 ),
         )
         .subcommand(
@@ -333,6 +361,12 @@ pub fn catalog_command() -> Command {
                         .short('y')
                         .action(ArgAction::SetTrue)
                         .help("Do not ask for confirmation"),
+                )
+                .arg(
+                    Arg::new("keep-index")
+                        .long("keep-index")
+                        .action(ArgAction::SetTrue)
+                        .help("Keep the blind index built from a removed database"),
                 ),
         )
         .subcommand(
@@ -366,16 +400,21 @@ pub fn catalog_command() -> Command {
                                 .long("min-fov")
                                 .value_name("DEG")
                                 .value_parser(value_parser!(f64))
-                                .default_value("0.3")
-                                .help("Smallest field (short side, degrees) to support; smaller fields need much larger indexes"),
+                                .help("Smallest field (short side, degrees) to support; smaller fields need much larger indexes [default: from the installed databases: 0.3 for D20-D80, 0.6 D05, 3 G05, 10 W08]"),
                         )
                         .arg(
                             Arg::new("max-fov")
                                 .long("max-fov")
                                 .value_name("DEG")
                                 .value_parser(value_parser!(f64))
-                                .default_value("30")
-                                .help("Largest field (short side, degrees) to support"),
+                                .help("Largest field (short side, degrees) to support [default: 30, or 80 with W08]"),
+                        )
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .short('y')
+                                .action(ArgAction::SetTrue)
+                                .help("Do not ask before a large build (over 1 GB, 5 minutes, or half the free memory)"),
                         )
                         .arg(
                             Arg::new("out")
