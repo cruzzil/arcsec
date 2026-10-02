@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arcsec-core",
  "asdf-rs",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "log",

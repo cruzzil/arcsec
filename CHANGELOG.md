@@ -11,6 +11,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
 ### Added
 
 - Using arcsec with Siril: a README section and a website page,
@@ -51,7 +53,10 @@ one is called out as such.
 - Library: `arcsec_core::index` (format, builder, `BlindIndex`) and
   `pipeline::index_solve`; `catalog::for_each_star_in_dec_band`.
 - Benchmark tooling: `scripts/benchmark.py --blind` (hint at the antipode, so only a
-  blind index can find the field) and `--no-fov`.
+  blind index can find the field), `--blind-index`, `--no-fov`, and
+  [seiza](https://github.com/theatrus/seiza) as a third solver (`--seiza`) alongside
+  ASTAP, with timing options (`--order`, `--taskset`). The comparison is in
+  `docs/test-images.md` §9.
 
 ### Changed
 
@@ -258,7 +263,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/cruzzil/arcsec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cruzzil/arcsec/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/cruzzil/arcsec/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cruzzil/arcsec/compare/v0.1.0...v0.1.1
