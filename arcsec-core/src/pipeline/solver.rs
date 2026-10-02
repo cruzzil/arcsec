@@ -1203,8 +1203,9 @@ const SEEDED_MIN_CENSUS: usize = 10;
 /// Work budget: one unit per transform tried, per catalogue star scored, and
 /// [`SeedParams::verify_cost`](crate::quads::seeded::SeedParams) per candidate
 /// verified. A deterministic count, so the cost of a search that finds nothing is
-/// bounded and repeatable: about half a second of one core.
-const SEEDED_BUDGET: u64 = 40_000_000;
+/// bounded and repeatable: about a third of a second of one core. The corpus's
+/// fallback solves spent at most 2.4·10⁷.
+const SEEDED_BUDGET: u64 = 30_000_000;
 
 /// Catalogue-seeded fallback (`quads::seeded`): when the spiral finds nothing,
 /// search the catalogue window about the hint for a transform without trusting the

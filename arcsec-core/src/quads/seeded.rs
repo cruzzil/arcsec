@@ -125,15 +125,78 @@ impl PosGrid {
     }
 }
 
+/// Cells of at least `probe_tol`, few enough (about a million) that the bit map
+/// stays in cache: probes land all over the frame, and on a 4300-pixel frame a
+/// map of 2.5-pixel cells (3 million bits) made every probe a cache miss.
+const NEAR_MAX_CELLS_PER_SIDE: f64 = 1024.0;
+
+/// One bit per cell, set for every cell within one cell of a star; the cell is at
+/// least `probe_tol` wide, so a point whose cell is clear has no star within
+/// `probe_tol`.
+struct NearMap {
+    min_x: f64,
+    min_y: f64,
+    inv_cell: f64,
+    nx: usize,
+    ny: usize,
+    bits: Vec<u64>,
+}
+
+impl NearMap {
+    fn new(pos: &[(f64, f64)], grid: &PosGrid, probe_tol: f64) -> Self {
+        let (w, h) = (
+            grid.nx as f64 / grid.inv_cell,
+            grid.ny as f64 / grid.inv_cell,
+        );
+        let cell = probe_tol.max(w.max(h) / NEAR_MAX_CELLS_PER_SIDE).max(0.5);
+        let inv_cell = 1.0 / cell;
+        let nx = (w * inv_cell) as usize + 1;
+        let ny = (h * inv_cell) as usize + 1;
+        let mut bits = vec![0u64; (nx * ny).div_ceil(64)];
+        for &(x, y) in pos {
+            let gx = ((x - grid.min_x) * inv_cell) as usize;
+            let gy = ((y - grid.min_y) * inv_cell) as usize;
+            for cy in gy.saturating_sub(1)..=(gy + 1).min(ny - 1) {
+                for cx in gx.saturating_sub(1)..=(gx + 1).min(nx - 1) {
+                    let c = cy * nx + cx;
+                    bits[c / 64] |= 1 << (c % 64);
+                }
+            }
+        }
+        Self {
+            min_x: grid.min_x,
+            min_y: grid.min_y,
+            inv_cell,
+            nx,
+            ny,
+            bits,
+        }
+    }
+
+    #[inline]
+    fn maybe(&self, q: (f64, f64)) -> bool {
+        let fx = (q.0 - self.min_x) * self.inv_cell;
+        let fy = (q.1 - self.min_y) * self.inv_cell;
+        if !(fx >= 0.0 && fy >= 0.0) {
+            // Within one cell outside the map can still be within tol of a star.
+            return fx > -1.0 && fy > -1.0;
+        }
+        let (cx, cy) = (fx as usize, fy as usize);
+        if cx >= self.nx || cy >= self.ny {
+            return cx <= self.nx && cy <= self.ny;
+        }
+        let c = cy * self.nx + cx;
+        self.bits[c / 64] & (1 << (c % 64)) != 0
+    }
+}
+
 /// The image side of the search: every star's position, a position hash, and the
 /// star pairs sorted by length. Built once per image.
 pub struct ImageIndex {
     pos: Vec<(f64, f64)>,
     grid: PosGrid,
-    /// One bit per grid cell, set for every cell within one cell of a star: a
-    /// point whose cell is clear has no star within `probe_tol`. Small enough to
-    /// stay in cache, where the grid itself is not.
-    near: Vec<u64>,
+    /// A point whose cell here is clear has no star within `probe_tol`.
+    near: NearMap,
     /// `(length, i, j)`, sorted by length.
     pairs: Vec<(f32, u32, u32)>,
     probe_tol: f64,
@@ -145,17 +208,7 @@ impl ImageIndex {
     #[must_use]
     pub fn new(pos: Vec<(f64, f64)>, max_pair_px: f64, probe_tol: f64) -> Self {
         let grid = PosGrid::new(&pos, probe_tol);
-        let mut near = vec![0u64; (grid.nx * grid.ny).div_ceil(64)];
-        for &(x, y) in &pos {
-            let gx = ((x - grid.min_x) * grid.inv_cell) as usize;
-            let gy = ((y - grid.min_y) * grid.inv_cell) as usize;
-            for cy in gy.saturating_sub(1)..=(gy + 1).min(grid.ny - 1) {
-                for cx in gx.saturating_sub(1)..=(gx + 1).min(grid.nx - 1) {
-                    let c = cy * grid.nx + cx;
-                    near[c / 64] |= 1 << (c % 64);
-                }
-            }
-        }
+        let near = NearMap::new(&pos, &grid, probe_tol);
         // Sorted by x so only pairs within max_pair_px in x are examined.
         let mut order: Vec<u32> = (0..pos.len() as u32).collect();
         order.sort_unstable_by(|&a, &b| pos[a as usize].0.total_cmp(&pos[b as usize].0));
@@ -189,19 +242,7 @@ impl ImageIndex {
     /// rejects most probes before [`Self::hit`]).
     #[inline]
     fn maybe(&self, q: (f64, f64)) -> bool {
-        let g = &self.grid;
-        let fx = (q.0 - g.min_x) * g.inv_cell;
-        let fy = (q.1 - g.min_y) * g.inv_cell;
-        if !(fx >= 0.0 && fy >= 0.0) {
-            // Within one cell outside the grid can still be within tol of a star.
-            return fx > -1.0 && fy > -1.0;
-        }
-        let (cx, cy) = (fx as usize, fy as usize);
-        if cx >= g.nx || cy >= g.ny {
-            return cx <= g.nx && cy <= g.ny;
-        }
-        let c = cy * g.nx + cx;
-        self.near[c / 64] & (1 << (c % 64)) != 0
+        self.near.maybe(q)
     }
 
     /// Number of indexed stars.
@@ -387,8 +428,11 @@ fn seed_quads(cat: &[(f64, f64)], seed_stars: usize, max_quads: usize) -> Vec<[u
             let rest: Vec<usize> = (0..4).filter(|&k| k != widest.0 && k != widest.1).collect();
             quads.push([q[widest.0], q[widest.1], q[rest[0]], q[rest[1]]]);
             if quads.len() >= max_quads {
-                return quads;
+                break;
             }
+        }
+        if quads.len() >= max_quads {
+            break;
         }
     }
     quads
@@ -464,11 +508,12 @@ pub fn search(
                     let (dzr, dzi) = (zb.0 - za.0, zb.1 - za.1);
                     let (sr, si) = (dzr * ir - dzi * ii, dzr * ii + dzi * ir);
                     let q3 = (za.0 + sr * d3.0 - si * d3.1, za.1 + sr * d3.1 + si * d3.0);
-                    if !index.maybe(q3) || index.hit(q3.0, q3.1, tol).is_none() {
+                    let q4 = (za.0 + sr * d4.0 - si * d4.1, za.1 + sr * d4.1 + si * d4.0);
+                    if !(index.maybe(q3) && index.maybe(q4)) {
                         continue;
                     }
-                    let q4 = (za.0 + sr * d4.0 - si * d4.1, za.1 + sr * d4.1 + si * d4.0);
-                    if !index.maybe(q4) || index.hit(q4.0, q4.1, tol).is_none() {
+                    if index.hit(q3.0, q3.1, tol).is_none() || index.hit(q4.0, q4.1, tol).is_none()
+                    {
                         continue;
                     }
                     let t = Similarity {
