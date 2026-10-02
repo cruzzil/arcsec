@@ -293,7 +293,7 @@ fn main() {
         || matches.get_one::<f64>("spd").is_some()
         || image_io::read_ra_dec(file).is_some();
     let own_index = blind::arcsec_index_for(matches.get_one::<PathBuf>("index"), &template);
-    let index_wcs = own_index.as_ref().and_then(|ix| {
+    let index_wcs = match own_index.as_ref().map(|ix| {
         blind::index_stage(
             &img,
             ix,
@@ -302,7 +302,18 @@ fn main() {
             arcsec_per_px * binning as f64,
             scale_known,
         )
-    });
+    }) {
+        Some(blind::IndexOutcome::Solved(w)) => Some(*w),
+        Some(blind::IndexOutcome::Elsewhere(sep_deg)) => {
+            eprintln!(
+                "The blind index places this field {sep_deg:.1}° from the start position, \
+                 outside the search radius."
+            );
+            println!("No solution found.");
+            unsolved.exit(1);
+        }
+        Some(blind::IndexOutcome::NotFound) | None => None,
+    };
 
     let (ra, dec, search_radius) = match matches.get_one::<PathBuf>("index") {
         None => (ra_hint_rad, dec_hint_rad, search_radius_rad),

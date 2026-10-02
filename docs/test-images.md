@@ -1678,6 +1678,9 @@ random galactic-plane fields, tier S) and the distorted TESS frames.
 
 ### 9.5 Speed
 
+(For arcsec, superseded by §9.8, which re-times 0.3.0 and the faster failed search
+after it; the ASTAP and seiza numbers here stand.)
+
 Timing runs used `--jobs 1`, so one solver ran at a time. Two sets: v1 (103 images) and a
 stratified 98-image subset of the expanded corpus (4–16 per FOV band across the sources,
 plus 10 tier-D controls, chosen by a fixed rule before any timing). Two thread settings:
@@ -1886,3 +1889,112 @@ Commands: `scripts/benchmark.py --corpus --images <mirror> --auto-db --blind
 * **seiza's own numbers** (its README) were measured differently: real camera frames,
   its own catalogue recommendations for each solver, Windows. They are not contradicted
   or reproduced here.
+
+### 9.8 Faster failed searches (2026-10-02, after 0.3.0)
+
+§9.5 found arcsec as fast as seiza and ASTAP on the images it solves, and far slower on
+the ones it does not: a failed search visits every spiral position out to `-r`, and on
+one thread the three `neg_hint_*` controls of the subset were 532 of its 555 s. The work
+per position is now 4–8× smaller, with the same results (every `.wcs` of the corpus is
+byte-identical, true-centre and offset hint, with and without an index installed, and at
+`-r 10`); what changed and why is in
+[plate-solving.md §10.3c](plate-solving.md#103c-what-a-failed-search-costs-2026-10-02).
+With an index installed, a hint far outside `-r` now usually ends the search at once
+([offline-index.md §2.7](offline-index.md#27-command-line)).
+
+Same protocol as §9.5: `--jobs 1`, default threads and one thread (`--threads 1
+--taskset 5`), two rounds, a wait for a load average under 4 before each run, and a
+sampler of the CPU used outside the run; runs with a mean above 1 core or a peak above 4
+were discarded and repeated (two of 0.3.0's were; the outside load came from other jobs
+on the machine). The runs kept had 0.2–0.3 cores of outside load on average. arcsec
+0.3.0 (`main`, 26f36e5) was re-timed in this session, alternating in order with an
+intermediate build of this branch; the final build (532b78c) was timed straight after,
+on the same protocol. Per image, median / mean / p90 / total (s), averaged
+over the two rounds; totals agreed between rounds within 2 % (0.3.0) and 5 % (this
+branch):
+
+| Set, threads | | 0.3.0 | this branch |
+|---|---|---|---|
+| v1, default | all 103 | 0.16 / 0.32 / 0.67 / 33.2 | 0.08 / 0.24 / 0.58 / 24.9 |
+| | solved (92) | 0.16 / 0.25 / 0.40 / 23.3 | 0.08 / 0.19 / 0.32 / 17.6 |
+| | not solved (11) | 0.81 / 0.90 / 2.25 / 9.9 | 0.48 / 0.66 / 1.93 / 7.3 |
+| v1, one thread | all 103 | 0.19 / 0.64 / 0.71 / 65.4 | 0.12 / 0.31 / 0.65 / 31.5 |
+| | solved | 0.19 / 0.29 / 0.56 / 26.9 | 0.12 / 0.23 / 0.49 / 21.2 |
+| | not solved | 3.67 / 3.50 / 8.20 / 38.5 | 0.81 / 0.93 / 2.24 / 10.3 |
+| subset, default | all 98 | 0.15 / 0.68 / 0.40 / 66.3 | 0.09 / 0.21 / 0.34 / 20.2 |
+| | solved (83) | 0.15 / 0.19 / 0.36 / 15.9 | 0.09 / 0.14 / 0.29 / 11.4 |
+| | not solved (15) | 0.24 / 3.36 / 14.0 / 50.4 | 0.10 / 0.59 / 3.33 / 8.8 |
+| subset, one thread | all 98 | 0.17 / 5.93 / 0.82 / 580.8 | 0.11 / 1.17 / 0.36 / 114.6 |
+| | solved | 0.16 / 0.21 / 0.41 / 17.6 | 0.11 / 0.16 / 0.34 / 13.3 |
+| | not solved | 1.25 / 37.5 / 173 / 563.2 | 0.22 / 6.75 / 40.7 / 101.3 |
+
+The solved and unsolved sets are the same in both columns (0.3.0's `neg_hint_1` on one
+thread is a 300 s timeout rather than "no solution"). Next to §9.5's ASTAP and seiza
+(timed in an earlier session, so only roughly comparable): on the subset, one thread,
+this branch's 115 s total is now level with ASTAP's 122 s and three times seiza's 38 s;
+with all cores, 20 s against seiza's 39 s and ASTAP's 124 s. On v1, 25 s and 31 s against
+seiza's 25 s and 27 s.
+
+**The `neg_hint_*` controls**, real fields with the hint 30°–60° away and `-r 10`, where
+the whole radius has to be searched (s; no index installed, as above):
+
+| | 0.3.0, default | this branch, default | 0.3.0, one thread | this branch, one thread |
+|---|---|---|---|---|
+| `neg_hint_1` (`ls2_22`, 0.25°) | 27.9 | 3.33 | > 300 (timeout) | 45.3 |
+| `neg_hint_4` (`sdss2_20`, 0.23°) | 14.0 | 3.56 | 173 | 40.7 |
+| `neg_hint_7` (`sdss2_10`, 0.23°) | 6.7 | 1.00 | 81.2 | 13.5 |
+
+Solved images are faster too (median 0.16 → 0.08 s on v1 at default threads, 0.19 →
+0.12 s on one thread), since even position 0 matches its quads the new way.
+
+**With the 698 MB index installed** (`d80_015.arcsecix` beside the database), all eight
+`neg_hint_*` controls, one round:
+
+| | 0.3.0, default | this branch, default | 0.3.0, one thread | this branch, one thread |
+|---|---|---|---|---|
+| `neg_hint_1` | 28.3 | 0.42 | 376 | 1.38 |
+| `neg_hint_2` | 13.1 | 3.57 | 163 | 40.7 |
+| `neg_hint_3` | 19.6 | 8.04 | 211 | 74.9 |
+| `neg_hint_4` | 14.1 | 3.56 | 177 | 42.4 |
+| `neg_hint_5` | 7.4 | 0.57 | 82.4 | 1.69 |
+| `neg_hint_6` | 6.7 | 1.42 | 78.7 | 18.9 |
+| `neg_hint_7` | 6.8 | 0.24 | 81.9 | 0.60 |
+| `neg_hint_8` | 7.2 | 0.51 | 86.8 | 1.53 |
+| total | 103 | 18.3 | 1256 | 182 |
+
+All sixteen answers are "no solution", as they must be. Four (`_1`, `_5`, `_7`, `_8`) are
+fields the index verifies elsewhere on the sky, so the search stops at once; the other
+four are fields of 0.16°–0.23° that the index does not find (§9.6: half of the
+0.15°–0.3° band fails blind), and they still pay for the whole spiral. (0.3.0's one-thread
+run had 0.3 cores of outside load on average, with a peak of 4.25 from a compile; its
+two repeats were busier and are not used.)
+
+**N.I.N.A.-style, `-r 180`, hint at the antipode** (the eight images of
+[offline-index.md §7.3](offline-index.md#73-ninastyle--r-180-no-useful-hint), default
+threads, one at a time):
+
+No index (the spiral over the whole sky): wall time and total CPU (user + system) of
+each run, the two builds back to back on each image. These ran with 24 threads each on
+a machine another job was also using (load average 9–75 at the starts), so the CPU
+column is the fairer comparison:
+
+| image (field) | answer, both builds | 0.3.0 wall / CPU | this branch wall / CPU |
+|---|---|---|---|
+| `lco_12` (0.48°) | correct | > 900 s (timeout) / > 13 100 s | 146 s / 2 630 s |
+| `ztf_06` (0.56°) | correct | 793 s / 12 460 s | 86 s / 2 000 s |
+| `type_m101` (1.0°) | correct | 436 s / 4 220 s | 29 s / 673 s |
+| `decp20` (1.0°) | correct | 251 s / 4 075 s | 28 s / 660 s |
+| `dens_blank` (1.5°) | correct | 113 s / 1 853 s | 13 s / 304 s |
+| `fov_3p00` (3.0°) | correct | 32 s / 449 s | 3.7 s / 79 s |
+| `rnd_022` (0.35°) | **wrong**, the same position 149° off in both (as in offline-index §7.3) | 129 s / 2 182 s | 15 s / 348 s |
+| `wide_dss_01` (4.0°) | no solution | 20 s / 255 s | 2.0 s / 44 s |
+
+CPU per image is 5–7× less. With the 698 MB index installed, the automatic path finds
+the field before the spiral, as in offline-index §7.3; quiet machine, default threads,
+one image at a time, wall time:
+
+| | 0.3.0 | this branch |
+|---|---|---|
+| the seven that solve (all correct, `rnd_022` included) | 0.94–3.36 s | 0.36–2.70 s |
+| `wide_dss_01` (no solution) | 22.2 s | 3.9 s |
+| total, eight images | 33.3 s | 10.5 s |

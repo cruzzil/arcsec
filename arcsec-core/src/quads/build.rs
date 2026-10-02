@@ -41,37 +41,44 @@ fn fast_atan2(y: f64, x: f64) -> f64 {
     }
 }
 
-/// Build a sorted `[d1, d2, d3, d4, d5, d6]` from exactly six distances.
-/// Uses a fixed comparison sequence rather than a general sort: with six elements the
-/// comparisons are known ahead of time.
-fn sort6(mut d: [f64; 6]) -> [f64; 6] {
-    macro_rules! swap_if {
-        ($a:expr, $b:expr) => {
-            if d[$b] > d[$a] {
-                d.swap($a, $b);
-            }
-        };
+/// `a.rem_euclid(PI)`, bit for bit, without its `fmod` call for |a| < π, where
+/// `a % PI` is `a` exactly: `fast_atan2` returns -π..=π, so that is nearly always.
+#[inline(always)]
+fn mod_pi(a: f64) -> f64 {
+    use core::f64::consts::PI;
+    let r = if a.abs() < PI { a } else { a % PI };
+    if r < 0.0 { r + PI } else { r }
+}
+
+/// Build a sorted `[d1, d2, d3, d4, d5, d6]` (largest first) from exactly six
+/// distances.
+///
+/// A sorting network of `max`/`min` pairs, which compile to branch-free
+/// instructions: the comparisons in a quad's distances go either way at random, so
+/// a compare-and-swap that branches mispredicts half the time, at every one of the
+/// tens of thousands of quads built per spiral position. Any correct sort gives the
+/// same array.
+fn sort6(d: [f64; 6]) -> [f64; 6] {
+    let mut d = d;
+    // The optimal 12-comparator network for six inputs.
+    for (a, b) in [
+        (0, 5),
+        (1, 3),
+        (2, 4),
+        (1, 2),
+        (3, 4),
+        (0, 3),
+        (2, 5),
+        (0, 1),
+        (2, 3),
+        (4, 5),
+        (1, 2),
+        (3, 4),
+    ] {
+        let (hi, lo) = (d[a].max(d[b]), d[a].min(d[b]));
+        d[a] = hi;
+        d[b] = lo;
     }
-    // Pass 1
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    swap_if!(2, 3);
-    swap_if!(3, 4);
-    swap_if!(4, 5);
-    // Pass 2
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    swap_if!(2, 3);
-    swap_if!(3, 4);
-    // Pass 3
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    swap_if!(2, 3);
-    // Pass 4
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    // Pass 5
-    swap_if!(0, 1);
     d
 }
 
@@ -102,7 +109,7 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
     let (ai, bi) = PAIR_IDXS[max_k];
     let dx = pts[bi].0 - pts[ai].0;
     let dy = pts[bi].1 - pts[ai].1;
-    let d1_angle = fast_atan2(dy, dx).rem_euclid(core::f64::consts::PI);
+    let d1_angle = mod_pi(fast_atan2(dy, dx));
 
     let d = sort6(raw);
     let d1 = d[0];
@@ -118,6 +125,46 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
         center_y,
         d1_angle,
     })
+}
+
+/// The centres of the quads accepted so far, hashed into buckets of at most
+/// [`BUCKET_CAPACITY`] for the duplicate check.
+///
+/// Each bucket's centres sit together in one array rather than in a `Vec` per
+/// bucket, looked up through the quad list: the catalogue quads are rebuilt at
+/// every spiral position, which meant thousands of small allocations each time
+/// and a cache miss per comparison. Which centres a bucket holds, and so which
+/// quads are kept, is unchanged.
+struct CentreTable {
+    /// Entries in each bucket.
+    len: Vec<u8>,
+    /// Each bucket's centres.
+    xy: Vec<[(f64, f64); BUCKET_CAPACITY]>,
+}
+
+impl CentreTable {
+    fn new(buckets: usize) -> Self {
+        Self {
+            len: vec![0; buckets],
+            xy: vec![[(0.0, 0.0); BUCKET_CAPACITY]; buckets],
+        }
+    }
+
+    /// Whether bucket `b` holds a centre within 1 unit of `(cx, cy)` in both axes.
+    fn near(&self, b: usize, cx: f64, cy: f64) -> bool {
+        self.xy[b][..usize::from(self.len[b])]
+            .iter()
+            .any(|&(x, y)| (cx - x).abs() < 1.0 && (cy - y).abs() < 1.0)
+    }
+
+    /// Record a centre in bucket `b`, unless the bucket is full.
+    fn insert(&mut self, b: usize, cx: f64, cy: f64) {
+        let n = usize::from(self.len[b]);
+        if n < BUCKET_CAPACITY {
+            self.xy[b][n] = (cx, cy);
+            self.len[b] += 1;
+        }
+    }
 }
 
 /// All C(k, 4) index combinations of 4 from 0..k, in lexicographic order.
@@ -136,6 +183,96 @@ fn combinations_of_4(k: usize) -> Vec<[usize; 4]> {
         }
     }
     out
+}
+
+/// A star list in x order, for nearest-neighbour searches.
+struct XOrder {
+    /// Star indices in increasing x.
+    by_x: Vec<usize>,
+    /// Each star's place in `by_x`.
+    rank: Vec<usize>,
+}
+
+impl XOrder {
+    fn new(stars: &StarList) -> Self {
+        let mut by_x: Vec<usize> = (0..stars.len()).collect();
+        by_x.sort_by(|&a, &b| stars.0[a].x.total_cmp(&stars.0[b].x));
+        let mut rank = vec![0; by_x.len()];
+        for (r, &i) in by_x.iter().enumerate() {
+            rank[i] = r;
+        }
+        Self { by_x, rank }
+    }
+
+    /// Fill `closest_dist` / `closest_idx` (squared distance and index, nearest
+    /// first) with star `i` itself and its `len - 1` nearest neighbours, skipping
+    /// stars within 1 unit (the same star twice). Slots left unfilled keep
+    /// `f64::MAX` and index 0.
+    ///
+    /// The list holds the nearest by `(distance, index)`, which is exactly what a
+    /// scan of every star in index order keeps, but only the stars near `i` in x
+    /// are looked at: walking out from `i` in x order, once the list is full a star
+    /// further away in x than the furthest kept cannot get in. Catalogue quads are
+    /// built at every spiral position, and the full scan was a third of it.
+    fn nearest(
+        &self,
+        stars: &StarList,
+        i: usize,
+        closest_dist: &mut [f64],
+        closest_idx: &mut [usize],
+    ) {
+        closest_dist.fill(f64::MAX);
+        closest_idx.fill(0);
+        closest_dist[0] = 0.0;
+        closest_idx[0] = i;
+        let (x1, y1) = (stars.0[i].x, stars.0[i].y);
+        let last = closest_dist.len() - 1;
+        let n = self.by_x.len();
+        let (mut up, mut down) = (self.rank[i] + 1, self.rank[i]);
+        loop {
+            let reach = closest_dist[last];
+            // A NaN x ends the walk, which loses nothing: NaN sorts to the ends of
+            // `by_x`, and a NaN distance never enters the list.
+            let up_ok = up < n && (stars.0[self.by_x[up]].x - x1).powi(2) <= reach;
+            let down_ok = down > 0 && (x1 - stars.0[self.by_x[down - 1]].x).powi(2) <= reach;
+            if !up_ok && !down_ok {
+                break;
+            }
+            for (go, j) in [(up_ok, up), (down_ok, down.wrapping_sub(1))] {
+                if go {
+                    let sj = &stars.0[self.by_x[j]];
+                    let (dx, dy) = (sj.x - x1, sj.y - y1);
+                    let d = dx * dx + dy * dy;
+                    if d > 1.0 {
+                        insert_neighbour(closest_dist, closest_idx, d, self.by_x[j]);
+                    }
+                }
+            }
+            up += usize::from(up_ok);
+            down -= usize::from(down_ok);
+        }
+    }
+}
+
+/// Insert neighbour `j` at squared distance `d` into a nearest-first list, which
+/// keeps the smallest by `(distance, index)`; slot 0 holds the star itself.
+fn insert_neighbour(closest_dist: &mut [f64], closest_idx: &mut [usize], d: f64, j: usize) {
+    let last = closest_dist.len() - 1;
+    let before =
+        |pos: usize| d < closest_dist[pos] || (d == closest_dist[pos] && j < closest_idx[pos]);
+    if !before(last) {
+        return;
+    }
+    let mut pos = last;
+    while pos > 0 && before(pos - 1) {
+        pos -= 1;
+    }
+    for k in (pos..last).rev() {
+        closest_dist[k + 1] = closest_dist[k];
+        closest_idx[k + 1] = closest_idx[k];
+    }
+    closest_dist[pos] = d;
+    closest_idx[pos] = j;
 }
 
 /// Small-star-count quad builder (`find_many_quads`).
@@ -159,42 +296,15 @@ fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
     // fine at ~200 quads and quadratic pain at the several thousand that a larger
     // neighbourhood produces.
     let table_len = (n * combos.len() / 4).max(16);
-    let mut hash_table: Vec<Vec<usize>> = vec![Vec::new(); table_len];
+    let mut centres = CentreTable::new(table_len);
+
+    let x_order = XOrder::new(stars);
 
     for i in 0..n {
-        let x1 = stars.0[i].x;
-        let y1 = stars.0[i].y;
-
-        // Find num_closest nearest neighbours (insertion sort)
+        // Find num_closest nearest neighbours.
         let mut closest_idx = vec![0usize; num_closest];
         let mut closest_dist = vec![f64::MAX; num_closest];
-        closest_idx[0] = i;
-        closest_dist[0] = 0.0;
-
-        for (j, sj) in stars.0.iter().enumerate() {
-            if j == i {
-                continue;
-            }
-            let dx = sj.x - x1;
-            let dy = sj.y - y1;
-            let d = dx * dx + dy * dy;
-            if d <= 1.0 {
-                continue;
-            } // identical star guard
-            // Insertion sort into closest list
-            if d < closest_dist[num_closest - 1] {
-                let mut pos = num_closest - 1;
-                while pos > 0 && d < closest_dist[pos - 1] {
-                    pos -= 1;
-                }
-                for k in (pos..num_closest - 1).rev() {
-                    closest_dist[k + 1] = closest_dist[k];
-                    closest_idx[k + 1] = closest_idx[k];
-                }
-                closest_dist[pos] = d;
-                closest_idx[pos] = j;
-            }
-        }
+        x_order.nearest(stars, i, &mut closest_dist, &mut closest_idx);
 
         // All num_closest positions filled?
         if closest_idx[num_closest - 1] == 0 && closest_dist[num_closest - 1] == f64::MAX {
@@ -216,17 +326,13 @@ fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
             let hx = (cx * GRID_INV) as i64;
             let hy = (cy * GRID_INV) as i64;
             let idx = ((hx * 31 + hy).unsigned_abs() as usize) % table_len;
-            let dup = hash_table[idx].iter().any(|&qi| {
-                (cx - quads[qi].center_x).abs() < 1.0 && (cy - quads[qi].center_y).abs() < 1.0
-            });
-            if dup {
+            if centres.near(idx, cx, cy) {
                 continue;
             }
 
             if let Some(q) = make_quad(p[0], p[1], p[2], p[3]) {
-                if hash_table[idx].len() < BUCKET_CAPACITY {
-                    hash_table[idx].push(quads.len());
-                }
+                // The quad's own centre, which is (cx, cy) up to rounding.
+                centres.insert(idx, q.center_x, q.center_y);
                 quads.push(q);
             }
         }
@@ -446,6 +552,108 @@ mod tests {
     fn sort6_is_descending() {
         let d = sort6([3.0, 1.0, 5.0, 2.0, 4.0, 6.0]);
         assert_eq!(d, [6.0, 5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn sort6_sorts_every_arrangement_with_and_without_ties() {
+        // Every 0/1 input sorted means the network sorts everything (the 0-1
+        // principle); random inputs with ties check it against the library sort.
+        for bits in 0u32..64 {
+            let d: [f64; 6] = core::array::from_fn(|k| f64::from((bits >> k) & 1));
+            let mut want = d;
+            want.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(sort6(d), want, "{bits:06b}");
+        }
+        let mut rng = crate::test_support::Rng::new(4);
+        for _ in 0..1000 {
+            let d: [f64; 6] = core::array::from_fn(|_| (rng.uniform() * 4.0).floor());
+            let mut want = d;
+            want.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(sort6(d), want);
+        }
+    }
+
+    #[test]
+    fn mod_pi_is_rem_euclid() {
+        use core::f64::consts::PI;
+        let mut rng = crate::test_support::Rng::new(8);
+        let edges = [
+            0.0,
+            -0.0,
+            PI,
+            -PI,
+            PI / 2.0,
+            -PI / 2.0,
+            1e-300,
+            -1e-300,
+            3.0 * PI,
+        ];
+        let random = (0..5000).map(|_| rng.range(-PI, PI));
+        for a in edges.into_iter().chain(random) {
+            assert_eq!(mod_pi(a).to_bits(), a.rem_euclid(PI).to_bits(), "{a}");
+        }
+    }
+
+    /// The neighbour list a scan of every star in index order keeps (the search
+    /// `XOrder::nearest` replaced).
+    fn nearest_by_full_scan(stars: &StarList, i: usize, k: usize) -> (Vec<f64>, Vec<usize>) {
+        let mut idx = vec![0usize; k];
+        let mut dist = vec![f64::MAX; k];
+        idx[0] = i;
+        dist[0] = 0.0;
+        for (j, sj) in stars.0.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let d = (sj.x - stars.0[i].x).powi(2) + (sj.y - stars.0[i].y).powi(2);
+            if d <= 1.0 || d >= dist[k - 1] {
+                continue;
+            }
+            let mut pos = k - 1;
+            while pos > 0 && d < dist[pos - 1] {
+                pos -= 1;
+            }
+            dist.insert(pos, d);
+            idx.insert(pos, j);
+            dist.truncate(k);
+            idx.truncate(k);
+        }
+        (dist, idx)
+    }
+
+    #[test]
+    fn the_x_ordered_neighbour_search_keeps_what_a_full_scan_keeps() {
+        let mut rng = crate::test_support::Rng::new(9);
+        for case in 0..30 {
+            let n = 1 + (rng.next_u64() % 150) as usize;
+            // Integer coordinates on a small grid give plenty of exact ties in
+            // distance and in x, and some stars on top of each other.
+            let side = if case % 2 == 0 { 12.0 } else { 1000.0 };
+            let stars = StarList(
+                (0..n)
+                    .map(|_| Star {
+                        x: (rng.uniform() * side).floor(),
+                        y: (rng.uniform() * side).floor(),
+                        snr: 1.0,
+                        hfd: 2.0,
+                    })
+                    .collect(),
+            );
+            let order = XOrder::new(&stars);
+            for k in [4, 7, 9] {
+                for i in 0..n {
+                    let mut dist = vec![0.0; k];
+                    let mut idx = vec![0; k];
+                    order.nearest(&stars, i, &mut dist, &mut idx);
+                    let (want_d, want_i) = nearest_by_full_scan(&stars, i, k);
+                    assert_eq!(
+                        (dist, idx),
+                        (want_d, want_i),
+                        "case {case}, k {k}, star {i}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

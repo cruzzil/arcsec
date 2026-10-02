@@ -11,6 +11,31 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Changed
+
+- **Failed searches are several times faster, with identical results.** A search that
+  finds nothing visits every spiral position out to `-r`, and each position rebuilt and
+  matched tens of thousands of catalogue quads; that work is now 4–8× cheaper on one
+  thread. The image quads are bucketed once per solve on two of their ratios, so a
+  catalogue quad is compared only with the few image quads it could match (80 % of a
+  failed search went on the comparisons); the neighbour search, duplicate check and
+  distance sort that build each position's quads no longer scan every star, chase
+  pointers or branch at random, and the catalogue quads are no longer sorted at every
+  position. Every result on the 635-image corpus, true-centre and offset hint, with and
+  without an index installed, is the same as before, down to the bytes of the `.wcs`
+  files. On one thread the 98-image benchmark subset takes 115 s instead of 581 s, and
+  the slowest failure in it 45 s instead of over 300 s.
+- Spiral positions are handed to the worker threads one at a time instead of in
+  batches, so no thread waits for the slowest position of a batch. The answer is the
+  serial search's, as before. The line of step distances printed without `--progress`
+  now lists the positions up to the solution whatever the thread count (one thread
+  printed exactly that before; more threads printed to the end of the solution's batch).
+- With a blind index installed and `-r` of 10° or more, a hint far from the field no
+  longer costs the whole spiral: when the index finds nothing within `-r`, it is asked
+  once more without the limit, and if it verifies the field more than two fields beyond
+  `-r`, the search stops there. The result is unchanged, "No solution found." and exit
+  code 1, as `-r` requires; stderr says how far away the index placed the field.
+
 ## [0.3.0] - 2026-10-02
 
 ### Added

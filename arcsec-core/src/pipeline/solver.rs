@@ -11,9 +11,9 @@ use crate::error::{ArcsecError, Result};
 use crate::math::coords::{ang_sep, equatorial_standard, standard_equatorial};
 use crate::math::lsq::{fit_affine, solve_plate_constants};
 use crate::quads::{
-    TETRA_TOL_FACTOR, bijective_filter, build_quads, build_quads_presorted, build_triangles,
-    extract_star_pairs, extract_triangle_pairs, filter_by_scale, filter_triangles_by_scale,
-    find_matches_sorted, find_triangle_matches, vote_filter,
+    QuadGrid, TETRA_TOL_FACTOR, bijective_filter, build_quads, build_quads_presorted,
+    build_triangles, extract_star_pairs, extract_triangle_pairs, filter_by_scale,
+    filter_triangles_by_scale, find_triangle_matches, vote_filter,
 };
 use crate::types::{MatchedStar, PairedPositions, PlateConstants, Star, StarList, WcsSolution};
 use crate::wcs::output::derive_wcs;
@@ -450,6 +450,8 @@ struct SpiralCtx<'a> {
     img: &'a crate::types::ImageBuffer,
     stars: &'a StarList,
     img_quads: &'a crate::types::QuadList,
+    /// `img_quads` bucketed for matching (built once, used at every position).
+    img_grid: &'a QuadGrid,
     img_tris: &'a crate::quads::TriangleList,
     nrstars_image: usize,
     /// The most image stars worth using: `-s`, or fewer if the database cannot hold
@@ -584,8 +586,11 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
             if cat_quads.is_empty() {
                 return failed;
             }
-            crate::quads::r#match::sort_catalog_quads(&mut cat_quads);
-            let raw = find_matches_sorted(ctx.img_quads, &cat_quads, params.quad_tolerance);
+            // No catalogue sort: the grid orders the matches as a sorted
+            // catalogue would (see `QuadGrid::find_matches`).
+            let raw = ctx
+                .img_grid
+                .find_matches(ctx.img_quads, &cat_quads, params.quad_tolerance);
             let n_raw = raw.len();
             log::info!("Found {n_raw} references");
             let mut filtered = vote_filter(ctx.img_quads, &cat_quads, &raw, params.quad_tolerance);
@@ -1417,6 +1422,11 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     }
 
     let min_quads: usize = 3 + nrstars_image / 140;
+    let img_grid = if params.method == SolveMethod::Quads {
+        QuadGrid::build(&img_quads, params.quad_tolerance)
+    } else {
+        QuadGrid::build(&crate::types::QuadList::default(), params.quad_tolerance)
+    };
 
     let oversize: f64 = match params.speed {
         SearchSpeed::Auto if nrstars_image < 35 => 2.0,
@@ -1455,16 +1465,15 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
 
     // --- Phase C: spiral search ---
     //
-    // Spiral positions are independent, so they are evaluated a batch at a time
-    // across a thread pool. Semantics are unchanged from the serial search: within a
-    // batch the lowest spiral index wins, and batches are processed in order, so the
-    // position returned is exactly the one the serial loop would have returned. The
-    // only cost is evaluating the rest of a batch after its first success.
+    // Spiral positions are independent, so they are shared out across a pool of
+    // workers (`search_in_order`), and the position returned is exactly the one the
+    // serial loop would have returned.
     let ctx = SpiralCtx {
         params,
         img,
         stars: &stars,
         img_quads: &img_quads,
+        img_grid: &img_grid,
         img_tris: &img_tris,
         nrstars_image,
         star_limit,
@@ -1484,59 +1493,12 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     .clamp(1, 64);
 
     let positions: Vec<(i32, i32)> = SpiralSearch::new(max_distance).collect();
-    let mut step_distances: Vec<f64> = Vec::new();
-
-    let mut winner: Option<PositionOutcome> = None;
-    let mut start_idx = 0usize;
-    while start_idx < positions.len() && winner.is_none() {
-        // The first position is the hint itself and usually solves outright, so try it
-        // on its own: spawning a pool for it would cost more than it saves.
-        let batch_len = if start_idx == 0 {
-            1
-        } else {
-            n_threads.min(positions.len() - start_idx)
-        };
-        let batch = &positions[start_idx..start_idx + batch_len];
-
-        let tries: Vec<PositionTry> = if n_threads == 1 || batch.len() == 1 {
-            batch
-                .iter()
-                .enumerate()
-                .map(|(k, &(sx, sy))| try_position(&ctx, start_idx + k, sx, sy))
-                .collect()
-        } else {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = batch
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &(sx, sy))| {
-                        let ctx = &ctx;
-                        scope.spawn(move || try_position(ctx, start_idx + k, sx, sy))
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    // A dead worker must not read as "nothing matched here":
-                    // the spiral would move on and the solve would fail for a
-                    // reason with no trace anywhere.
-                    .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                    .collect()
-            })
-        };
-
-        for t in tries {
-            if let Some(d) = t.sep_deg {
-                step_distances.push(d);
-            }
-            if let Some(o) = t.outcome
-                && winner.as_ref().is_none_or(|w| o.idx < w.idx)
-            {
-                winner = Some(o);
-            }
-        }
-
-        start_idx += batch_len;
-    }
+    let (step_distances, winner) = search_in_order(positions.len(), n_threads, |idx| {
+        let (sx, sy) = positions[idx];
+        let t = try_position(&ctx, idx, sx, sy);
+        (t.sep_deg, t.outcome)
+    });
+    let mut winner = winner.map(|(_, o)| o);
 
     // Nothing verified anywhere: the catalogue-seeded fallback, once, about the hint.
     if winner.is_none() && params.method == SolveMethod::Quads {
@@ -1605,6 +1567,97 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         found: 0,
         required: min_quads,
     })
+}
+
+/// A position tried by [`search_in_order`]: its index, distance and outcome.
+type Tried<T> = (usize, Option<f64>, Option<T>);
+
+/// Try spiral positions `0..n` in order until one produces an outcome, on
+/// `n_threads` workers, and return the lowest-numbered position that has one and
+/// its outcome, with the distances `try_at` reported for every position up to it
+/// (the ASTAP-style progress line).
+///
+/// The result is the serial loop's whatever the thread count. Workers take the
+/// next untried position from a shared counter, so positions are started in
+/// order; once a position succeeds no later one is started, but those before it
+/// run to completion, since one of them may succeed too and it would win. Nothing
+/// waits on a batch: an earlier version ran the positions in batches of
+/// `n_threads`, and every batch waited for its slowest position, while the cost of
+/// a position varies several times with the density of the catalogue.
+fn search_in_order<T: Send>(
+    n: usize,
+    n_threads: usize,
+    try_at: impl Fn(usize) -> (Option<f64>, Option<T>) + Sync,
+) -> (Vec<f64>, Option<(usize, T)>) {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    if n == 0 {
+        return (Vec::new(), None);
+    }
+    // The first position is the hint itself and usually solves outright, so try it
+    // on its own: starting the workers for it would cost more than it saves.
+    let mut tried: Vec<Tried<T>> = Vec::new();
+    let (d, o) = try_at(0);
+    let first_hit = o.is_some();
+    tried.push((0, d, o));
+    if !first_hit && n > 1 {
+        if n_threads <= 1 {
+            for idx in 1..n {
+                let (d, o) = try_at(idx);
+                let hit = o.is_some();
+                tried.push((idx, d, o));
+                if hit {
+                    break;
+                }
+            }
+        } else {
+            let next = AtomicUsize::new(1);
+            let first_found = AtomicUsize::new(usize::MAX);
+            let try_at = &try_at;
+            let per_worker: Vec<Vec<Tried<T>>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..n_threads.min(n - 1))
+                    .map(|_| {
+                        let (next, first_found) = (&next, &first_found);
+                        scope.spawn(move || {
+                            let mut done = Vec::new();
+                            loop {
+                                let idx = next.fetch_add(1, Ordering::Relaxed);
+                                if idx >= n || idx > first_found.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                let (d, o) = try_at(idx);
+                                if o.is_some() {
+                                    first_found.fetch_min(idx, Ordering::Relaxed);
+                                }
+                                done.push((idx, d, o));
+                            }
+                            done
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    // A dead worker must not read as "nothing matched here":
+                    // the spiral would move on and the solve would fail for a
+                    // reason with no trace anywhere.
+                    .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                    .collect()
+            });
+            tried.extend(per_worker.into_iter().flatten());
+            tried.sort_unstable_by_key(|&(idx, _, _)| idx);
+        }
+    }
+
+    // Positions past the first success may have finished before it was known: as
+    // in the serial loop, they are not reported.
+    let mut distances = Vec::new();
+    for (idx, d, o) in tried {
+        distances.extend(d);
+        if let Some(o) = o {
+            return (distances, Some((idx, o)));
+        }
+    }
+    (distances, None)
 }
 
 /// Format RA (radians) as `astap_cli` prints it: `"HH: MM  SS.S"`, each field at
@@ -1735,6 +1788,45 @@ mod tests {
         let wcs = derive_wcs(ra_center, dec_center, &plate, img.width, img.height);
         let sep_arcsec = ang_sep(wcs.ra0, wcs.dec0, ra_center, dec_center) * (180.0 / PI * 3600.0);
         assert!(sep_arcsec < 0.5, "centre offset = {sep_arcsec} arcsec");
+    }
+
+    #[test]
+    fn the_search_returns_the_serial_result_on_any_number_of_threads() {
+        let mut rng = crate::test_support::Rng::new(5);
+        for case in 0..40 {
+            let n = 1 + (rng.next_u64() % 300) as usize;
+            // Some positions read nothing; a few succeed (or none, every fourth case).
+            let read: Vec<bool> = (0..n).map(|_| rng.uniform() < 0.8).collect();
+            let hits: Vec<bool> = (0..n)
+                .map(|_| case % 4 != 0 && rng.uniform() < 0.02)
+                .collect();
+            let try_at = |idx: usize| {
+                let d = read[idx].then_some(idx as f64);
+                // Uneven costs, so the workers finish out of order.
+                for _ in 0..(idx * 7919) % 5000 {
+                    core::hint::black_box(idx);
+                }
+                (d, (read[idx] && hits[idx]).then_some(idx * 10))
+            };
+            let want_hit = (0..n).find(|&i| read[i] && hits[i]);
+            let want_d: Vec<f64> = (0..=want_hit.unwrap_or(n - 1))
+                .filter(|&i| read[i])
+                .map(|i| i as f64)
+                .collect();
+            for threads in [1, 2, 3, 8] {
+                let (d, hit) = search_in_order(n, threads, try_at);
+                assert_eq!(
+                    hit,
+                    want_hit.map(|i| (i, i * 10)),
+                    "case {case}, {threads} threads"
+                );
+                assert_eq!(d, want_d, "case {case}, {threads} threads");
+            }
+        }
+        assert_eq!(
+            search_in_order(0, 4, |_| (Some(1.0), Some(()))),
+            (vec![], None)
+        );
     }
 
     #[test]
@@ -2491,11 +2583,13 @@ mod tests {
             2.0 * (35.0 / n as f64).sqrt()
         };
         let (quads, tris) = (crate::types::QuadList::default(), Default::default());
+        let grid = QuadGrid::build(&quads, p.quad_tolerance);
         let ctx = SpiralCtx {
             params: p,
             img,
             stars: &stars,
             img_quads: &quads,
+            img_grid: &grid,
             img_tris: &tris,
             nrstars_image: n,
             star_limit: p.max_stars,

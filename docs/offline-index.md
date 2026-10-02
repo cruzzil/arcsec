@@ -226,6 +226,14 @@ arcsec -f image.fits -i idx.arcsecix --fov 1.2                # blind, scale kno
   sky; if that fails too, the full spiral runs as before. Inside five fields the result
   is therefore exactly the spiral's, and below `-r` 10° nothing changes at all; see §7.5
   for the measured effect and why the gate.
+* **A field outside `-r`** (added after 0.3.0): when the restricted lookup finds
+  nothing, the index is asked once more with no limit. If that verifies the field more
+  than two fields (`ELSEWHERE_FIELDS`) beyond `-r`, the rest of the spiral is skipped —
+  it cannot find the field inside the radius — and the solve ends unsolved (exit 1,
+  stderr names the distance), exactly as the spiral would have ended, only sooner.
+  Otherwise the full spiral runs. A field the index puts within reach is never
+  reported from this second lookup, and nothing changes when `-r` covers the sky. See
+  §7.8.
 * **N.I.N.A.** in blind mode passes `-r 180` and no `-ra`/`-spd`: with an index installed
   that is the automatic path, and the five-field first stage is skipped when there is no
   hint at all (no `-ra`/`-spd` and no RA/Dec in the header).
@@ -398,6 +406,35 @@ is never consulted unless `-i` names it, so every `-r` < 10° solve is exactly m
   solver's, so they fail as before.
 * The 0.3° default index loses most of the 0.15–0.3° band (2 of 113 against 54); that is
   the 410 MB the 0.06° tier costs.
+
+### 7.8 A hint far outside `-r` (2026-10-02, after 0.3.0)
+
+The tier-D `neg_hint_*` controls are real fields given a hint 30°–60° away and `-r 10`:
+a hinted solver must answer "no solution", and before this change the only way to say
+so was to search all 5 000–6 000 positions of the radius. With the index installed the
+automatic path now asks the index a second time without the `-r` limit when the
+restricted lookup fails (§2.7), and skips the spiral when that verifies the field more
+than two fields beyond `-r`. With the 698 MB index beside the database (one round, s):
+
+| | 0.3.0, default threads | now | 0.3.0, one thread | now |
+|---|---|---|---|---|
+| `neg_hint_1`, `_5`, `_7`, `_8` (the index places the field 30°–60° away) | 6.8–28.3 | 0.24–0.57 | 82–376 | 0.60–1.69 |
+| `neg_hint_2`, `_3`, `_4`, `_6` (0.16°–0.23° fields the index misses) | 6.7–19.6 | 1.4–8.0 | 79–211 | 19–75 |
+| all eight | 103 | 18.3 | 1256 | 182 |
+
+All sixteen answers are still "no solution". The second lookup costs about 0.1 s where
+it finds nothing, against a spiral of many seconds at `-r` ≥ 10°; the four controls it
+cannot help are cheaper only because every spiral position is
+([test-images.md §9.8](test-images.md#98-faster-failed-searches-2026-10-02-after-030)).
+On the corpus at `-r 10` with the index installed (every image through the automatic
+path), all 635 results and every `.wcs` are unchanged.
+
+The skip is safe in the sense that matters: it needs a solution that passed the hinted
+solver's star-level verification (≥ 30 matched stars spread over the frame) somewhere
+the spiral cannot reach, and the image cannot be in both places. It could only cost a
+solve if the index both missed the true field within `-r` and verified a false one
+outside it; the index's blind false positives on the corpus are one, a near miss on the
+right field (§7.6).
 
 ---
 
