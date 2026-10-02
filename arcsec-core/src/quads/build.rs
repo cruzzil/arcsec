@@ -120,6 +120,55 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
     })
 }
 
+/// The centres of the quads accepted so far, hashed into buckets of at most
+/// [`BUCKET_CAPACITY`] for the duplicate check.
+///
+/// One flat array of chained entries rather than a `Vec` per bucket: the
+/// catalogue quads are rebuilt at every spiral position, and a `Vec` per bucket
+/// meant thousands of small allocations each time, while looking a centre up
+/// through the quad list cost a cache miss per comparison. Which centres a
+/// bucket holds, and so which quads are kept, is unchanged.
+struct CentreTable {
+    /// First entry of each bucket, or `u32::MAX`.
+    head: Vec<u32>,
+    /// Entries in each bucket.
+    len: Vec<u8>,
+    /// `(centre x, centre y, next entry in the bucket)`.
+    entries: Vec<(f64, f64, u32)>,
+}
+
+impl CentreTable {
+    fn new(buckets: usize) -> Self {
+        Self {
+            head: vec![u32::MAX; buckets],
+            len: vec![0; buckets],
+            entries: Vec::new(),
+        }
+    }
+
+    /// Whether bucket `b` holds a centre within 1 unit of `(cx, cy)` in both axes.
+    fn near(&self, b: usize, cx: f64, cy: f64) -> bool {
+        let mut e = self.head[b];
+        while e != u32::MAX {
+            let (x, y, next) = self.entries[e as usize];
+            if (cx - x).abs() < 1.0 && (cy - y).abs() < 1.0 {
+                return true;
+            }
+            e = next;
+        }
+        false
+    }
+
+    /// Record a centre in bucket `b`, unless the bucket is full.
+    fn insert(&mut self, b: usize, cx: f64, cy: f64) {
+        if usize::from(self.len[b]) < BUCKET_CAPACITY {
+            self.len[b] += 1;
+            self.entries.push((cx, cy, self.head[b]));
+            self.head[b] = (self.entries.len() - 1) as u32;
+        }
+    }
+}
+
 /// All C(k, 4) index combinations of 4 from 0..k, in lexicographic order.
 ///
 /// Replaces the hand-written `COMBOS_5/6/7` tables so that any neighbourhood size can
@@ -159,7 +208,7 @@ fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
     // fine at ~200 quads and quadratic pain at the several thousand that a larger
     // neighbourhood produces.
     let table_len = (n * combos.len() / 4).max(16);
-    let mut hash_table: Vec<Vec<usize>> = vec![Vec::new(); table_len];
+    let mut centres = CentreTable::new(table_len);
 
     for i in 0..n {
         let x1 = stars.0[i].x;
@@ -216,17 +265,13 @@ fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
             let hx = (cx * GRID_INV) as i64;
             let hy = (cy * GRID_INV) as i64;
             let idx = ((hx * 31 + hy).unsigned_abs() as usize) % table_len;
-            let dup = hash_table[idx].iter().any(|&qi| {
-                (cx - quads[qi].center_x).abs() < 1.0 && (cy - quads[qi].center_y).abs() < 1.0
-            });
-            if dup {
+            if centres.near(idx, cx, cy) {
                 continue;
             }
 
             if let Some(q) = make_quad(p[0], p[1], p[2], p[3]) {
-                if hash_table[idx].len() < BUCKET_CAPACITY {
-                    hash_table[idx].push(quads.len());
-                }
+                // The quad's own centre, which is (cx, cy) up to rounding.
+                centres.insert(idx, q.center_x, q.center_y);
                 quads.push(q);
             }
         }
