@@ -1,0 +1,100 @@
+# Fuzz targets for arcsec's file readers, run with cargo-fuzz on nightly:
+#
+#     cargo install cargo-fuzz
+#     cargo +nightly fuzz run image_fits
+#
+# This crate is its own workspace, so the root workspace's build, tests and
+# `cargo clippy --workspace` never see it and nothing there needs nightly.
+# See CONTRIBUTING.md, "Fuzzing".
+[package]
+name = "arcsec-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+arcsec-core = { path = "../arcsec-core" }
+# The CLI's readers are compiled into this crate from their source files (see
+# src/lib.rs), so it needs their dependencies, at the CLI's versions.
+rsfitsio = "0.470.3"
+libc = "0.2"
+log = "0.4.34"
+xisf = "0.5.1"
+asdf-rs = "0.2.1"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tar = "0.4.46"
+lzma-rs = "0.3.0"
+ureq = "3.4.2"
+
+[[bin]]
+name = "image_fits"
+path = "fuzz_targets/image_fits.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_xisf"
+path = "fuzz_targets/image_xisf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_asdf"
+path = "fuzz_targets/image_asdf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "catalog_tiles"
+path = "fuzz_targets/catalog_tiles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "anet_index"
+path = "fuzz_targets/anet_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arcsecix"
+path = "fuzz_targets/arcsecix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "solve_params"
+path = "fuzz_targets/solve_params.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "detect"
+path = "fuzz_targets/detect.rs"
+test = false
+doc = false
+bench = false

@@ -11,6 +11,43 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **Fuzz targets** for every file arcsec reads (FITS, XISF and ASDF images, the ASTAP
+  star databases, Astrometry.net and arcsec index files, catalogue archives) and for the
+  numbers that reach the solver, in a `fuzz/` crate run with cargo-fuzz, with a weekly
+  advisory CI job. See CONTRIBUTING.md, "Fuzzing". The fixes below came from it.
+
+### Changed
+
+- `-t` (quad tolerance) above 0.1 is refused with exit 1. The ratios it compares lie in
+  0..1, so a large tolerance matched every pattern to every other, never solved, and with
+  `--method tetra` could ask for gigabytes.
+
+### Fixed
+
+- **A malformed image is an unreadable file (exit 16), never a crash.** Header
+  dimensions that the file is too short to hold, or beyond 2³⁰ pixels, are refused before
+  anything is allocated for them; a 5 KB FITS file could ask for 4 GB, and an XISF or
+  ASDF geometry could overflow. Panics inside the FITS reader (rsfitsio 0.470.3 panics on a
+  header value that is not text and on several kinds of corrupt tile-compressed image) and
+  the XISF and ASDF readers are caught at the reader and reported, with where they
+  happened; a keyword that cannot be read counts as missing rather than failing an
+  otherwise good image.
+- A corrupt header can no longer stall or exhaust the solver. A pixel scale from
+  FOCALLEN/XPIXSZ outside 0.001–10 000″/px, or an RA/Dec that is not a number, is ignored
+  as missing. The search spiral is no longer built in memory before it is walked: a
+  narrow field with the default `-r 180` allocated hundreds of megabytes up front, and a
+  vanishing field size aborted; a radius of more than a million fields is refused.
+- A very large `-s` no longer reserves memory in proportion to it.
+- `arcsec catalog install`: a corrupt xz payload in a `.deb` is an error rather than a
+  panic, and each file is written beside its name and renamed into place. Rewriting a
+  star-database tile in place could crash a solve that had it memory-mapped (SIGBUS),
+  an interrupted install left a short tile that then read as corrupt, and a symbolic
+  link at a tile's name was written through.
+- Any panic that remains is reported as an internal error with exit 1 and a
+  `PLTSOLVD=F` `.ini`, as for any failed solve, rather than Rust's exit 101 and no `.ini`.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added
