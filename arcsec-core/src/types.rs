@@ -362,11 +362,14 @@ pub struct WcsSolution {
     pub cd2_1: f64,
     /// `CD2_2`, degrees/pixel.
     pub cd2_2: f64,
-    /// CDELT1, degrees/pixel. Negative (FITS convention, east to the left).
+    /// CDELT1, degrees/pixel, signed as `astap_cli` writes it: negative for an image with
+    /// the sky's usual handedness (east to the left with north up), positive for a
+    /// mirrored one. See [`crate::wcs::output::old_style_wcs`].
     pub cdelt1: f64,
-    /// CDELT2, degrees/pixel.
+    /// CDELT2, degrees/pixel. Always positive.
     pub cdelt2: f64,
-    /// CROTA2, degrees.
+    /// CROTA2, degrees: the rotation of the image's +Y axis from north, as `astap_cli`
+    /// reports it. [`WcsSolution::crota1`] gives the +X axis's.
     pub crota2: f64,
     /// RMS residual of the verified star matches, arcsec.
     pub residual_rms: f64,
@@ -399,6 +402,15 @@ pub struct WcsSolution {
     /// [`crate::pipeline::solve_image`] leaves this `None`; add it with
     /// [`crate::wcs::sip::fit_sip`].
     pub sip: Option<crate::wcs::sip::Sip>,
+}
+
+impl WcsSolution {
+    /// CROTA1, degrees: the rotation of the image's +X axis, as `astap_cli` reports it.
+    /// It differs from [`WcsSolution::crota2`] only when the plate is slightly skewed.
+    #[must_use]
+    pub fn crota1(&self) -> f64 {
+        crate::wcs::output::old_style_wcs(self.cd1_1, self.cd1_2, self.cd2_1, self.cd2_2).3
+    }
 }
 
 /// A detected star paired with the catalogue star it was identified as.

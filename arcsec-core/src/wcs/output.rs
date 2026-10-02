@@ -35,10 +35,11 @@ pub fn derive_wcs(
     let cd2_1 = plate.d / 3600.0;
     let cd2_2 = plate.e / 3600.0;
 
-    // Pixel scale [deg/pixel] and rotation [degrees]
-    let cdelt1 = -(cd1_1 * cd1_1 + cd1_2 * cd1_2).sqrt(); // FITS: cdelt1 < 0 for east-to-right
-    let cdelt2 = (cd2_1 * cd2_1 + cd2_2 * cd2_2).sqrt();
-    let crota2 = cd2_1.atan2(cd2_2).to_degrees();
+    // Pixel scale [deg/pixel] and rotation [degrees], as astap_cli derives them: CDELT1
+    // carries the parity (negative for the usual east-left image, positive for a
+    // mirrored one), CDELT2 is positive, and CROTA2 is the rotation of the image's
+    // +Y axis from north. See `old_style_wcs`.
+    let (cdelt1, cdelt2, crota2, _) = old_style_wcs(cd1_1, cd1_2, cd2_1, cd2_2);
 
     WcsSolution {
         ra0,
@@ -64,9 +65,68 @@ pub fn derive_wcs(
     }
 }
 
+/// `CDELT1`, `CDELT2`, `CROTA2` and `CROTA1` (degrees per pixel and degrees) for a
+/// CD matrix, in `astap_cli`'s convention.
+///
+/// `astap_cli` (2025 onward) builds its CD matrix from these four values as
+/// `CD1_1 = CDELT1·cos CROTA1`, `CD1_2 = −CDELT1·sin CROTA1·f`,
+/// `CD2_1 = CDELT2·sin CROTA2·f`, `CD2_2 = CDELT2·cos CROTA2`, where `f` is −1 for an
+/// image with the sky's usual handedness (det CD < 0) and +1 for a mirrored one, and
+/// `CDELT1 = f·|row 1|`. This inverts that, so tools that read the old-style keywords
+/// see what they would from ASTAP.
+#[must_use]
+pub fn old_style_wcs(cd1_1: f64, cd1_2: f64, cd2_1: f64, cd2_2: f64) -> (f64, f64, f64, f64) {
+    let det = cd1_1 * cd2_2 - cd1_2 * cd2_1;
+    let f = if det < 0.0 { -1.0 } else { 1.0 };
+    let cdelt1 = f * cd1_1.hypot(cd1_2);
+    let cdelt2 = cd2_1.hypot(cd2_2);
+    let crota2 = (f * cd2_1).atan2(cd2_2).to_degrees();
+    let crota1 = if cdelt1 == 0.0 {
+        0.0
+    } else {
+        (-cd1_2 / (cdelt1 * f)).atan2(cd1_1 / cdelt1).to_degrees()
+    };
+    (cdelt1, cdelt2, crota2, crota1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CD matrix `astap_cli` 2026.07.30 wrote for dec000.fits, and the CDELT/CROTA
+    /// values it wrote with it.
+    #[test]
+    fn old_style_keywords_match_astap_cli() {
+        let (cdelt1, cdelt2, crota2, crota1) = old_style_wcs(
+            -3.448_223_117_128e-4,
+            -1.328_788_985_076e-8,
+            -1.180_717_632_642e-8,
+            3.448_186_344_500e-4,
+        );
+        assert!(
+            (cdelt1 - -3.448_223_119_688e-4).abs() < 1e-12,
+            "cdelt1 {cdelt1}"
+        );
+        assert!(
+            (cdelt2 - 3.448_186_346_521e-4).abs() < 1e-12,
+            "cdelt2 {cdelt2}"
+        );
+        assert!(
+            (crota2 - 1.961_904_907_735e-3).abs() < 1e-9,
+            "crota2 {crota2}"
+        );
+        assert!(
+            (crota1 - 2.207_919_791_863e-3).abs() < 1e-9,
+            "crota1 {crota1}"
+        );
+    }
+
+    #[test]
+    fn a_mirrored_matrix_has_a_positive_cdelt1() {
+        let (cdelt1, cdelt2, crota2, crota1) = old_style_wcs(3e-4, 0.0, 0.0, 3e-4);
+        assert!(cdelt1 > 0.0 && cdelt2 > 0.0);
+        assert!(crota2.abs() < 1e-12 && crota1.abs() < 1e-12);
+    }
     use crate::math::coords::ang_sep;
     use core::f64::consts::PI;
 
