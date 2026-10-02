@@ -2,6 +2,7 @@
 
 pub mod build;
 pub mod r#match;
+pub mod seeded;
 pub mod tetra;
 pub mod vote;
 

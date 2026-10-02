@@ -908,7 +908,9 @@ Measured 2026-10-01 on the code after the catalogue-read fix (§7.7, unreleased)
 the 0.1.2 release binary as "before" (the numbers this section showed until then).
 `--auto-db` (d80 0.15°–6°, g05 3°–20°, w08 20°–80° installed), true centre as the hint,
 `-r 5`, 12 jobs. Four solver changes since then raise the counts to 540 correct (true
-centre) and 493 (offset hint); §7.8 has those results and every status change.
+centre) and 493 (offset hint); §7.8 has those results and every status change. The
+distortion model (§7.9) takes them to 558 and 537, and the crowded-field work (§7.10)
+to 589 and 580.
 
 ```bash
 scripts/benchmark.py --corpus --auto-db --by tier,source,dataset,fov,set --csv run.csv
@@ -1037,6 +1039,9 @@ the ~1000″ linear floor) and `s_tess_b_pincush` too; only `wide_shassa_01` rem
    [plate-solving.md §12.4](plate-solving.md#124-fit-sip-distortion-and-honour---sip).
    *Update (§7.9):* the distortion model makes every TESS frame that solves correct
    (23/42 centre, 16/42 offset); those still failing are the correspondence problem.
+   *Update (§7.10):* it was mostly a detection problem — the bright stars were refused
+   as too large for the measuring box — and the catalogue-seeded fallback does the
+   rest: 41/42 centre, 37/42 offset.
 2. **Lens distortion (tier S): 3/10 correct, 5 inexact, 1 false positive.** arcsec's
    corners come out *worse than the best linear plate* (for example 28″ against a 16.5″
    floor): the star-level refit keeps only matches within 2 px, so the edges, where the
@@ -1051,7 +1056,9 @@ the ~1000″ linear floor) and `s_tess_b_pincush` too; only `wide_shassa_01` rem
 5. **Narrow native frames at the catalogue floor.** SkyMapper at 0.17° solves 8/15;
    ASTAP solves 14/15 of the same images.
 6. **Crowded and nebulous fields**, as in v1: named nebulae (Rosette, Heart, M16, Orion's
-   belt, Coalsack, B68) fail; random galactic-plane fields solve 17/23.
+   belt, Coalsack, B68) fail; random galactic-plane fields solve 17/23. *Update
+   (§7.10):* of the crowded DSS fields only `dens_scutum`, `type_dbl_clus` and `type_m8`
+   still fail.
 
 ### 7.5 ASTAP on the same images (reference only)
 
@@ -1400,6 +1407,180 @@ distortion — `tess_05` finds 614 quad references at the right position and kee
 consistent ones to fit. `tess_34` (2.2°) with the offset hint is inexact: its distortion
 is real but weak on the pairs (F = 7).
 
+### 7.10 Crowded and nebulous fields (2026-10-02)
+
+§9 left 37 of the 596 images in tiers A/B/C/S unsolved with the true-centre hint, 22 of
+them fields seiza solves: crowded and nebulous DSS fields, 47 Tuc, the Galactic Centre,
+coarse DSS, TESS crops and WISE frames. Three changes and one refinement
+([plate-solving.md §10.2, §10.3b, §10.3d](plate-solving.md#103d-the-catalogue-seeded-fallback-quadsseededrs)),
+measured on the whole corpus with both hints against `main` (0.3.0 with the faster
+failed search of §9.8, whose results are 0.3.0's, image for image), `--auto-db`, 12
+jobs:
+
+| | true-centre hint: correct / FP / inexact | offset hint: correct / FP / inexact | tier D FP | v1 (centre / offset) |
+|---|---|---|---|---|
+| `main` (§9.8) | 558 / 1 / 0 | 537 / 1 / 1 | 0 / 0 | 92 / 90 |
+| **now** | **589 / 1 / 1** | **580 / 1 / 1** | **0 / 0** | **95 / 95** |
+
+No image `main` solves correctly is lost in either run; the false positive in both is
+`wide_shassa_01`, unchanged (§7.9). The one new inexact solve is `wise_11` (no solve
+before; corners 10.8″ against a 5.5″ linear floor, 31 verified stars too few for the
+distortion model to cover the frame).
+
+| tier | centre: `main` → now | offset: `main` → now | | source | centre | offset |
+|---|---|---|---|---|---|---|
+| A | 221/1/0 → 230/1/0 | 210/1/0 → 225/1/0 | | hips2fits | 221 → 230 | 210 → 225 |
+| B | 230/0/0 → 252/0/1 | 221/0/1 → 248/0/1 | | TESS FFI crops | 23 → **41** of 42 | 16 → **37** |
+| C | 42/0/0 → 42/0/0 | 42/0/0 → 42/0/0 | | WISE | 20 → 23 of 25 | 20 → 23 |
+| S | 65/0/0 → 65/0/0 | 64/0/0 → 65/0/0 | | Legacy Surveys | 39 → 40 | 37 → 40 |
+
+By field size (true-centre hint): 2.5–6° 27 → **43 of 43**, 1.2–2.5° 79 → 86, 0.6–1.2°
+168 → 173, below 0.15° 5 → 6, 6–20° 34 → 35; with the offset hint 2.5–6° 24 → 40,
+1.2–2.5° 77 → 85, 0.6–1.2° 166 → 173, 0.3–0.6° 122 → 125, 6–20° 31 → 35. Accuracy of
+what both solve: median worst corner 0.60″ → 0.57″ with the true-centre hint (59 images
+more than 0.2″ closer to the truth, 9 further), 0.68″ → 0.54″ with the offset hint (137
+closer, 10 further).
+
+**The 22 fields seiza solved and `main` did not.** Now solved with the true-centre hint:
+17 — `dens_carina`, `dens_vela`, `obj_47tuc`, `obj_sgra`, `type_sirius`, `rnd_054`,
+`wide_dss_01`/`02`/`04`, `tess_05`/`17`/`20`/`31`/`40`, `wise_06`/`08`/`15`; with the
+offset hint 16 (`dens_carina` and `obj_47tuc` already solved with it). Still not:
+`dens_scutum`, `type_dbl_clus`, `type_m8`, `wise_16`, and `wise_11` (inexact).
+
+**Status changes, true-centre hint** (all from no solve; 31 correct, 1 inexact):
+`dens_carina`, `dens_vela`, `obj_47tuc`, `obj_sgra`, `rnd_054`, `type_sirius`,
+`wide_dss_01`/`02`/`04`, `ls2_25`, `tess_04`/`05`/`06`/`08`/`11`/`17`/`20`/`26`/`28`/`29`/`30`/`31`/`35`/`36`/`38`/`40`/`42`/`43`,
+`wise_06`/`08`/`15`; `wise_11` inexact.
+
+**Status changes, offset hint** (43 correct, 1 inexact; from no solve unless noted):
+`cam_dss_c`, `s_dss_c_f64`, `dens_vela`, `obj_m27`, `obj_sgra`, `rnd_012`, `rnd_049`,
+`rnd_054`, `type_m31`, `type_sirius`, `stress_wide15`, `wide_dss_01`/`02`/`04`,
+`wide_shassa_03`, `wide_tess_13`, `ls2_25`, `ls2_27`, `ls_p14`,
+`tess_04`/`05`/`06`/`08`/`09`/`10`/`11`/`16`/`17`/`18`/`20`/`21`/`26`/`29`/`30`/`31`/`36`/`37`/`39`/`42`,
+`tess_34` (from inexact), `wise_06`/`08`/`15`; `wise_11` inexact.
+
+**Diagnosis.** For each failing group the detections were compared with the catalogue
+through the truth WCS, and the catalogue's brightest stars in the frame were measured
+at their true positions with the detection's own rules:
+
+* *Crowded and nebulous DSS fields* (`dens_carina`/`scutum`/`vela`, `type_dbl_clus`,
+  `type_m8`, `type_sirius`): 0–2 of the 30 brightest catalogue stars were among the
+  500 detections, and only 5–12% of the detections had a catalogue counterpart. Of the
+  60 brightest, the detection refused 9–34 as *too large* (saturated discs 20–75 pixels
+  across: the 3σ isophote reaches the 14-pixel box) and 2–22 as noise (inside
+  saturated nebulosity, where nothing can be measured); the detections were the faint
+  stars between them, below the catalogue's depth.
+* *Coarse DSS* (`wide_dss_01/02/04`, 4.8–9.6″/px) and `rnd_054`: the brightest
+  detections did match (21–23 of the top 30), but 52–53 of the 60 brightest catalogue
+  stars were refused as too large, so the image's 500 were mostly fainter than the
+  catalogue's 500.
+* *TESS FFI crops* (21″/px): 40 of the 60 brightest catalogue stars in `tess_05` were
+  refused as too large (a core three pixels wide, wings 3σ above the sky past 16
+  pixels), 7 as not a disc. Correspondence 30%: the quads did not match, and a
+  catalogue-seeded search (below) without a significance test found wrong plates that
+  verified 30–32 stars, chance in a frame of 500 stars on 384 × 384 pixels.
+* *WISE*: a passband (W1–W4) far from Gaia's BP ranks stars differently (`wise_15`: 0
+  of the 30 highest-SNR detections are catalogue stars), cosmic rays and streaks
+  dominate single L1b exposures (`wise_11`: 470 of 500 detections, half-flux diameter
+  1.4 px against 3.0 for its stars), saturated cores are masked (`wise_16`), or
+  stray light leaves 49 detections (`wise_06`).
+* *47 Tuc and the Galactic Centre* (`obj_47tuc`, `obj_sgra`): the catalogue's 500
+  brightest come from a core the image does not resolve; correspondence 9%.
+
+**What changed.**
+
+1. *Bright stars measured in a larger box* (`detection::stars::measure_large`). A
+   candidate the ordinary measurement refuses as too large or not a disc is re-centred
+   on its brightest pixel and measured in a 32-pixel box at 5% of its peak; trails,
+   galaxies and knots are refused by a second-moment test. These stars do not count
+   towards the `-s` that ends the detection cascade. Alone (with nothing else changed)
+   this took the true-centre count to 583 and the offset count to 562, and brought the
+   only new false positives of the work (`tess_17`, a wrong field verifying 86 stars at
+   3.4 px rms; `wide_shassa_03`, 1.2 px at a corner with the offset hint), which
+   changes 2 and 4 removed.
+2. *Significance of a verification* (`MIN_SIGNIFICANCE` = 4, and an rms within the last
+   match radius). Every correct solve verifies at least 7.9 times the matches expected
+   by chance at the frame's density (`tess_40`, 121 against 15.3); the wrong TESS plates
+   1.5–2.7 times; two wrong plates (`wise_15`, `obj_m27`, both from the fallback) had
+   4.4 px rms after the 2 px pass, where no correct solve exceeds 1.35 px. Without it
+   the fallback reported four wrong TESS fields and `wise_15` with the true-centre hint,
+   and eight TESS fields, `wise_15` and `obj_m27` with the offset hint.
+3. *Catalogue-seeded fallback* (`quads::seeded`), after a spiral that found nothing.
+   Eight solves with the true-centre hint come from it (`ls2_25`, `obj_sgra`,
+   `tess_05`, `tess_26`, `wide_dss_02`, `wise_08`, `wise_15`, and `wise_11`, inexact),
+   twenty with the offset hint; the rest come from the detection change and the spiral.
+4. *Linear refit on the model's pairs* when the distortion model's full-frame match has
+   1.5 times the verified stars: with the offset hint it made `wide_shassa_03` (a
+   1.2-pixel corner) and `type_m45` (5.7″, after change 1) correct and `tess_34` correct
+   from inexact, and moved the median worst corner from 0.70″ to 0.59″ on that run;
+   with the true-centre hint it changes three plates, no status.
+
+**Speed.** CPU time (user + system) per process, `--threads 1`, alternating the two
+builds image by image, two rounds and the lower of each, load average 0.3–1.6, against
+`main` after §9.8:
+
+| | `main` | now |
+|---|---|---|
+| v1 subset (103), total | 30.8 s | 31.6 s, 3 more solved |
+| ... the 92 both solve: total / median | 20.7 s / 0.114 s | 21.7 s / 0.116 s (median per-image ratio 1.03) |
+| the 8 `neg_hint_*` controls (full spiral, `-r 10`) | 249.3 s | 250.5 s |
+| the 27 other tier-D controls | 57.3 s | 58.7 s |
+
+The solved images that slow down are the wide fields full of saturated stars, where the
+discs measured as large stars replace the pieces of them the cascade used to count and
+it runs a second level (plate-solving.md §10.2): `stress_wide15` 0.27 → 0.52 s,
+`fov_10p0` 0.40 → 0.46 s, `fov_3p00`, `fov_5p00` +10%. Every other solve is within a few
+milliseconds; the out-of-line measurement and the ring walk took the typical overhead
+from 18% (`dec000`, 99 → 118 ms in the first build) to under 4%. A failed search pays
+the fallback once: 0.1–0.3 s of CPU (`neg_shuffle_6` 0.21 → 0.46 s, `neg_shuffle_5`
+0.24 → 0.47 s), under 1% of a full spiral. With all threads the fallback is still one
+thread, so its share of a failure's wall time is larger on a many-core machine.
+
+**Negative results.**
+
+* *Counting the large stars towards the cascade's `-s`.* `wide_dss_05` stopped at the
+  first level with 525 stars (157 of them large) instead of going on to the gridded
+  level that finds 10 522, and lost its solve.
+* *A separate bright-star pass after the cascade*, leaving the cascade's own stars
+  exactly as before and replacing only the off-centre pieces of a source: the same speed
+  as `main` on solved images (the large measurement inline costs a second cascade level
+  on a few wide fields, `stress_wide15` 0.27 → 0.52 s), but 587 / 577 correct rather
+  than 589 / 580: it loses `tess_38` and `tess_43`, and with the offset hint `obj_m27`,
+  `tess_08`, `tess_21` and `type_m31` (gaining `tess_28`).
+* *A 64-pixel box for large stars* (`type_dbl_clus` and `type_m8` have bright stars
+  50–75 pixels across): neither solved, and `dens_scutum` and the offset `dens_carina`
+  were lost.
+* *An elongation filter on every detection* (eigenvalue ratio of the second moments
+  above half the peak, ≤ 4), measured on an earlier build of this work: lost the two
+  trailed tier-S frames `s_2mass_a_trail` and `s_sm_a_trail12` (all their stars are
+  elongated) and made `s_des_a_worst` inexact, with nothing gained; at 2.5 it removed
+  half of `wise_11`'s detections (undersampled stars measure as elongated) and lost it.
+  The large-star measurement keeps its own test, where trails and galaxy cores are the
+  risk.
+* *Spatially diverse selection* (the brightest detections capped per cell of a 4 × 4
+  grid, at twice the mean), on the same build: no status change in either run; 18
+  corners moved, by at most 1.4″. `dens_scutum`, the one crowded field it was aimed at,
+  solves in some variants of this work and not in others (it verifies 34 stars at the
+  first position when it does): marginal, not a selection effect.
+* *Verifying the fallback's candidates against the 2000 deep detections* instead of the
+  500 the spiral uses: no new solve (`dens_scutum`, `type_m8`, `type_dbl_clus`, `wise_16`
+  stay unsolved); not kept.
+* *A larger fallback budget* (10⁸ and 2·10⁸ instead of 4·10⁷): no further solve; the
+  remaining failures' brightest catalogue stars are not among the detections at all
+  (`type_m8` 7 of the 100 brightest detected, `type_dbl_clus` 9), so their seed quads
+  cannot be found. Indexing only the 500 or 1000 brightest detections for the fallback's
+  image pairs: a wash (each solved one case the other did not).
+* *Trying the fallback's short quads first* (fewer image pairs per quad, so more quads
+  within the budget): `tess_05` 1.8·10⁷ → 2.5·10⁶ units, `obj_sgra` 1.8·10⁷ → 7·10⁶, but
+  `tess_26` 2.9·10⁶ → 2.9·10⁷ and `wide_dss_02` lost (a quad of near neighbours misses
+  more often in a coarse frame). The catalogue's brightness order was kept.
+* *A census without the significance floor*, or excluding the quad's own four stars
+  from it: the first sent thousands of wrong TESS transforms to the verification (and
+  through it, before change 2); the second lost `wise_15`.
+* *Fewer stars, or more* (`-s` 40–2000, the cheapest way to change both depths): some
+  targets solve at 150 or 1000–2000 stars and others lose; no single setting helps
+  overall, which is what pointed to the measurement and the fallback instead.
+
 ## 8. Licensing and attribution
 
 The corpus is deliberately not committed: `resources/` is gitignored and the manifests
@@ -1605,7 +1786,11 @@ the linear pixels, which is the likely difference; we did not test it directly.
   failures (`dens_carina`, `dens_scutum`, `dens_vela`, `obj_47tuc`, `obj_sgra`,
   `type_dbl_clus`, `type_m8`, `type_sirius`); `rnd_054`; three coarse DSS fields
   (`wide_dss_01/02/04`); five TESS FFI crops (`tess_05/17/20/31/40`); five WISE frames
-  (`wise_06/08/11/15/16`).
+  (`wise_06/08/11/15/16`). *Update (§7.10):* arcsec now solves 17 of them with the
+  true-centre hint (16 with the offset hint); `dens_scutum`, `type_dbl_clus`, `type_m8`
+  and `wise_16` still fail, and `wise_11` is inexact (10.8″ at the corners against a
+  5.5″ linear floor). arcsec's count with the true-centre hint is 589, against seiza's
+  546; the seiza-only list is now those five.
 * arcsec only (34): ten coarse TESS fields that seiza answers just outside the
   threshold (`cam_tess_c`, `wide_tess_01/02/04/05/07/08/09/12/13`) and three tier-S
   variants of them (`s_tess_c_flipx/flipy/rot270`); thirteen distorted TESS FFI crops

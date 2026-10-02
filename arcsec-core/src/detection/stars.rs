@@ -50,7 +50,8 @@ fn round_sqrt(n: i32) -> usize {
     }
 }
 
-const ROUND_SQRT_N: usize = 1024;
+// Covers `measure_large`'s box too: 2 * (LARGE_RS + 1)^2 = 2178.
+const ROUND_SQRT_N: usize = 2304;
 static ROUND_SQRT_TABLE: [u8; ROUND_SQRT_N] = build_round_sqrt_table();
 
 const fn build_round_sqrt_table() -> [u8; ROUND_SQRT_N] {
@@ -77,7 +78,7 @@ const fn build_round_sqrt_table() -> [u8; ROUND_SQRT_N] {
 /// fails star quality checks (not boxed, single hot pixel, too large).
 #[must_use]
 pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
-    measure::<false>(img, x1, y1).map(|(star, _)| star)
+    measure::<false>(img, x1, y1).ok().map(|(star, _)| star)
 }
 
 /// As [`measure_star`], but with `astap_cli`'s current test for a star disc, and
@@ -93,13 +94,36 @@ pub fn measure_star(img: &ImageBuffer, x1: i32, y1: i32) -> Option<Star> {
 #[must_use]
 #[inline]
 pub fn measure_star_with_flux(img: &ImageBuffer, x1: i32, y1: i32) -> Option<(Star, f64)> {
-    measure::<true>(img, x1, y1)
+    measure::<true>(img, x1, y1).ok()
+}
+
+/// [`measure`] as the detection scan calls it, kept out of line: inlined, it
+/// swells the scan's per-pixel loop, which every pixel of the frame runs through,
+/// and on a frame that solves in 0.1 s the scan alone took 10 ms longer.
+#[inline(never)]
+fn measure_for_scan(img: &ImageBuffer, x1: i32, y1: i32) -> Result<(Star, f64), Reject> {
+    measure::<false>(img, x1, y1)
+}
+
+/// Why [`measure`] turned a candidate down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reject {
+    /// Too close to the frame edge, too faint, a single hot pixel, or not finite.
+    NotAStar,
+    /// The star's isophote reaches the edge of the measuring box.
+    TooLarge,
+    /// The illuminated pixels fill too little of the aperture.
+    NotADisc,
 }
 
 /// The measurement behind [`measure_star`] and [`measure_star_with_flux`].
 /// `CLI_DISC` selects `astap_cli`'s disc test; see [`measure_star_with_flux`].
 #[inline(always)]
-fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<(Star, f64)> {
+fn measure<const CLI_DISC: bool>(
+    img: &ImageBuffer,
+    x1: i32,
+    y1: i32,
+) -> Result<(Star, f64), Reject> {
     /// Annulus buffer size. The annulus is a fixed size (rs = `ANNULUS_RS`), about
     /// 91 pixels, so it lives on the stack: this runs once per candidate and a
     /// crowded field has tens of thousands of them.
@@ -111,7 +135,7 @@ fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<
 
     let r2 = rs + 1;
     if x1 - r2 <= 0 || x1 + r2 >= width - 1 || y1 - r2 <= 0 || y1 + r2 >= height - 1 {
-        return None;
+        return Err(Reject::NotAStar);
     }
 
     // --- Annulus background ---
@@ -252,7 +276,7 @@ fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<
     };
 
     if !centroid_ok {
-        return None;
+        return Err(Reject::NotAStar);
     }
 
     rs += 2; // extra margin around the star
@@ -325,7 +349,7 @@ fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<
     }
 
     if r_aperture >= rs_clamped {
-        return None; // star is larger than detection box
+        return Err(Reject::TooLarge); // star is larger than detection box
     }
     let disc_side = if CLI_DISC {
         2 * r_aperture - 2
@@ -333,7 +357,7 @@ fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<
         2 * r_aperture
     };
     if r_aperture > 2 && (illuminated as f64) < 0.35 * disc_side.pow(2) as f64 {
-        return None; // not a disk — likely overlapping stars
+        return Err(Reject::NotADisc); // not a disk — likely overlapping stars
     }
 
     // --- HFD and SNR calculation ---
@@ -361,10 +385,10 @@ fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<
     // SNR. Such a candidate is not a star, and letting it through used to make the
     // brightness sort panic on a comparator that is not a total order.
     if !(xc.is_finite() && yc.is_finite() && snr.is_finite() && hfd.is_finite()) {
-        return None;
+        return Err(Reject::NotAStar);
     }
 
-    Some((
+    Ok((
         Star {
             x: xc,
             y: yc,
@@ -373,6 +397,320 @@ fn measure<const CLI_DISC: bool>(img: &ImageBuffer, x1: i32, y1: i32) -> Option<
         },
         flux,
     ))
+}
+
+/// A detection and the radius (pixels) of the area marked out around it, which
+/// later candidates inside are not measured again.
+struct Found {
+    star: Star,
+    mark: i32,
+    /// Measured by [`measure_large`].
+    large: bool,
+}
+
+/// Half-width of the box in which a star too large for the ordinary measurement
+/// is measured again ([`measure_large`]).
+const LARGE_RS: i32 = 32;
+/// [`measure_large`]'s isophote: this fraction of the star's peak above the local
+/// background, or 3σ if that is higher.
+const LARGE_PEAK_FRACTION: f64 = 0.05;
+/// Largest ratio of the eigenvalues of the second moments (the squared axis
+/// ratio) [`measure_large`] accepts.
+const LARGE_MAX_ELONGATION: f64 = 2.5;
+
+/// Measure a bright star that [`measure`] turned down as too large or not a disc.
+///
+/// The ordinary measurement takes the star's extent at 3σ of the local background
+/// in a box 14 pixels from the seed. A bright star on a photographic plate is a
+/// saturated disc 10-40 pixels across, and a bright star in an undersampled
+/// wide-field camera (TESS, 21″/px) has faint wings that reach past the box at 3σ
+/// although its core is 3 pixels wide; both are refused, and those are exactly the
+/// stars the catalogue's brightest are. Here the star is re-centred on its
+/// brightest pixel, measured in a box of [`LARGE_RS`], and its extent taken at
+/// [`LARGE_PEAK_FRACTION`] of its peak: the core, not the wings.
+///
+/// A source still too large, not a disc, or elongated (a trail, a galaxy, a
+/// nebula knot) is refused.
+///
+/// Every pixel of a large source above the threshold is a seed, so the area each
+/// measurement covered is remembered in `visited` (cells of [`VISITED_CELL`]
+/// pixels) and later seeds there are passed over: a source is measured once.
+fn measure_large(
+    img: &ImageBuffer,
+    x1: i32,
+    y1: i32,
+    detect_abs: f64,
+    visited: &mut Visited,
+) -> Option<(Star, i32)> {
+    const SEARCH: i32 = LARGE_RS / 2;
+    if visited.get(x1, y1) {
+        return None;
+    }
+    let (w, h) = (img.width as i32, img.height as i32);
+    // The seed is the first pixel above the threshold in raster order, usually
+    // the top edge of the star: re-centre on the brightest pixel near it.
+    if x1 - SEARCH < 0 || x1 + SEARCH >= w || y1 - SEARCH < 0 || y1 + SEARCH >= h {
+        return None;
+    }
+    let (mut px, mut py, mut peak) = (x1, y1, f32::NEG_INFINITY);
+    for y in y1 - SEARCH..=y1 + SEARCH {
+        let row = &img.data[y as usize * img.width..][..img.width];
+        for x in x1 - SEARCH..=x1 + SEARCH {
+            if row[x as usize] > peak {
+                (px, py, peak) = (x, y, row[x as usize]);
+            }
+        }
+    }
+    if visited.get(px, py) {
+        visited.set(x1, y1);
+        return None;
+    }
+    let (found, radius) = measure_large_at(img, px, py, f64::from(peak), detect_abs);
+    // Mark what this measurement covered: the star's own marked area, or, if it
+    // was refused, its aperture (the whole box if it was too large for it).
+    visited.set_square(px, py, radius.max(VISITED_CELL));
+    visited.set(x1, y1);
+    found
+}
+
+/// Pixel offsets grouped by ring, and where each ring starts ([`ring_offsets`]).
+type Rings = (Vec<(i32, i32)>, Vec<usize>);
+
+/// The pixel offsets within [`LARGE_RS`] of a centre, grouped by rounded
+/// distance: ring `d` is `offsets[starts[d]..starts[d + 1]]`.
+fn ring_offsets() -> &'static Rings {
+    static RINGS: std::sync::OnceLock<Rings> = std::sync::OnceLock::new();
+    RINGS.get_or_init(|| {
+        let mut all: Vec<(usize, i32, i32)> = Vec::new();
+        for j in -LARGE_RS..=LARGE_RS {
+            for i in -LARGE_RS..=LARGE_RS {
+                let d = round_sqrt(i * i + j * j);
+                if d <= LARGE_RS as usize {
+                    all.push((d, i, j));
+                }
+            }
+        }
+        all.sort_by_key(|&(d, i, j)| (d, j, i));
+        let mut starts = vec![0usize; LARGE_RS as usize + 2];
+        for &(d, _, _) in &all {
+            starts[d + 1] += 1;
+        }
+        for d in 0..=LARGE_RS as usize {
+            starts[d + 1] += starts[d];
+        }
+        (all.into_iter().map(|(_, i, j)| (i, j)).collect(), starts)
+    })
+}
+
+/// Side, in pixels, of the cells [`measure_large`] remembers as measured.
+const VISITED_CELL: i32 = 4;
+
+/// One bit per [`VISITED_CELL`]-pixel cell of the image: where [`measure_large`]
+/// has already been run.
+struct Visited {
+    bits: Vec<u64>,
+    nx: i32,
+    ny: i32,
+}
+
+impl Visited {
+    fn new(img: &ImageBuffer) -> Self {
+        let nx = (img.width as i32).div_euclid(VISITED_CELL) + 1;
+        let ny = (img.height as i32).div_euclid(VISITED_CELL) + 1;
+        Self {
+            bits: vec![0; (nx as usize * ny as usize).div_ceil(64)],
+            nx,
+            ny,
+        }
+    }
+
+    /// The bit of the cell holding pixel `(x, y)`, if it is in the image.
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        let (cx, cy) = (x.div_euclid(VISITED_CELL), y.div_euclid(VISITED_CELL));
+        (cx >= 0 && cy >= 0 && cx < self.nx && cy < self.ny).then(|| (cy * self.nx + cx) as usize)
+    }
+
+    fn get(&self, x: i32, y: i32) -> bool {
+        self.index(x, y)
+            .is_some_and(|i| self.bits[i / 64] & (1 << (i % 64)) != 0)
+    }
+
+    fn set(&mut self, x: i32, y: i32) {
+        if let Some(i) = self.index(x, y) {
+            self.bits[i / 64] |= 1 << (i % 64);
+        }
+    }
+
+    /// Every cell within `r` pixels (in x and y) of `(x, y)`.
+    fn set_square(&mut self, x: i32, y: i32, r: i32) {
+        for yy in ((y - r).max(0)..=y + r).step_by(VISITED_CELL as usize) {
+            for xx in ((x - r).max(0)..=x + r).step_by(VISITED_CELL as usize) {
+                self.set(xx, yy);
+            }
+            self.set(x + r, yy);
+        }
+        for xx in ((x - r).max(0)..=x + r).step_by(VISITED_CELL as usize) {
+            self.set(xx, y + r);
+        }
+    }
+}
+
+/// [`measure_large`] about the brightest pixel `(px, py)`, value `peak`: the star
+/// and its marked radius, if accepted, and the radius the measurement covered.
+fn measure_large_at(
+    img: &ImageBuffer,
+    px: i32,
+    py: i32,
+    peak: f64,
+    detect_abs: f64,
+) -> (Option<(Star, i32)>, i32) {
+    const R_OUT: i32 = LARGE_RS + 1;
+    let (w, h) = (img.width as i32, img.height as i32);
+    let at = |x: i32, y: i32| f64::from(img.data[y as usize * img.width + x as usize]);
+    let refused = |r: i32| (None, r);
+    if px - R_OUT <= 0 || px + R_OUT >= w - 1 || py - R_OUT <= 0 || py + R_OUT >= h - 1 {
+        return refused(LARGE_RS / 2);
+    }
+
+    // Local background and noise from the annulus LARGE_RS < r <= LARGE_RS + 1.
+    let mut ann: Vec<f64> = Vec::with_capacity(256);
+    for j in -R_OUT..=R_OUT {
+        for i in -R_OUT..=R_OUT {
+            let d2 = i * i + j * j;
+            if d2 > LARGE_RS * LARGE_RS && d2 <= R_OUT * R_OUT {
+                ann.push(at(px + i, py + j));
+            }
+        }
+    }
+    let bg = median_f64(&mut ann);
+    for v in &mut ann {
+        *v = (*v - bg).abs();
+    }
+    let sd = (median_f64(&mut ann) * 1.4826).max(1.0);
+    let height = peak - bg;
+    if height.is_nan() || height <= 10.0 * sd {
+        return refused(LARGE_RS / 2);
+    }
+    let cut = (3.0 * sd).max(LARGE_PEAK_FRACTION * height);
+
+    // Extent: walk out in rings until the count above the cut falls to a tenth
+    // of the fullest ring, as `measure` does.
+    // Also, per ring, the pixels above the detection threshold, and all pixels:
+    // the star's area is marked out to where its wings fall below the threshold,
+    // so that the scan does not take them for stars of their own.
+    // Rings are counted as the walk reaches them: most sources it is run on are
+    // a few pixels across, and the whole box is 4225 pixels.
+    let (offsets, starts) = ring_offsets();
+    let mut hist = [0u32; LARGE_RS as usize + 1];
+    let mut above = [0u32; LARGE_RS as usize + 1];
+    let mut counted = 0usize;
+    let mut count_to = |d: usize, hist: &mut [u32], above: &mut [u32]| {
+        while counted <= d {
+            for &(i, j) in &offsets[starts[counted]..starts[counted + 1]] {
+                let v = at(px + i, py + j);
+                hist[counted] += u32::from(v - bg > cut);
+                above[counted] += u32::from(v > detect_abs);
+            }
+            counted += 1;
+        }
+    };
+    let (mut r_ap, mut top, mut illuminated) = (0usize, 0u32, 0u32);
+    loop {
+        count_to(r_ap, &mut hist, &mut above);
+        illuminated += hist[r_ap];
+        top = top.max(hist[r_ap]);
+        if r_ap >= LARGE_RS as usize || hist[r_ap] * 10 <= top {
+            break;
+        }
+        r_ap += 1;
+    }
+    let ra = r_ap as i32;
+    if r_ap >= LARGE_RS as usize {
+        return refused(LARGE_RS);
+    }
+    if r_ap > 2 && f64::from(illuminated) < 0.35 * ((2 * r_ap).pow(2)) as f64 {
+        return refused(ra);
+    }
+
+    // Centroid and second moments of the pixels above the cut within the aperture,
+    // flux, HFD and SNR over it. The brightest pixel of a saturated disc can be
+    // anywhere on its plateau, and an aperture about it would cut the disc
+    // unevenly: re-centre the aperture on the centroid until it settles.
+    let (mut cx, mut cy) = (px, py);
+    let mut moments = [0.0f64; 8];
+    for _ in 0..4 {
+        if cx - ra < 1 || cx + ra >= w - 1 || cy - ra < 1 || cy + ra >= h - 1 {
+            return refused(ra);
+        }
+        let [
+            mut sw,
+            mut sx,
+            mut sy,
+            mut sxx,
+            mut syy,
+            mut sxy,
+            mut flux,
+            mut flux_r,
+        ] = [0.0; 8];
+        for j in -ra..=ra {
+            for i in -ra..=ra {
+                let v = at(cx + i, cy + j) - bg;
+                flux += v;
+                flux_r += v * f64::from(i * i + j * j).sqrt();
+                if v > cut && i * i + j * j <= ra * ra {
+                    let (fi, fj) = (f64::from(i), f64::from(j));
+                    sw += v;
+                    sx += v * fi;
+                    sy += v * fj;
+                    sxx += v * fi * fi;
+                    syy += v * fj * fj;
+                    sxy += v * fi * fj;
+                }
+            }
+        }
+        moments = [sw, sx, sy, sxx, syy, sxy, flux, flux_r];
+        if sw.is_nan() || sw <= 0.0 {
+            return refused(ra);
+        }
+        let (nx, ny) = (cx + (sx / sw).round() as i32, cy + (sy / sw).round() as i32);
+        if (nx, ny) == (cx, cy) {
+            break;
+        }
+        (cx, cy) = (nx, ny);
+    }
+    let [sw, sx, sy, sxx, syy, sxy, flux, flux_r] = moments;
+    if !(sw > 0.0 && flux > 0.0) {
+        return refused(ra);
+    }
+    let (mx, my) = (sx / sw, sy / sw);
+    let (cxx, cyy, cxy) = (sxx / sw - mx * mx, syy / sw - my * my, sxy / sw - mx * my);
+    let tr = cxx + cyy;
+    let disc = ((cxx - cyy).powi(2) + 4.0 * cxy * cxy).sqrt();
+    let (l1, l2) = (0.5 * (tr + disc), 0.5 * (tr - disc));
+    if l2 <= 0.0 || l1 > LARGE_MAX_ELONGATION * l2 {
+        return refused(ra);
+    }
+    let hfd = (2.0 * flux_r / flux).max(0.7);
+    let snr = flux / (flux + (r_ap as f64).powi(2) * core::f64::consts::PI * sd * sd).sqrt();
+    let star = Star {
+        x: f64::from(cx) + mx,
+        y: f64::from(cy) + my,
+        snr,
+        hfd,
+    };
+    // Marked out to the first ring less than half above the detection threshold,
+    // and never further than the ordinary measurement would mark.
+    let ring = |d: usize| (starts[d + 1] - starts[d]) as u32;
+    let mark = (r_ap..=LARGE_RS as usize)
+        .find(|&d| {
+            count_to(d, &mut hist, &mut above);
+            above[d] * 2 < ring(d)
+        })
+        .unwrap_or(LARGE_RS as usize) as i32
+        + 1;
+    let mark = mark.min((3.0 * hfd).round() as i32);
+    let ok = star.x.is_finite() && star.y.is_finite() && snr.is_finite() && hfd.is_finite();
+    (ok.then_some((star, mark)), mark.max(ra))
 }
 
 /// Detect stars in an image using the ASTAP 4-retry strategy.
@@ -411,10 +749,51 @@ pub fn find_stars_with_background(
     h: usize,
 ) -> (StarList, usize) {
     debug_assert_eq!((w, h), (img.width, img.height));
+    let mut stars = detect_all(img, bg, hfd_min, max_stars);
+    let raw_count = stars.len();
+
+    // Trim to max_stars brightest by SNR
+    if stars.len() > max_stars {
+        stars.sort_by(|a, b| b.snr.total_cmp(&a.snr));
+        stars.truncate(max_stars);
+    }
+
+    (StarList(stars), raw_count)
+}
+
+/// As [`find_stars_with_background`], and also the brightest `deep` of every star
+/// the cascade found (by SNR, however many that is beyond `max_stars`).
+///
+/// The cascade stops at the first level that brings the count to `max_stars`, and
+/// that level is scanned whole, so it usually finds more than `max_stars`; the
+/// solver's catalogue-seeded fallback uses them.
+#[must_use]
+pub fn find_stars_and_deep(
+    img: &ImageBuffer,
+    bg: &Background,
+    hfd_min: f64,
+    max_stars: usize,
+    deep: usize,
+) -> (StarList, usize, StarList) {
+    let mut stars = detect_all(img, bg, hfd_min, max_stars);
+    let raw_count = stars.len();
+    let mut more = stars.clone();
+    more.sort_by(|a, b| b.snr.total_cmp(&a.snr));
+    more.truncate(deep);
+    if stars.len() > max_stars {
+        stars.sort_by(|a, b| b.snr.total_cmp(&a.snr));
+        stars.truncate(max_stars);
+    }
+    (StarList(stars), raw_count, StarList(more))
+}
+
+/// Every star the detection cascade finds, in the order found.
+fn detect_all(img: &ImageBuffer, bg: &Background, hfd_min: f64, max_stars: usize) -> Vec<Star> {
+    let (w, h) = (img.width, img.height);
     // The scan works on the frame minus a one-pixel border; anything smaller has
     // nothing to scan, and the inset region's bounds would underflow.
     if w < 3 || h < 3 || img.data.len() < w * h {
-        return (StarList::default(), 0);
+        return Vec::new();
     }
     let mut stars: Vec<Star> = Vec::with_capacity(max_stars + 1000);
     // img_sa: persistent star-area map. 1 = already detected, 0 = free.
@@ -426,9 +805,13 @@ pub fn find_stars_with_background(
 
     // Cascade through detection levels.
     // Each level runs if the previous level found too few stars.
+    // Stars only `measure_large` accepts are bright stars the cascade has always
+    // missed; they do not count towards the stars that end it, so the same levels
+    // run, and find the same stars, as without them.
+    let mut n_large = 0usize;
     let mut level = 4u8;
-    while stars.len() < max_stars && level >= 1 {
-        let mut pass_stars: Vec<Star> = Vec::new();
+    while stars.len() - n_large < max_stars && level >= 1 {
+        let mut pass_stars: Vec<Found> = Vec::new();
 
         match level {
             4 => {
@@ -549,19 +932,12 @@ pub fn find_stars_with_background(
             _ => {}
         }
 
-        stars.extend(pass_stars);
+        n_large += pass_stars.iter().filter(|f| f.large).count();
+        stars.extend(pass_stars.into_iter().map(|f| f.star));
         level -= 1;
     }
 
-    let raw_count = stars.len();
-
-    // Trim to max_stars brightest by SNR
-    if stars.len() > max_stars {
-        stars.sort_by(|a, b| b.snr.total_cmp(&a.snr));
-        stars.truncate(max_stars);
-    }
-
-    (StarList(stars), raw_count)
+    stars
 }
 
 /// Scan the whole image with the shared marker map.
@@ -572,7 +948,7 @@ fn detect_pass_serial(
     img_sa: &mut [u8],
     thr: Thresholds,
     region: Region,
-    out: &mut Vec<Star>,
+    out: &mut Vec<Found>,
 ) {
     let w = img.width;
     let mut m = FullMarkers { data: img_sa, w };
@@ -585,7 +961,7 @@ fn detect_pass_banded(
     markers: &mut BandMarkers<'_>,
     thr: Thresholds,
     region: Region,
-    out: &mut Vec<Star>,
+    out: &mut Vec<Found>,
 ) {
     detect_pass_scan(img, markers, thr, region, out);
 }
@@ -619,7 +995,7 @@ fn detect_pass(
     img_sa: &mut [u8],
     thr: Thresholds,
     region: Region,
-    out: &mut Vec<Star>,
+    out: &mut Vec<Found>,
 ) {
     /// Dedup hash cell size (pixels) for merging band results.
     const CELL: f64 = 2.0;
@@ -640,7 +1016,7 @@ fn detect_pass(
     let band_rows = rows.div_ceil(n_bands);
     let w = img.width;
 
-    let results: Vec<Vec<Star>> = std::thread::scope(|scope| {
+    let results: Vec<Vec<Found>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..n_bands)
             .map(|b| {
                 let by0 = y0 + b * band_rows;
@@ -685,10 +1061,11 @@ fn detect_pass(
     // would allocate millions of buckets - so key a hash map by a 2-pixel cell. A
     // duplicate is within 1 px, so it can only be in the same or an adjacent cell.
     let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
-    let mut merged: Vec<Star> = Vec::new();
+    let mut merged: Vec<Found> = Vec::new();
 
     for band in results {
-        'star: for st in band {
+        'star: for found in band {
+            let st = &found.star;
             let xci = st.x.round() as usize;
             let yci = st.y.round() as usize;
             if xci < img.width && yci < img.height && img_sa[yci * img.width + xci] == 1 {
@@ -700,7 +1077,7 @@ fn detect_pass(
                 for ox in -1i32..=1 {
                     if let Some(bucket) = cells.get(&(gx + ox, gy + oy)) {
                         for &i in bucket {
-                            let o = &merged[i as usize];
+                            let o = &merged[i as usize].star;
                             if (o.x - st.x).abs() < 1.0 && (o.y - st.y).abs() < 1.0 {
                                 continue 'star;
                             }
@@ -709,15 +1086,16 @@ fn detect_pass(
                 }
             }
             cells.entry((gx, gy)).or_default().push(merged.len() as u32);
-            merged.push(st);
+            merged.push(found);
         }
     }
 
     // Mark the accepted stars in the shared map so later cascade levels skip them.
-    for st in &merged {
+    for found in &merged {
+        let st = &found.star;
         let xci = st.x.round() as usize;
         let yci = st.y.round() as usize;
-        let radius = (3.0 * st.hfd).round() as i32;
+        let radius = found.mark;
         let sqr_r = radius * radius;
         for n in -radius..=radius {
             for m in -radius..=radius {
@@ -803,7 +1181,7 @@ fn detect_pass_scan<M: Markers>(
     img_sa: &mut M,
     thr: Thresholds,
     region: Region,
-    out: &mut Vec<Star>,
+    out: &mut Vec<Found>,
 ) {
     let Thresholds {
         background,
@@ -819,6 +1197,9 @@ fn detect_pass_scan<M: Markers>(
     // value rather than a subtract-then-compare. This loop runs over every pixel of
     // the frame - ~18 million of them on a 4300px image.
     let detect_abs = background + detection_level;
+    // Where `measure_large` has already been run. Allocated on first use: most
+    // frames never need it.
+    let mut large_visited: Option<Visited> = None;
     let hot_abs = background + 4.0 * noise;
 
     for fy in y0..=y1 {
@@ -849,7 +1230,20 @@ fn detect_pass_scan<M: Markers>(
                 continue;
             }
 
-            if let Some(star) = measure_star(img, fx as i32, fy as i32)
+            let measured = match measure_for_scan(img, fx as i32, fy as i32) {
+                Ok((star, _)) => {
+                    let mark = (3.0 * star.hfd).round() as i32;
+                    Some((star, mark, false))
+                }
+                Err(Reject::TooLarge | Reject::NotADisc) => {
+                    // A bright star: measure it again at its own size.
+                    let visited = large_visited.get_or_insert_with(|| Visited::new(img));
+                    measure_large(img, fx as i32, fy as i32, detect_abs, visited)
+                        .map(|(star, mark)| (star, mark, true))
+                }
+                Err(Reject::NotAStar) => None,
+            };
+            if let Some((star, radius, large)) = measured
                 && star.snr > 10.0
                 && star.hfd > hfd_min
                 && star.hfd <= 30.0
@@ -863,7 +1257,6 @@ fn detect_pass_scan<M: Markers>(
                 }
 
                 // Mark circular star area to prevent re-detection
-                let radius = (3.0 * star.hfd).round() as i32;
                 let sqr_r = radius * radius;
                 for n in -radius..=radius {
                     for m in -radius..=radius {
@@ -876,7 +1269,11 @@ fn detect_pass_scan<M: Markers>(
                         }
                     }
                 }
-                out.push(star);
+                out.push(Found {
+                    star,
+                    mark: radius,
+                    large,
+                });
             }
         }
     }
@@ -1152,7 +1549,7 @@ mod tests {
             for &(x, y) in &truth {
                 let n = found
                     .iter()
-                    .filter(|s| (s.x - x).abs() < 0.2 && (s.y - y).abs() < 0.2)
+                    .filter(|f| (f.star.x - x).abs() < 0.2 && (f.star.y - y).abs() < 0.2)
                     .count();
                 assert_eq!(n, 1, "{name}: star at ({x}, {y}) found {n} times");
             }
@@ -1185,6 +1582,125 @@ mod tests {
         for s in &top.0 {
             let k = ((s.y - 30.0) / 55.0).round() * 6.0 + ((s.x - 30.0) / 45.0).round();
             assert!(k >= 20.0, "kept k = {k}: {s:?}");
+        }
+    }
+
+    /// A saturated disc as a photographic plate records a bright star: flat at
+    /// `level` out to `radius`, then a Gaussian edge of width `edge`.
+    fn add_saturated_disc(img: &mut ImageBuffer, cx: f64, cy: f64, radius: f64, level: f32) {
+        let edge = 2.0;
+        let rs = (radius + 5.0 * edge).ceil() as i32;
+        for dy in -rs..=rs {
+            for dx in -rs..=rs {
+                let (x, y) = (cx.round() as i32 + dx, cy.round() as i32 + dy);
+                if x < 0 || y < 0 || x as usize >= img.width || y as usize >= img.height {
+                    continue;
+                }
+                let r = (f64::from(x) - cx).hypot(f64::from(y) - cy);
+                let v = if r <= radius {
+                    1.0
+                } else {
+                    (-(r - radius).powi(2) / (2.0 * edge * edge)).exp()
+                };
+                let i = y as usize * img.width + x as usize;
+                img.data[i] = (img.data[i] + level * v as f32).min(30_000.0);
+            }
+        }
+    }
+
+    /// A bright star too large for the 14-pixel measuring box (a saturated disc 24
+    /// pixels across) used to be refused; it is measured again in a larger box,
+    /// at its true centre, and the ordinary stars around it are found as before.
+    #[test]
+    fn a_saturated_disc_is_measured_in_a_larger_box() {
+        let mut img = make_background_image(300, 300, 1000.0, 20.0);
+        add_saturated_disc(&mut img, 150.3, 140.6, 12.0, 25_000.0);
+        let small = [(50.0, 50.0), (250.0, 60.0), (60.0, 250.0), (240.0, 240.0)];
+        for &(x, y) in &small {
+            add_star(&mut img, x, y, 1.5, 3000.0);
+        }
+        let stars = find_stars(&img, 0.8, 500);
+        let big = stars
+            .0
+            .iter()
+            .find(|s| (s.x - 150.3).hypot(s.y - 140.6) < 1.0)
+            .expect("the saturated disc is found, centred");
+        assert!(
+            stars.0.iter().all(|s| s.snr <= big.snr),
+            "and is the brightest"
+        );
+        for &(x, y) in &small {
+            assert!(stars.0.iter().any(|s| (s.x - x).hypot(s.y - y) < 1.0));
+        }
+        assert_eq!(stars.len(), small.len() + 1, "{stars:?}");
+    }
+
+    /// A trail is not measured as a large star, however bright: the second-moment
+    /// test refuses it.
+    #[test]
+    fn a_bright_trail_is_not_a_large_star() {
+        let mut img = make_background_image(200, 200, 1000.0, 20.0);
+        for k in 0..60 {
+            add_star(
+                &mut img,
+                70.0 + k as f64,
+                100.0 + 0.2 * k as f64,
+                1.5,
+                20_000.0,
+            );
+        }
+        let stars = find_stars(&img, 0.5, 500);
+        assert!(stars.is_empty(), "{stars:?}");
+    }
+
+    /// Stars only the large measurement finds do not end the detection cascade:
+    /// the same levels run and find the same ordinary stars as without them.
+    #[test]
+    fn large_stars_do_not_cut_the_cascade_short() {
+        let mut img = make_background_image(400, 400, 1000.0, 10.0);
+        // Ten bright saturated discs, found at the first level.
+        for k in 0..10 {
+            add_saturated_disc(&mut img, 40.0 + 35.0 * k as f64, 40.0, 8.0, 25_000.0);
+        }
+        // Thirty faint stars, below the first levels' thresholds.
+        let mut faint = Vec::new();
+        for k in 0..30 {
+            let (x, y) = (40.0 + (k % 6) as f64 * 60.0, 120.0 + (k / 6) as f64 * 55.0);
+            add_star(&mut img, x, y, 1.5, 400.0);
+            faint.push((x, y));
+        }
+        let bg = get_background(&img, 10);
+        let (stars, _) = find_stars_with_background(&img, &bg, 0.8, 10, 400, 400);
+        let all = detect_all(&img, &bg, 0.8, 10);
+        // With max_stars = 10 the ten discs alone would have ended it.
+        let n_faint = all
+            .iter()
+            .filter(|s| faint.iter().any(|&(x, y)| (s.x - x).hypot(s.y - y) < 1.0))
+            .count();
+        assert_eq!(n_faint, faint.len());
+        assert_eq!(stars.len(), 10);
+    }
+
+    /// The deep list holds every star found, brightest first; the ordinary list is
+    /// what `find_stars_with_background` returns.
+    #[test]
+    fn the_deep_list_extends_the_ordinary_one() {
+        let mut img = make_background_image(300, 300, 1000.0, 10.0);
+        for k in 0..30 {
+            let (x, y) = (30.0 + (k % 6) as f64 * 45.0, 30.0 + (k / 6) as f64 * 55.0);
+            add_star(&mut img, x, y, 1.5, 500.0 + 300.0 * k as f32);
+        }
+        let bg = get_background(&img, 10);
+        let (top, raw) = find_stars_with_background(&img, &bg, 0.8, 10, 300, 300);
+        let (top2, raw2, deep) = find_stars_and_deep(&img, &bg, 0.8, 10, 1000);
+        assert_eq!(raw, raw2);
+        assert_eq!(deep.len(), raw);
+        assert!(deep.0.windows(2).all(|w| w[0].snr >= w[1].snr));
+        for (a, b) in top.0.iter().zip(&top2.0) {
+            assert_eq!((a.x, a.y), (b.x, b.y));
+        }
+        for (a, b) in top.0.iter().zip(&deep.0) {
+            assert_eq!((a.x, a.y), (b.x, b.y));
         }
     }
 }
