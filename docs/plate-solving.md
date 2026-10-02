@@ -1007,11 +1007,13 @@ solves, verifying 132.
   │                (IMAGE_NEIGHBOURS = CATALOG_NEIGHBOURS = 9)               │
   │      dedup: reject a quad whose centroid is within 1 px of an existing   │
   │             one (hash grid, 5-px cells, bucket capacity 10)              │
+  │      QuadGrid::build(): bucket the image quads on (ratios[4], ratios[3]) │
+  │             in cells one tolerance wide, once for the whole search       │
   ├──────────────────────────────────────────────────────────────────────────┤
   │ C. SPIRAL              max_distance = search_radius/FOV + 2              │
-  │    positions from SpiralSearch, evaluated in batches of `--threads`      │
-  │    (position 0 alone first); the lowest-index position that verifies     │
-  │    wins, so the result equals the serial search                          │
+  │    positions from SpiralSearch, handed out in order to `--threads`       │
+  │    workers (position 0 alone first); none starts after a success, and    │
+  │    the lowest-index position that verifies wins: the serial result       │
   │        (0,0),(1,0),(1,1),(0,1),(−1,1),(−1,0),(−1,−1),(0,−1),(1,−1),…     │
   │                                                                          │
   │        δ_db = δ_hint + FOV·sy         (pole wrap → flip RA by π)         │
@@ -1028,10 +1030,10 @@ solves, verifying 132.
   │        if n < min(-s, database limit) and the read holds ≥ 2.5 × that    │
   │           many: add the quads of the brightest k = n · oversize² ·       │
   │           long/short catalogue stars (the image's density), deduped      │
-  │        sort_catalog_quads(): sort by ratios[INDEX_RATIO = 4]             │
   │                                                                          │
-  │        find_matches_sorted(): binary-search ±t on ratios[4] over a       │
-  │                               compact f32 copy, then check all five      │
+  │        QuadGrid::find_matches(): each catalogue quad looks in the ≤ 3×3  │
+  │                               cells within ±t, f32 prefilter of all      │
+  │                               five ratios, then the f64 check            │
   │        vote_filter(): 2-D (scale × angle) accumulator, both parities     │
   │        if fewer than min_quads survive, use filter_by_scale() on the     │
   │           raw matches instead when it keeps more                         │
@@ -1148,6 +1150,75 @@ Cost: one extra catalogue read and a few hundred star pairings and small least-s
 fits per solve ([test-images.md §7.9](test-images.md#79-distortion-2026-10-02) has the timing); the model is never fitted at
 positions that fail.
 
+### 10.3c What a failed search costs (2026-10-02)
+
+A solve that succeeds stops at the first position that verifies, usually position 0. A
+search that fails visits every position out to `-r`, about `π (r / FOV)²` of them: 6 300
+for a 0.23° field at `-r 10`, 5 000 for a 0.25° one. So a failure costs the number of
+positions times the cost of one, and in 0.3.0 one position cost 12–75 ms of CPU, which
+is how the three `neg_hint_*` controls of [test-images.md §9.5](test-images.md#95-speed)
+took 72 s, 158 s and over 300 s on one thread.
+
+**Where a position's time went** (`perf`, one thread, `ls2_22` with a hint 41° off:
+500 image stars and 33 000 image quads, 500 catalogue stars and ~35 000
+catalogue quads per position):
+
+| | 0.3.0 | now |
+|---|---|---|
+| CPU per position | 75 ms | 9 ms |
+| matching image against catalogue quads | 84 % | 43 % |
+| building the catalogue quads (neighbours, dedup, `make_quad`) | 8 % | 36 % |
+| sorting the catalogue quads | 3 % | – |
+| reading the catalogue | 1 % | 6 % |
+
+`find_matches_indexed` binary-searched the catalogue quads on one ratio, so every image
+quad was checked against every catalogue quad within the tolerance of it on that ratio:
+about 100 candidates per quad, three million five-ratio checks per position, for under a
+thousand (chance) matches. What changed, none of it changing a result (every `.wcs` of
+the 635-entry corpus is byte-identical to 0.3.0's, true-centre and offset hint, with and
+without an index installed, and at `-r 10`):
+
+* **`QuadGrid`** (`quads/match.rs`): the image quads do not change from one position to
+  the next, so they are bucketed once per solve on two ratios (`r4`, `r3`), in cells one
+  tolerance wide, and each catalogue quad looks only in the 3×3 cells it can match. The
+  candidates are prefiltered on an `f32` copy of the five ratios, all five at once
+  without a branch per ratio (an early exit mispredicts on most candidates), and the
+  survivors re-checked in `f64`. The matches come out in the old order, which matters:
+  the vote and the Givens fit downstream are order-sensitive in the last bits.
+* **The neighbour search** in `find_many_quads` measured every star against every other
+  (O(n²) per position); it now walks out from the star in x order and stops when the
+  next star is further away in x than the furthest neighbour kept. Ties are broken by
+  index, as the full scan did, so the neighbours are the same.
+* **The duplicate check** keeps each hash bucket's (≤ 10) centres together instead of in
+  a `Vec` per bucket reached through the quad list; **`sort6`** is a branch-free
+  sorting network; the angle's `rem_euclid(π)` skips `fmod` inside (−π, π).
+* **Threads**: positions are handed to `--threads` workers one at a time from a shared
+  counter, instead of in batches that each waited for their slowest position. No
+  position starts after a success and those before it finish, so the answer is the
+  serial one.
+* **No catalogue sort.** The catalogue quads were sorted on `r4` at every position so
+  the binary search could work; the grid does not need it, and orders its matches by
+  image quad and then `r4`, as the sorted search returned them. Quads that tie exactly
+  on `r4` (those sharing their longest and shortest side) now come in list order rather
+  than the unstable sort's, and the vote and fit downstream could in principle see that
+  in the last bits; on the corpus no `.wcs` changed by a byte. The sort was a sixth of
+  a failed search.
+
+**What is left.** The quad build and the matching are proportional to the 126 quads per
+star that give the 9-NN quads their recall (§11.2). A position cannot be ruled out
+before its quads are matched: a wrong position still yields hundreds of chance matches,
+so neither the raw count nor anything before it says the position is hopeless.
+
+**Tried and dropped**: sorting each grid cell by a third ratio and binary-searching it
+(25 % slower: the cells hold about ten quads, and the search costs more than the scan);
+cells half or a third of the tolerance (no gain); padding the `f32` codes to eight lanes
+(slower); zero-initialised (`calloc`) bucket storage for the dedup table (no gain).
+
+**With an index installed** the spiral is not always needed at all: see §11.9 and
+[offline-index.md §2.7](offline-index.md#27-command-line). Without one, a failed search
+still visits every position: `-r` means "search this far", ASTAP does the same, and a
+work budget would have to be opt-in.
+
 ### 10.4 The blind solve (`pipeline/blind.rs`)
 
 ```
@@ -1208,7 +1279,8 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `search_radius` | 180° | `-r` | spiral radius |
 | binning | `round(1/arcsec_per_px)`, ≤ 16 | `-z` absent or 0 | auto downsample when `arcsec/px < 1`; any factor is capped so the binned image keeps ≥ 2 px a side |
 | `IMAGE_NEIGHBOURS` / `CATALOG_NEIGHBOURS` | 9 | `quads/build.rs` | quad group size for ≥ 30 stars |
-| `INDEX_RATIO` | 4 | `quads/match.rs` | ratio the catalogue quads are sorted and searched on |
+| `INDEX_RATIO` | 4 | `quads/match.rs` | ratio the matches are ordered on (after the image quad), as the catalogue sort of 0.3.0 ordered them |
+| `GRID_RATIOS` | (4, 3) | `quads/match.rs` | ratios the image quads are bucketed on for matching; cells are `-t` wide (at most 1024 a side) |
 | `min_quads` | `3 + n/140` | `solver.rs` | agreeing quads needed to attempt a fit |
 | `oversize` | 2.0 → 1.0 | `solver.rs` | catalogue window vs FOV |
 | `VERIFY_RADII` | 6, 3, 2 px | `solver.rs` | star-level verification match radii |
@@ -1236,6 +1308,9 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `VOTE_LOG_SCALE_STEP` | 0.05 | `blind.rs` | vote bin in ln(pixel scale) |
 | `N_ENTRY_STARS` | 30 | `blind.rs` | brightest detected stars used to build blind quads |
 | `BLIND_MAX_INDEXES` | 2 | `arcsec` binary | parallel index files |
+| `AUTO_MIN_RADIUS` | 10° | `arcsec` binary, `blind.rs` | smallest `-r` at which an installed arcsec index is consulted without `-i` |
+| `AUTO_SPIRAL_FIELDS` | 5 (at least 1°) | `arcsec` binary, `blind.rs` | radius the spiral searches before an automatically found index is consulted |
+| `ELSEWHERE_FIELDS` | 2 | `arcsec` binary, `blind.rs` | an index solution this many fields beyond `-r` ends the search, unsolved (§11.9, offline-index.md §2.7) |
 
 ### 10.6 Measured performance
 
@@ -1560,10 +1635,19 @@ The spiral is `O((r/FOV)²)` positions and each position rebuilds catalogue quad
 scratch. The blind front-end exists precisely to avoid this, but it needs astrometry.net
 index files — so a user with only the ASTAP database and no position hint has no fast path.
 
-The thread-usage half is **fixed**: spiral positions are evaluated a batch at a time across
-`--threads` workers (lowest spiral index wins, so the result matches the serial search),
-and detection, the background histogram and the pixel-range scan are parallel too. The
-blind stage still runs at most `BLIND_MAX_INDEXES = 2` index files concurrently.
+**Cheaper per position, 2026-10-02** (§10.3c): a position costs 4–8× less CPU than in
+0.3.0, with identical results, so a failed search is that much shorter (the `neg_hint_*`
+controls on one thread: 300+ s, 173 s and 81 s → 45 s, 41 s and 13 s). And with an index
+installed, a hint far from the field no longer costs the spiral at all: when the index
+finds nothing within `-r` but verifies the field more than two fields beyond it, the
+search ends there, unsolved, as it would have after the full spiral
+([offline-index.md §2.7](offline-index.md#27-command-line)).
+
+The thread-usage half is **fixed**: spiral positions are handed to `--threads` workers
+in spiral order (the lowest spiral index that verifies wins, so the result matches the
+serial search), and detection, the background histogram and the pixel-range scan are
+parallel too. The blind stage still runs at most `BLIND_MAX_INDEXES = 2` index files
+concurrently.
 
 ### 11.10 Smaller items
 
@@ -1810,6 +1894,11 @@ turns a wide-radius hinted solve from seconds into hundreds of milliseconds.
 `--threads`, and the lowest spiral index that verifies wins, so the answer is identical to
 the serial search. `dens_scutum` went from 7.6 s to 3.8 s. Choosing the best-verified
 position across a batch is still open.
+
+Since 2026-10-02 the batches are gone: workers take the next position from a shared
+counter, none starts after a success, and the lowest index that verifies still wins
+(`search_in_order` in `solver.rs`). A batch waited for its slowest position, and a
+position's cost varies several times with the catalogue's density there.
 
 ### 12.8 Proper motion
 

@@ -230,14 +230,33 @@ fn stage_one_radius(template: &arcsec_core::pipeline::SolveParams) -> f64 {
     (template.fov * AUTO_SPIRAL_FIELDS).max(AUTO_SPIRAL_MIN)
 }
 
-/// Solve with an arcsec index; `None` if nothing verified, and the caller runs
-/// the ordinary search.
+/// What [`index_stage`] concluded.
+pub enum IndexOutcome {
+    /// A verified solution within the search radius (or anywhere, for a named
+    /// index).
+    Solved(Box<arcsec_core::types::WcsSolution>),
+    /// The index verified the field outside the search radius, at this distance
+    /// from the hint (degrees): the ordinary search cannot find it within `-r`,
+    /// and there is no need to run it.
+    Elsewhere(f64),
+    /// Nothing verified; the caller runs the ordinary search.
+    NotFound,
+}
+
+/// Solve with an arcsec index.
 ///
 /// Named with `--index`, the index is tried first. Found automatically, the
 /// spiral first searches [`AUTO_SPIRAL_FIELDS`] fields round the hint (if there is
 /// a hint), which returns exactly what the full search would for any field that
 /// close; only then is the index consulted, limited to `-r` round the hint unless
 /// the radius is the whole sky.
+///
+/// When that finds nothing, the index is asked again without the limit. A field it
+/// verifies more than [`ELSEWHERE_FIELDS`] fields beyond `-r` is somewhere the rest
+/// of the spiral cannot reach, and the spiral would spend all of its time (the
+/// bulk of a failed search: 6000 positions for a 0.2° field at `-r 10`) finding
+/// nothing; [`IndexOutcome::Elsewhere`] tells the caller to stop. The answer is
+/// still "no solution", as `-r` requires: the field is not reported.
 ///
 /// `scale` is arcseconds per pixel of the image as solved (after binning);
 /// `scale_known` says whether it came from the user or the header rather than the
@@ -249,7 +268,7 @@ pub fn index_stage(
     has_hint: bool,
     scale: f64,
     scale_known: bool,
-) -> Option<arcsec_core::types::WcsSolution> {
+) -> IndexOutcome {
     use core::f64::consts::PI;
     if !ix.explicit && has_hint {
         let r0 = stage_one_radius(template);
@@ -262,7 +281,7 @@ pub fn index_stage(
             ..template.clone()
         };
         if let Ok(w) = arcsec_core::pipeline::solve_image(img, &near) {
-            return Some(w);
+            return IndexOutcome::Solved(Box::new(w));
         }
     }
     // Named with --index the solve is blind, as with Astrometry.net files; found
@@ -272,14 +291,46 @@ pub fn index_stage(
         template.dec_hint,
         template.search_radius + template.fov,
     ));
-    let mut wcs = solve_with_arcsec_index(img, &ix.path, template, scale, scale_known, within)?;
-    // The hinted solve started at the index's hypothesis; report the distance from
-    // the user's start position, as the spiral would.
-    let (s1, c1) = template.dec_hint.sin_cos();
-    let (s2, c2) = wcs.dec0.sin_cos();
-    let cos_d = (s1 * s2 + c1 * c2 * (wcs.ra0 - template.ra_hint).cos()).clamp(-1.0, 1.0);
-    wcs.search_dist_deg = cos_d.acos().to_degrees();
-    Some(wcs)
+    let from_hint = |w: &arcsec_core::types::WcsSolution| {
+        arcsec_core::math::coords::ang_sep(w.ra0, w.dec0, template.ra_hint, template.dec_hint)
+    };
+    if let Some(mut wcs) =
+        solve_with_arcsec_index(img, &ix.path, template, scale, scale_known, within)
+    {
+        // The hinted solve started at the index's hypothesis; report the distance
+        // from the user's start position, as the spiral would.
+        wcs.search_dist_deg = from_hint(&wcs).to_degrees();
+        return IndexOutcome::Solved(Box::new(wcs));
+    }
+    if within.is_some()
+        && let Some(wcs) =
+            solve_with_arcsec_index(img, &ix.path, template, scale, scale_known, None)
+    {
+        let sep = from_hint(&wcs);
+        if beyond_reach(sep, template) {
+            log::info!(
+                "Blind index: the field is at RA={:.4}° Dec={:.4}°, {:.1}° from the hint, \
+                 outside the search radius; not searching it.",
+                wcs.ra0.to_degrees(),
+                wcs.dec0.to_degrees(),
+                sep.to_degrees()
+            );
+            return IndexOutcome::Elsewhere(sep.to_degrees());
+        }
+    }
+    IndexOutcome::NotFound
+}
+
+/// How many fields past `-r` a field the index verifies must lie for the
+/// ordinary search to be skipped. The spiral reads catalogue windows up to half a
+/// step and up to a field beyond `-r`, so a field just outside the radius could
+/// still be matched there; two fields is clear of that.
+const ELSEWHERE_FIELDS: f64 = 2.0;
+
+/// Whether a field centred `sep` radians from the hint is out of the ordinary
+/// search's reach.
+fn beyond_reach(sep: f64, template: &arcsec_core::pipeline::SolveParams) -> bool {
+    sep > template.search_radius + ELSEWHERE_FIELDS * template.fov
 }
 
 /// Solve with an arcsec blind index; `None` if it found nothing that verified.
@@ -345,6 +396,31 @@ mod tests {
         assert!(is_index_name("index-5200-07.fits"));
         assert!(!is_index_name("index-4107.fits.part"));
         assert!(!is_index_name("d50_0101.1476"));
+    }
+
+    #[test]
+    fn only_a_field_two_fields_past_the_radius_is_beyond_reach() {
+        use arcsec_core::pipeline::{SearchSpeed, SolveMethod, SolveParams};
+        let deg = f64::to_radians;
+        let t = SolveParams {
+            ra_hint: 0.0,
+            dec_hint: 0.0,
+            fov: deg(0.5),
+            search_radius: deg(10.0),
+            quad_tolerance: 0.007,
+            hfd_min: 1.5,
+            max_stars: 500,
+            db_path: PathBuf::new(),
+            db_name: "d80".into(),
+            binning: 1,
+            method: SolveMethod::Quads,
+            speed: SearchSpeed::Auto,
+            threads: 1,
+        };
+        assert!(!beyond_reach(deg(5.0), &t));
+        assert!(!beyond_reach(deg(10.9), &t));
+        assert!(beyond_reach(deg(11.1), &t));
+        assert!(beyond_reach(deg(40.0), &t));
     }
 
     #[test]
