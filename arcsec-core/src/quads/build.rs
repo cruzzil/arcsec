@@ -41,37 +41,44 @@ fn fast_atan2(y: f64, x: f64) -> f64 {
     }
 }
 
-/// Build a sorted `[d1, d2, d3, d4, d5, d6]` from exactly six distances.
-/// Uses a fixed comparison sequence rather than a general sort: with six elements the
-/// comparisons are known ahead of time.
-fn sort6(mut d: [f64; 6]) -> [f64; 6] {
-    macro_rules! swap_if {
-        ($a:expr, $b:expr) => {
-            if d[$b] > d[$a] {
-                d.swap($a, $b);
-            }
-        };
+/// `a.rem_euclid(PI)`, bit for bit, without its `fmod` call for |a| < π, where
+/// `a % PI` is `a` exactly: `fast_atan2` returns -π..=π, so that is nearly always.
+#[inline(always)]
+fn mod_pi(a: f64) -> f64 {
+    use core::f64::consts::PI;
+    let r = if a.abs() < PI { a } else { a % PI };
+    if r < 0.0 { r + PI } else { r }
+}
+
+/// Build a sorted `[d1, d2, d3, d4, d5, d6]` (largest first) from exactly six
+/// distances.
+///
+/// A sorting network of `max`/`min` pairs, which compile to branch-free
+/// instructions: the comparisons in a quad's distances go either way at random, so
+/// a compare-and-swap that branches mispredicts half the time, at every one of the
+/// tens of thousands of quads built per spiral position. Any correct sort gives the
+/// same array.
+fn sort6(d: [f64; 6]) -> [f64; 6] {
+    let mut d = d;
+    // The optimal 12-comparator network for six inputs.
+    for (a, b) in [
+        (0, 5),
+        (1, 3),
+        (2, 4),
+        (1, 2),
+        (3, 4),
+        (0, 3),
+        (2, 5),
+        (0, 1),
+        (2, 3),
+        (4, 5),
+        (1, 2),
+        (3, 4),
+    ] {
+        let (hi, lo) = (d[a].max(d[b]), d[a].min(d[b]));
+        d[a] = hi;
+        d[b] = lo;
     }
-    // Pass 1
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    swap_if!(2, 3);
-    swap_if!(3, 4);
-    swap_if!(4, 5);
-    // Pass 2
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    swap_if!(2, 3);
-    swap_if!(3, 4);
-    // Pass 3
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    swap_if!(2, 3);
-    // Pass 4
-    swap_if!(0, 1);
-    swap_if!(1, 2);
-    // Pass 5
-    swap_if!(0, 1);
     d
 }
 
@@ -102,7 +109,7 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
     let (ai, bi) = PAIR_IDXS[max_k];
     let dx = pts[bi].0 - pts[ai].0;
     let dy = pts[bi].1 - pts[ai].1;
-    let d1_angle = fast_atan2(dy, dx).rem_euclid(core::f64::consts::PI);
+    let d1_angle = mod_pi(fast_atan2(dy, dx));
 
     let d = sort6(raw);
     let d1 = d[0];
@@ -554,6 +561,46 @@ mod tests {
     fn sort6_is_descending() {
         let d = sort6([3.0, 1.0, 5.0, 2.0, 4.0, 6.0]);
         assert_eq!(d, [6.0, 5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn sort6_sorts_every_arrangement_with_and_without_ties() {
+        // Every 0/1 input sorted means the network sorts everything (the 0-1
+        // principle); random inputs with ties check it against the library sort.
+        for bits in 0u32..64 {
+            let d: [f64; 6] = core::array::from_fn(|k| f64::from((bits >> k) & 1));
+            let mut want = d;
+            want.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(sort6(d), want, "{bits:06b}");
+        }
+        let mut rng = crate::test_support::Rng::new(4);
+        for _ in 0..1000 {
+            let d: [f64; 6] = core::array::from_fn(|_| (rng.uniform() * 4.0).floor());
+            let mut want = d;
+            want.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(sort6(d), want);
+        }
+    }
+
+    #[test]
+    fn mod_pi_is_rem_euclid() {
+        use core::f64::consts::PI;
+        let mut rng = crate::test_support::Rng::new(8);
+        let edges = [
+            0.0,
+            -0.0,
+            PI,
+            -PI,
+            PI / 2.0,
+            -PI / 2.0,
+            1e-300,
+            -1e-300,
+            3.0 * PI,
+        ];
+        let random = (0..5000).map(|_| rng.range(-PI, PI));
+        for a in edges.into_iter().chain(random) {
+            assert_eq!(mod_pi(a).to_bits(), a.rem_euclid(PI).to_bits(), "{a}");
+        }
     }
 
     /// The neighbour list a scan of every star in index order keeps (the search
