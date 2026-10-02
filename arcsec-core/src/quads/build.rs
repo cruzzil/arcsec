@@ -130,48 +130,39 @@ fn make_quad(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> 
 /// The centres of the quads accepted so far, hashed into buckets of at most
 /// [`BUCKET_CAPACITY`] for the duplicate check.
 ///
-/// One flat array of chained entries rather than a `Vec` per bucket: the
-/// catalogue quads are rebuilt at every spiral position, and a `Vec` per bucket
-/// meant thousands of small allocations each time, while looking a centre up
-/// through the quad list cost a cache miss per comparison. Which centres a
-/// bucket holds, and so which quads are kept, is unchanged.
+/// Each bucket's centres sit together in one array rather than in a `Vec` per
+/// bucket, looked up through the quad list: the catalogue quads are rebuilt at
+/// every spiral position, which meant thousands of small allocations each time
+/// and a cache miss per comparison. Which centres a bucket holds, and so which
+/// quads are kept, is unchanged.
 struct CentreTable {
-    /// First entry of each bucket, or `u32::MAX`.
-    head: Vec<u32>,
     /// Entries in each bucket.
     len: Vec<u8>,
-    /// `(centre x, centre y, next entry in the bucket)`.
-    entries: Vec<(f64, f64, u32)>,
+    /// Each bucket's centres.
+    xy: Vec<[(f64, f64); BUCKET_CAPACITY]>,
 }
 
 impl CentreTable {
     fn new(buckets: usize) -> Self {
         Self {
-            head: vec![u32::MAX; buckets],
             len: vec![0; buckets],
-            entries: Vec::new(),
+            xy: vec![[(0.0, 0.0); BUCKET_CAPACITY]; buckets],
         }
     }
 
     /// Whether bucket `b` holds a centre within 1 unit of `(cx, cy)` in both axes.
     fn near(&self, b: usize, cx: f64, cy: f64) -> bool {
-        let mut e = self.head[b];
-        while e != u32::MAX {
-            let (x, y, next) = self.entries[e as usize];
-            if (cx - x).abs() < 1.0 && (cy - y).abs() < 1.0 {
-                return true;
-            }
-            e = next;
-        }
-        false
+        self.xy[b][..usize::from(self.len[b])]
+            .iter()
+            .any(|&(x, y)| (cx - x).abs() < 1.0 && (cy - y).abs() < 1.0)
     }
 
     /// Record a centre in bucket `b`, unless the bucket is full.
     fn insert(&mut self, b: usize, cx: f64, cy: f64) {
-        if usize::from(self.len[b]) < BUCKET_CAPACITY {
+        let n = usize::from(self.len[b]);
+        if n < BUCKET_CAPACITY {
+            self.xy[b][n] = (cx, cy);
             self.len[b] += 1;
-            self.entries.push((cx, cy, self.head[b]));
-            self.head[b] = (self.entries.len() - 1) as u32;
         }
     }
 }
