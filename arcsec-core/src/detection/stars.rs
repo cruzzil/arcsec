@@ -717,6 +717,32 @@ pub fn find_stars_with_background(
     (StarList(stars), raw_count)
 }
 
+/// As [`find_stars_with_background`], and also the brightest `deep` of every star
+/// the cascade found (by SNR, however many that is beyond `max_stars`).
+///
+/// The cascade stops at the first level that brings the count to `max_stars`, and
+/// that level is scanned whole, so it usually finds more than `max_stars`; the
+/// solver's catalogue-seeded fallback uses them.
+#[must_use]
+pub fn find_stars_and_deep(
+    img: &ImageBuffer,
+    bg: &Background,
+    hfd_min: f64,
+    max_stars: usize,
+    deep: usize,
+) -> (StarList, usize, StarList) {
+    let mut stars = detect_all(img, bg, hfd_min, max_stars);
+    let raw_count = stars.len();
+    let mut more = stars.clone();
+    more.sort_by(|a, b| b.snr.total_cmp(&a.snr));
+    more.truncate(deep);
+    if stars.len() > max_stars {
+        stars.sort_by(|a, b| b.snr.total_cmp(&a.snr));
+        stars.truncate(max_stars);
+    }
+    (StarList(stars), raw_count, StarList(more))
+}
+
 /// Every star the detection cascade finds, in the order found.
 fn detect_all(img: &ImageBuffer, bg: &Background, hfd_min: f64, max_stars: usize) -> Vec<Star> {
     let (w, h) = (img.width, img.height);
@@ -1609,5 +1635,28 @@ mod tests {
             .count();
         assert_eq!(n_faint, faint.len());
         assert_eq!(stars.len(), 10);
+    }
+
+    /// The deep list holds every star found, brightest first; the ordinary list is
+    /// what `find_stars_with_background` returns.
+    #[test]
+    fn the_deep_list_extends_the_ordinary_one() {
+        let mut img = make_background_image(300, 300, 1000.0, 10.0);
+        for k in 0..30 {
+            let (x, y) = (30.0 + (k % 6) as f64 * 45.0, 30.0 + (k / 6) as f64 * 55.0);
+            add_star(&mut img, x, y, 1.5, 500.0 + 300.0 * k as f32);
+        }
+        let bg = get_background(&img, 10);
+        let (top, raw) = find_stars_with_background(&img, &bg, 0.8, 10, 300, 300);
+        let (top2, raw2, deep) = find_stars_and_deep(&img, &bg, 0.8, 10, 1000);
+        assert_eq!(raw, raw2);
+        assert_eq!(deep.len(), raw);
+        assert!(deep.0.windows(2).all(|w| w[0].snr >= w[1].snr));
+        for (a, b) in top.0.iter().zip(&top2.0) {
+            assert_eq!((a.x, a.y), (b.x, b.y));
+        }
+        for (a, b) in top.0.iter().zip(&deep.0) {
+            assert_eq!((a.x, a.y), (b.x, b.y));
+        }
     }
 }

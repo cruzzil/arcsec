@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::catalog::read_catalog_stars;
 use crate::catalog::{CatalogLayout, CatalogStar};
 use crate::detection::get_background;
-use crate::detection::stars::find_stars_with_background;
+use crate::detection::stars::find_stars_and_deep;
 use crate::error::{ArcsecError, Result};
 use crate::math::coords::{ang_sep, equatorial_standard, standard_equatorial};
 use crate::math::lsq::{fit_affine, solve_plate_constants};
@@ -1178,6 +1178,133 @@ fn recentre(
     (verified, ra_db, dec_db)
 }
 
+/// Most detections the catalogue-seeded fallback indexes (the brightest by SNR),
+/// beyond the `-s` the spiral uses.
+const SEEDED_MAX_STARS: usize = 2000;
+/// The fallback's catalogue window about the hint, in fields: wide enough to hold
+/// the field when the hint is a third of a field off.
+const SEEDED_WINDOW: f64 = 1.5;
+/// Catalogue stars (the window's brightest) that seed quads, and that a candidate
+/// transform is scored on.
+const SEEDED_CAT_STARS: usize = 150;
+/// Most catalogue quads tried.
+const SEEDED_MAX_QUADS: usize = 600;
+/// Fractional tolerance on the hint's pixel scale.
+const SEEDED_SCALE_TOL: f64 = 0.05;
+/// How close (pixels) a predicted star must fall to a detection.
+const SEEDED_PROBE_PX: f64 = 2.5;
+/// Census hits a transform needs before it is verified.
+const SEEDED_MIN_CENSUS: usize = 10;
+/// Work budget: one unit per transform tried, per catalogue star scored, and
+/// [`SeedParams::verify_cost`](crate::quads::seeded::SeedParams) per candidate
+/// verified. A deterministic count, so the cost of a search that finds nothing is
+/// bounded and repeatable: about half a second of one core.
+const SEEDED_BUDGET: u64 = 40_000_000;
+
+/// Catalogue-seeded fallback (`quads::seeded`): when the spiral finds nothing,
+/// search the catalogue window about the hint for a transform without trusting the
+/// image's brightness ranking, and verify any candidate exactly as a spiral
+/// position's plate is verified.
+fn seeded_fallback(ctx: &SpiralCtx<'_>, deep: &StarList) -> Option<PositionOutcome> {
+    use crate::quads::seeded::{ImageIndex, SeedParams, max_backbone_px, search};
+    let params = ctx.params;
+    if deep.len() < 30 {
+        return None;
+    }
+    let (ra, dec) = (params.ra_hint, params.dec_hint);
+    let n_read = (ctx.nrstars_required as f64 * (SEEDED_WINDOW / ctx.oversize).powi(2)).round();
+    let cat_raw = read_catalog_stars(
+        &params.db_path,
+        &params.db_name,
+        ra,
+        dec,
+        params.fov * SEEDED_WINDOW,
+        n_read as usize,
+    )
+    .ok()
+    .filter(|v| v.len() >= 8)?;
+    let mag_limit = cat_raw
+        .iter()
+        .map(|s| s.mag)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let cat_list = project(&cat_raw, ra, dec);
+    let cat_pos: Vec<(f64, f64)> = cat_list.0.iter().map(|s| (s.x, s.y)).collect();
+    let sp = SeedParams {
+        scale: ctx.accept.expected_scale,
+        scale_tol: SEEDED_SCALE_TOL,
+        width: ctx.img.width as f64,
+        height: ctx.img.height as f64,
+        seed_stars: SEEDED_CAT_STARS,
+        max_quads: SEEDED_MAX_QUADS,
+        census_stars: SEEDED_CAT_STARS,
+        min_census: SEEDED_MIN_CENSUS,
+        // Three matching passes over the catalogue and their fits: measured at
+        // about 30 probes' time per catalogue star.
+        verify_cost: 30 * cat_pos.len() as u64,
+    };
+    let index = ImageIndex::new(
+        deep.0.iter().map(|s| (s.x, s.y)).collect(),
+        max_backbone_px(&cat_pos, &sp),
+        SEEDED_PROBE_PX,
+    );
+    log::info!(
+        "Catalogue-seeded search: {} database stars about the hint, {} image stars, {} pairs.",
+        cat_raw.len(),
+        index.len(),
+        index.n_pairs()
+    );
+    let mut budget = SEEDED_BUDGET;
+    let mut verified = None;
+    let mut candidates = 0usize;
+    let cand = search(&index, &cat_pos, &sp, &mut budget, |c| {
+        candidates += 1;
+        verified = verify_and_refit(
+            ctx.stars,
+            &cat_list,
+            &c.plate,
+            ctx.img.width,
+            ctx.img.height,
+            &ctx.accept,
+        );
+        verified.is_some()
+    });
+    log::info!(
+        "Catalogue-seeded search: {candidates} candidates verified, {} of {SEEDED_BUDGET} work spent.",
+        SEEDED_BUDGET - budget
+    );
+    let cand = cand?;
+    let verified = verified?;
+    log::info!(
+        "Verified {} stars against the catalogue, residual {:.2}\"",
+        verified.n(),
+        verified.rms
+    );
+    let seeds = Seeds {
+        img: cand.img.clone(),
+        cat: cand.cat.clone(),
+        ra,
+        dec,
+    };
+    let (verified, ra_db, dec_db) = recentre(ctx, &cat_raw, verified, ra, dec);
+    let (verified, ra_db, dec_db, refused) =
+        match model_distortion(ctx, &cat_raw, &seeds, verified, ra_db, dec_db) {
+            Modelled::Linear(v) => (v, ra_db, dec_db, false),
+            Modelled::Distorted(v, ra_c, dec_c) => (v, ra_c, dec_c, false),
+            Modelled::Refused(v) => (v, ra_db, dec_db, true),
+        };
+    Some(PositionOutcome {
+        idx: usize::MAX,
+        ra_db,
+        dec_db,
+        sep_deg: 0.0,
+        verified,
+        n_matched: cand.img.len(),
+        n_raw: candidates,
+        mag_limit,
+        refused,
+    })
+}
+
 /// Solve the WCS for an image against an ASTAP star database.
 ///
 /// Walks a square spiral out from the hint in steps of one field of view, and
@@ -1222,14 +1349,8 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     // --- Phase A: star detection ---
     let bg = get_background(img, params.max_stars);
     log::info!("Start finding stars");
-    let (stars, stars_raw) = find_stars_with_background(
-        img,
-        &bg,
-        params.hfd_min,
-        params.max_stars,
-        img.width,
-        img.height,
-    );
+    let (stars, stars_raw, deep_stars) =
+        find_stars_and_deep(img, &bg, params.hfd_min, params.max_stars, SEEDED_MAX_STARS);
     log::info!(
         "{} stars found of the requested {}. Background value is {:.0}. \
          Detection level used {:.0} above background. Star level is {:.0} above background. \
@@ -1415,6 +1536,11 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         }
 
         start_idx += batch_len;
+    }
+
+    // Nothing verified anywhere: the catalogue-seeded fallback, once, about the hint.
+    if winner.is_none() && params.method == SolveMethod::Quads {
+        winner = seeded_fallback(&ctx, &deep_stars);
     }
 
     if let Some(o) = winner.as_ref().filter(|o| o.refused) {
@@ -2201,7 +2327,9 @@ mod tests {
 
     /// A field showing far more stars than the database holds there: with every
     /// detection the image quads are built from stars the catalogue does not have,
-    /// and it does not solve; capped at the database's density it does.
+    /// and the spiral matches nothing (the catalogue-seeded fallback, whose quads
+    /// come from the catalogue, then finds it); capped at the database's density
+    /// the spiral solves it.
     #[test]
     fn a_frame_deeper_than_the_database_solves_at_the_database_limit() {
         // 0.5° x 0.42° at 3"/px: 0.21 deg², ~450 stars in the frame.
@@ -2220,10 +2348,8 @@ mod tests {
         p.fov = (600.0 * 3.0 / 3600.0_f64).to_radians();
         p.search_radius = 0.0;
         p.db_name = "t17".into();
-        assert!(
-            solve_image(&s.img, &p).is_err(),
-            "every detection: should not match"
-        );
+        let wcs = solve_image(&s.img, &p).expect("every detection: the fallback solves");
+        assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
         p.db_name = "t02".into();
         let wcs = solve_image(&s.img, &p).expect("solve at the database limit");
         assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
@@ -2348,6 +2474,79 @@ mod tests {
         p.search_radius = 0.0;
         let wcs = solve_image(&img, &p).expect("shallow solve");
         assert!(s.truth.max_error_arcsec(&wcs) < 2.0);
+    }
+
+    /// The catalogue-seeded fallback on its own, as `solve_image` runs it after a
+    /// spiral that found nothing: the plate it verifies, as a WCS.
+    fn fallback_only(img: &ImageBuffer, p: &SolveParams) -> Option<WcsSolution> {
+        let bg = get_background(img, p.max_stars);
+        let (stars, _, deep) =
+            find_stars_and_deep(img, &bg, p.hfd_min, p.max_stars, SEEDED_MAX_STARS);
+        let n = stars.len();
+        let oversize = if n < 35 {
+            2.0
+        } else if n > 140 {
+            1.0
+        } else {
+            2.0 * (35.0 / n as f64).sqrt()
+        };
+        let (quads, tris) = (crate::types::QuadList::default(), Default::default());
+        let ctx = SpiralCtx {
+            params: p,
+            img,
+            stars: &stars,
+            img_quads: &quads,
+            img_tris: &tris,
+            nrstars_image: n,
+            star_limit: p.max_stars,
+            nrstars_required: (p.max_stars as f64 * oversize * oversize).round() as usize,
+            oversize,
+            min_quads: 3 + n / 140,
+            step_size: p.fov,
+            accept: Acceptance::new(n, p, img),
+            aspect: img.width.max(img.height) as f64 / img.width.min(img.height) as f64,
+        };
+        let o = seeded_fallback(&ctx, &deep)?;
+        assert!(!o.refused);
+        Some(derive_wcs(
+            o.ra_db,
+            o.dec_db,
+            &o.verified.plate,
+            img.width,
+            img.height,
+        ))
+    }
+
+    /// The fallback finds a field from the hint alone, a third of a field off, and
+    /// at either parity.
+    #[test]
+    fn the_seeded_fallback_solves_a_field_on_its_own() {
+        for (mirrored, seed) in [(false, 71), (true, 72)] {
+            let truth = TruthWcs::new(deg(201.0), deg(-43.0), 4.0, 61.0, mirrored, 800, 600);
+            let s = scene(truth, Db::Areas1476, 400, seed);
+            // The field along the long side, as `solve_image` takes it.
+            let fov = 800.0 * 4.0 / 3600.0;
+            let mut p = params_for(&s, truth.ra0 + deg(0.3 * fov), truth.dec0 - deg(0.2 * fov));
+            p.fov = deg(fov);
+            let wcs = fallback_only(&s.img, &p).expect("the fallback solves");
+            assert!(
+                s.truth.max_error_arcsec(&wcs) < 2.0,
+                "mirrored {mirrored}: {:.2}\"",
+                s.truth.max_error_arcsec(&wcs)
+            );
+        }
+    }
+
+    /// Nor does it find anything where there is nothing: a field the catalogue
+    /// does not cover, searched with the whole budget.
+    #[test]
+    fn the_seeded_fallback_does_not_invent_a_field() {
+        let truth = TruthWcs::new(deg(201.0), deg(-43.0), 4.0, 61.0, false, 800, 600);
+        let s = scene(truth, Db::Areas1476, 400, 73);
+        // The same image, hinted (and so read) two degrees away.
+        let mut p = params_for(&s, truth.ra0, truth.dec0 + deg(2.0));
+        p.fov = deg(800.0 * 4.0 / 3600.0);
+        assert!(fallback_only(&s.img, &p).is_none());
     }
 
     /// A plate is not accepted for a count of matches chance would give in a
