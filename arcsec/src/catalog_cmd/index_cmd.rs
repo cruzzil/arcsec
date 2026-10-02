@@ -228,6 +228,17 @@ pub fn run_build(
     {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
+    // Find out now, not after the build, if the file cannot be written: an ASTAP
+    // folder under Program Files or /opt is read-only to a normal user.
+    std::fs::File::create(&part)
+        .and_then(|_| std::fs::remove_file(&part))
+        .map_err(|e| {
+            format!(
+                "cannot write the index to {}: {e}\n  If this is a shared or system folder (ASTAP's under Program Files, say), \
+                 run this once as administrator, or build elsewhere with -o and pass that file to the solver with -i.",
+                out.display()
+            )
+        })?;
 
     let t0 = Instant::now();
     let mut progress = Progress::new(est, t0);
