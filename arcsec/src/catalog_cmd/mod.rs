@@ -285,13 +285,16 @@ fn cmd_recommend(dir: &Path, fov_deg: f64, want_photometry: bool) {
         }
     }
     // The blind index is built from the solving database on install, so there is
-    // nothing to choose; say what it will cost.
+    // nothing to choose; say what it will cost. The default index stops at 0.3°
+    // fields, so a narrower field needs the 0.06° tier, asked for at install.
+    let narrow = fov_deg < NARROW_INDEX_FOV;
+    let index_flag = if narrow { " --index-min-fov 0.15" } else { "" };
     if let Some(e) = pick(Purpose::Solving)
-        && let Some(plan) = Plan::for_databases(&[e.id], None, None)
+        && let Some(plan) = Plan::for_databases(&[e.id], narrow.then_some(0.15), None)
     {
         let est = Estimate::of(&plan, arcsec_core::max_threads());
         println!(
-            "  blind index  built from {} on install, no download: ~{}, {}",
+            "  blind index  built from {} on install{index_flag}, no download: ~{}, {}",
             e.id,
             human(est.bytes),
             plan::duration(est.secs)
@@ -308,9 +311,13 @@ fn cmd_recommend(dir: &Path, fov_deg: f64, want_photometry: bool) {
     .map(|e| e.id)
     .collect();
     if !ids.is_empty() {
-        println!("\n  arcsec catalog install {}", ids.join(" "));
+        println!("\n  arcsec catalog install {}{index_flag}", ids.join(" "));
     }
 }
+
+/// Fields narrower than this (degrees) need the blind index's deepest tier, which
+/// the default index leaves out; `recommend` adds `--index-min-fov 0.15` for them.
+const NARROW_INDEX_FOV: f64 = 0.3;
 
 /// The blind-index lines of `catalog list`: each index with its source and any
 /// staleness, or what building one would take.
