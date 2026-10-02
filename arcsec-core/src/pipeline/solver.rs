@@ -900,7 +900,54 @@ fn model_distortion(
         );
         return Modelled::Refused(verified);
     }
+    if r.img_pos.len() as f64 >= MODEL_PAIRS_REFIT * verified.n() as f64
+        && let Some(v) = refit_linear(&r.img_pos, &r.cat_pos)
+    {
+        log::info!(
+            "The full-frame match pairs {} stars against {} verified: refitting the linear plate to them.",
+            r.img_pos.len(),
+            verified.n()
+        );
+        return Modelled::Linear(v);
+    }
     Modelled::Linear(verified)
+}
+
+/// When the distortion model's full-frame match pairs at least this many times as
+/// many stars within the final radius as the verified plate did, the verified
+/// plate was fitted to part of the frame: the linear plate is refitted to the
+/// model's pairs.
+///
+/// With the hint a third of a field off, the spiral position that verifies holds
+/// catalogue stars over only part of the frame, and its plate (and the re-centred
+/// one, which pairs stars as that plate predicts them) fits that part. The model's
+/// catalogue is read about the image centre and covers it all. On the corpus with
+/// the offset hint this moved the median worst corner from 0.70″ to 0.59″ (107
+/// images closer to the truth by more than 0.2″, 11 further) and turned two
+/// corners a pixel out (`wide_shassa_03`, `type_m45`) and one inexact plate
+/// (`tess_34`) into correct ones; with the true-centre hint it changes three
+/// solves of 592, none by a status.
+const MODEL_PAIRS_REFIT: f64 = 1.5;
+
+/// A linear plate fitted to star pairs, with its rms, as a verification record.
+fn refit_linear(img_pos: &[(f64, f64)], cat_pos: &[(f64, f64)]) -> Option<Verified> {
+    let plate = solve_plate_constants(img_pos, cat_pos).ok()?;
+    let sq: f64 = img_pos
+        .iter()
+        .zip(cat_pos)
+        .map(|(&(x, y), &(xc, yc))| {
+            (plate.a * x + plate.b * y + plate.c - xc).powi(2)
+                + (plate.d * x + plate.e * y + plate.f - yc).powi(2)
+        })
+        .sum();
+    let rms = (sq / img_pos.len().max(1) as f64).sqrt();
+    Some(Verified {
+        plate,
+        rms,
+        img_pos: img_pos.to_vec(),
+        cat_pos: cat_pos.to_vec(),
+        chance: 0.0,
+    })
 }
 
 /// Spread of matched stars about their centroid, as a fraction of the image
