@@ -187,6 +187,96 @@ fn combinations_of_4(k: usize) -> Vec<[usize; 4]> {
     out
 }
 
+/// A star list in x order, for nearest-neighbour searches.
+struct XOrder {
+    /// Star indices in increasing x.
+    by_x: Vec<usize>,
+    /// Each star's place in `by_x`.
+    rank: Vec<usize>,
+}
+
+impl XOrder {
+    fn new(stars: &StarList) -> Self {
+        let mut by_x: Vec<usize> = (0..stars.len()).collect();
+        by_x.sort_by(|&a, &b| stars.0[a].x.total_cmp(&stars.0[b].x));
+        let mut rank = vec![0; by_x.len()];
+        for (r, &i) in by_x.iter().enumerate() {
+            rank[i] = r;
+        }
+        Self { by_x, rank }
+    }
+
+    /// Fill `closest_dist` / `closest_idx` (squared distance and index, nearest
+    /// first) with star `i` itself and its `len - 1` nearest neighbours, skipping
+    /// stars within 1 unit (the same star twice). Slots left unfilled keep
+    /// `f64::MAX` and index 0.
+    ///
+    /// The list holds the nearest by `(distance, index)`, which is exactly what a
+    /// scan of every star in index order keeps, but only the stars near `i` in x
+    /// are looked at: walking out from `i` in x order, once the list is full a star
+    /// further away in x than the furthest kept cannot get in. Catalogue quads are
+    /// built at every spiral position, and the full scan was a third of it.
+    fn nearest(
+        &self,
+        stars: &StarList,
+        i: usize,
+        closest_dist: &mut [f64],
+        closest_idx: &mut [usize],
+    ) {
+        closest_dist.fill(f64::MAX);
+        closest_idx.fill(0);
+        closest_dist[0] = 0.0;
+        closest_idx[0] = i;
+        let (x1, y1) = (stars.0[i].x, stars.0[i].y);
+        let last = closest_dist.len() - 1;
+        let n = self.by_x.len();
+        let (mut up, mut down) = (self.rank[i] + 1, self.rank[i]);
+        loop {
+            let reach = closest_dist[last];
+            // A NaN x ends the walk, which loses nothing: NaN sorts to the ends of
+            // `by_x`, and a NaN distance never enters the list.
+            let up_ok = up < n && (stars.0[self.by_x[up]].x - x1).powi(2) <= reach;
+            let down_ok = down > 0 && (x1 - stars.0[self.by_x[down - 1]].x).powi(2) <= reach;
+            if !up_ok && !down_ok {
+                break;
+            }
+            for (go, j) in [(up_ok, up), (down_ok, down.wrapping_sub(1))] {
+                if go {
+                    let sj = &stars.0[self.by_x[j]];
+                    let (dx, dy) = (sj.x - x1, sj.y - y1);
+                    let d = dx * dx + dy * dy;
+                    if d > 1.0 {
+                        insert_neighbour(closest_dist, closest_idx, d, self.by_x[j]);
+                    }
+                }
+            }
+            up += usize::from(up_ok);
+            down -= usize::from(down_ok);
+        }
+    }
+}
+
+/// Insert neighbour `j` at squared distance `d` into a nearest-first list, which
+/// keeps the smallest by `(distance, index)`; slot 0 holds the star itself.
+fn insert_neighbour(closest_dist: &mut [f64], closest_idx: &mut [usize], d: f64, j: usize) {
+    let last = closest_dist.len() - 1;
+    let before =
+        |pos: usize| d < closest_dist[pos] || (d == closest_dist[pos] && j < closest_idx[pos]);
+    if !before(last) {
+        return;
+    }
+    let mut pos = last;
+    while pos > 0 && before(pos - 1) {
+        pos -= 1;
+    }
+    for k in (pos..last).rev() {
+        closest_dist[k + 1] = closest_dist[k];
+        closest_idx[k + 1] = closest_idx[k];
+    }
+    closest_dist[pos] = d;
+    closest_idx[pos] = j;
+}
+
 /// Small-star-count quad builder (`find_many_quads`).
 /// For each star, find `num_closest` nearest neighbours, then emit all `C(num_closest, 4)` quads.
 /// Duplicates are filtered by center proximity (< 1px in both x and y).
@@ -210,40 +300,13 @@ fn find_many_quads(stars: &StarList, mode: usize) -> QuadList {
     let table_len = (n * combos.len() / 4).max(16);
     let mut centres = CentreTable::new(table_len);
 
-    for i in 0..n {
-        let x1 = stars.0[i].x;
-        let y1 = stars.0[i].y;
+    let x_order = XOrder::new(stars);
 
-        // Find num_closest nearest neighbours (insertion sort)
+    for i in 0..n {
+        // Find num_closest nearest neighbours.
         let mut closest_idx = vec![0usize; num_closest];
         let mut closest_dist = vec![f64::MAX; num_closest];
-        closest_idx[0] = i;
-        closest_dist[0] = 0.0;
-
-        for (j, sj) in stars.0.iter().enumerate() {
-            if j == i {
-                continue;
-            }
-            let dx = sj.x - x1;
-            let dy = sj.y - y1;
-            let d = dx * dx + dy * dy;
-            if d <= 1.0 {
-                continue;
-            } // identical star guard
-            // Insertion sort into closest list
-            if d < closest_dist[num_closest - 1] {
-                let mut pos = num_closest - 1;
-                while pos > 0 && d < closest_dist[pos - 1] {
-                    pos -= 1;
-                }
-                for k in (pos..num_closest - 1).rev() {
-                    closest_dist[k + 1] = closest_dist[k];
-                    closest_idx[k + 1] = closest_idx[k];
-                }
-                closest_dist[pos] = d;
-                closest_idx[pos] = j;
-            }
-        }
+        x_order.nearest(stars, i, &mut closest_dist, &mut closest_idx);
 
         // All num_closest positions filled?
         if closest_idx[num_closest - 1] == 0 && closest_dist[num_closest - 1] == f64::MAX {
@@ -491,6 +554,68 @@ mod tests {
     fn sort6_is_descending() {
         let d = sort6([3.0, 1.0, 5.0, 2.0, 4.0, 6.0]);
         assert_eq!(d, [6.0, 5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    /// The neighbour list a scan of every star in index order keeps (the search
+    /// `XOrder::nearest` replaced).
+    fn nearest_by_full_scan(stars: &StarList, i: usize, k: usize) -> (Vec<f64>, Vec<usize>) {
+        let mut idx = vec![0usize; k];
+        let mut dist = vec![f64::MAX; k];
+        idx[0] = i;
+        dist[0] = 0.0;
+        for (j, sj) in stars.0.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let d = (sj.x - stars.0[i].x).powi(2) + (sj.y - stars.0[i].y).powi(2);
+            if d <= 1.0 || d >= dist[k - 1] {
+                continue;
+            }
+            let mut pos = k - 1;
+            while pos > 0 && d < dist[pos - 1] {
+                pos -= 1;
+            }
+            dist.insert(pos, d);
+            idx.insert(pos, j);
+            dist.truncate(k);
+            idx.truncate(k);
+        }
+        (dist, idx)
+    }
+
+    #[test]
+    fn the_x_ordered_neighbour_search_keeps_what_a_full_scan_keeps() {
+        let mut rng = crate::test_support::Rng::new(9);
+        for case in 0..30 {
+            let n = 1 + (rng.next_u64() % 150) as usize;
+            // Integer coordinates on a small grid give plenty of exact ties in
+            // distance and in x, and some stars on top of each other.
+            let side = if case % 2 == 0 { 12.0 } else { 1000.0 };
+            let stars = StarList(
+                (0..n)
+                    .map(|_| Star {
+                        x: (rng.uniform() * side).floor(),
+                        y: (rng.uniform() * side).floor(),
+                        snr: 1.0,
+                        hfd: 2.0,
+                    })
+                    .collect(),
+            );
+            let order = XOrder::new(&stars);
+            for k in [4, 7, 9] {
+                for i in 0..n {
+                    let mut dist = vec![0.0; k];
+                    let mut idx = vec![0; k];
+                    order.nearest(&stars, i, &mut dist, &mut idx);
+                    let (want_d, want_i) = nearest_by_full_scan(&stars, i, k);
+                    assert_eq!(
+                        (dist, idx),
+                        (want_d, want_i),
+                        "case {case}, k {k}, star {i}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
