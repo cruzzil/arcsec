@@ -198,6 +198,146 @@ pub fn find_matches_indexed(
     matches
 }
 
+/// The two ratios [`QuadGrid`] buckets on: the two most widely spread (see
+/// [`INDEX_RATIO`]). The ratios are ordered `r0 ≥ r1 ≥ … ≥ r4`, so `r4` and `r3`
+/// are correlated, but a tolerance-sized cell in both still holds a small fraction
+/// of what a window on `r4` alone does.
+const GRID_RATIOS: (usize, usize) = (INDEX_RATIO, 3);
+
+/// Most cells along each axis of a [`QuadGrid`] (so at most 1024² cells): below a
+/// tolerance of 1/1024 the cells stop shrinking, which costs only extra checks.
+const GRID_MAX_CELLS: usize = 1024;
+
+/// The image quads bucketed on two of their ratios, built once per solve and
+/// queried with every catalogue quad at every spiral position.
+///
+/// [`find_matches_indexed`] binary-searches the catalogue on one ratio, so each
+/// image quad checks every catalogue quad within the tolerance of it on that one
+/// ratio: with 18 000 image quads and 15 000 catalogue quads that is several
+/// million five-ratio checks per position, and 80 % of a failed search. Bucketing
+/// on two ratios, in cells one tolerance wide, cuts the checks by an order of
+/// magnitude. The image side is the one indexed because it does not change from
+/// one position to the next. [`QuadGrid::find_matches`] returns exactly what
+/// [`find_matches_indexed`] does, in the same order.
+pub struct QuadGrid {
+    /// The tolerance the cells were sized for; queries must not exceed it.
+    tol: f64,
+    /// Cells per unit ratio.
+    inv_w: f64,
+    /// Cells along each axis.
+    n: usize,
+    /// `start[c]..start[c + 1]` is cell `c`'s range in `codes` / `idx`
+    /// (cell `c = a * n + b`).
+    start: Vec<u32>,
+    /// The quads' five ratios, in cell order.
+    codes: Vec<[f64; 5]>,
+    /// Index into the image `QuadList` of each entry of `codes`.
+    idx: Vec<u32>,
+}
+
+impl QuadGrid {
+    /// Bucket `quads` for queries at tolerances up to `tol`.
+    #[must_use]
+    pub fn build(quads: &QuadList, tol: f64) -> Self {
+        let w = if tol.is_finite() && tol > 0.0 {
+            tol.max(1.0 / GRID_MAX_CELLS as f64)
+        } else {
+            1.0 / GRID_MAX_CELLS as f64
+        };
+        let n = ((1.0 / w).ceil() as usize).clamp(1, GRID_MAX_CELLS);
+        let mut grid = Self {
+            tol,
+            inv_w: 1.0 / w,
+            n,
+            start: vec![0; n * n + 1],
+            codes: Vec::with_capacity(quads.0.len()),
+            idx: Vec::with_capacity(quads.0.len()),
+        };
+        // Counting sort into cells, keeping the original order within a cell.
+        let cells: Vec<usize> = quads
+            .0
+            .iter()
+            .map(|q| grid.cell(q.ratios[GRID_RATIOS.0]) * n + grid.cell(q.ratios[GRID_RATIOS.1]))
+            .collect();
+        for &c in &cells {
+            grid.start[c + 1] += 1;
+        }
+        for c in 0..n * n {
+            grid.start[c + 1] += grid.start[c];
+        }
+        let mut fill: Vec<u32> = grid.start[..n * n].to_vec();
+        grid.codes.resize(quads.0.len(), [0.0; 5]);
+        grid.idx.resize(quads.0.len(), 0);
+        for (i, (&c, q)) in cells.iter().zip(&quads.0).enumerate() {
+            let at = fill[c] as usize;
+            fill[c] += 1;
+            grid.codes[at] = q.ratios;
+            grid.idx[at] = i as u32;
+        }
+        grid
+    }
+
+    /// The cell holding ratio value `r`, clamped to the grid (ratios lie in 0..=1).
+    fn cell(&self, r: f64) -> usize {
+        // `as usize` saturates: negatives and NaN map to 0.
+        ((r * self.inv_w) as usize).min(self.n - 1)
+    }
+
+    /// All (image quad, catalogue quad) pairs whose five ratios agree within
+    /// `quad_tolerance`, ordered by image quad and then catalogue quad: for a
+    /// catalogue sorted by [`sort_catalog_quads`], exactly what
+    /// [`find_matches_indexed`] returns.
+    ///
+    /// The catalogue need not be sorted for the pairs to be right, only for the
+    /// order to be that one. The solver keeps the sort: quads that share their
+    /// longest and shortest sides tie on `ratios[INDEX_RATIO]`, the unstable sort
+    /// puts tied quads in an order nothing else reproduces, and the fit downstream
+    /// is order-sensitive in the last bits.
+    ///
+    /// `img_quads` must be the list the grid was built from, and `quad_tolerance`
+    /// no larger than the tolerance it was built for.
+    #[must_use]
+    pub fn find_matches(
+        &self,
+        img_quads: &QuadList,
+        cat_quads: &QuadList,
+        quad_tolerance: f64,
+    ) -> Vec<QuadMatch> {
+        debug_assert_eq!(img_quads.0.len(), self.idx.len());
+        debug_assert!(quad_tolerance <= self.tol || !quad_tolerance.is_finite());
+        // Widen the cell range by a hair so a value on a cell edge is never missed;
+        // the exact test below decides.
+        let pad = quad_tolerance * 1.000_01 + 1e-12;
+        let n = self.n;
+        let mut matches = Vec::new();
+        for (j, cq) in cat_quads.0.iter().enumerate() {
+            if cq.d1 < 1e-10 {
+                continue;
+            }
+            let (ka, kb) = (cq.ratios[GRID_RATIOS.0], cq.ratios[GRID_RATIOS.1]);
+            let (b0, b1) = (self.cell(kb - pad), self.cell(kb + pad));
+            for a in self.cell(ka - pad)..=self.cell(ka + pad) {
+                let lo = self.start[a * n + b0] as usize;
+                let hi = self.start[a * n + b1 + 1] as usize;
+                for (code, &i) in self.codes[lo..hi].iter().zip(&self.idx[lo..hi]) {
+                    if (0..5).all(|k| (code[k] - cq.ratios[k]).abs() <= quad_tolerance) {
+                        let i = i as usize;
+                        matches.push(QuadMatch {
+                            img_idx: i,
+                            cat_idx: j,
+                            scale_ratio: img_quads.0[i].d1 / cq.d1,
+                        });
+                    }
+                }
+            }
+        }
+        // The order `find_matches_indexed` gives: the vote and the fit downstream
+        // depend on it (the GIVENS sweep is order-sensitive).
+        matches.sort_unstable_by_key(|m| (m.img_idx, m.cat_idx));
+        matches
+    }
+}
+
 /// Compute the median of a slice (sorts a copy).
 pub(crate) fn median(values: &[f64]) -> f64 {
     if values.is_empty() {
@@ -333,6 +473,61 @@ mod tests {
         sorted.sort_by_key(|m| (m.img_idx, m.scale_ratio.to_bits()));
 
         assert_eq!(linear.len(), sorted.len(), "match counts must agree");
+    }
+
+    /// Quads from real star fields, so the ratios have their real, clustered
+    /// distribution (and some catalogue quads match image quads).
+    fn field_quads(rng: &mut crate::test_support::Rng, n: usize) -> QuadList {
+        let stars = crate::types::StarList(
+            (0..n)
+                .map(|_| crate::types::Star {
+                    x: rng.range(0.0, 1000.0),
+                    y: rng.range(0.0, 1000.0),
+                    snr: 1.0,
+                    hfd: 2.0,
+                })
+                .collect(),
+        );
+        crate::quads::build_quads(&stars, n)
+    }
+
+    #[test]
+    fn quad_grid_returns_what_the_sorted_search_returns_in_the_same_order() {
+        let mut rng = crate::test_support::Rng::new(11);
+        let img = field_quads(&mut rng, 120);
+        let mut cat = field_quads(&mut rng, 100);
+        // Some exact copies, so there are true matches and ties on the sort key.
+        cat.0.extend(img.0.iter().step_by(7).cloned());
+        cat.0.extend(img.0.iter().step_by(13).cloned());
+        for tol in [0.0, 0.002, 0.007, 0.02, 0.1] {
+            let mut sorted = cat.clone();
+            sort_catalog_quads(&mut sorted);
+            let want = find_matches_sorted(&img, &sorted, tol);
+            let got = QuadGrid::build(&img, tol).find_matches(&img, &sorted, tol);
+            assert!(!want.is_empty(), "tol {tol}: the fixture has matches");
+            let key = |m: &QuadMatch| (m.img_idx, m.cat_idx, m.scale_ratio.to_bits());
+            let got: Vec<_> = got.iter().map(key).collect();
+            let want: Vec<_> = want.iter().map(key).collect();
+            assert_eq!(got, want, "tol {tol}");
+        }
+    }
+
+    #[test]
+    fn quad_grid_accepts_a_tolerance_below_its_cell_floor_and_edge_ratios() {
+        let q = |r: [f64; 5]| make_quad(10.0, r, 0.0, 0.0);
+        let img = QuadList(vec![
+            q([1.0, 1.0, 1.0, 1.0, 1.0]),
+            q([0.5, 0.4, 0.3, 0.2, 0.0]),
+        ]);
+        let cat = QuadList(vec![
+            q([1.0, 0.9999, 1.0, 1.0, 1.0]),
+            q([0.5, 0.4, 0.3, 0.2, 0.0001]),
+        ]);
+        let grid = QuadGrid::build(&img, 0.0002);
+        let got = grid.find_matches(&img, &cat, 0.0002);
+        let pairs: Vec<_> = got.iter().map(|m| (m.img_idx, m.cat_idx)).collect();
+        assert_eq!(pairs, vec![(0, 0), (1, 1)]);
+        assert!(grid.find_matches(&img, &cat, 0.00005).is_empty());
     }
 
     #[test]

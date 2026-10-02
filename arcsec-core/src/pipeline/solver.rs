@@ -11,9 +11,9 @@ use crate::error::{ArcsecError, Result};
 use crate::math::coords::{ang_sep, equatorial_standard, standard_equatorial};
 use crate::math::lsq::{fit_affine, solve_plate_constants};
 use crate::quads::{
-    TETRA_TOL_FACTOR, bijective_filter, build_quads, build_quads_presorted, build_triangles,
-    extract_star_pairs, extract_triangle_pairs, filter_by_scale, filter_triangles_by_scale,
-    find_matches_sorted, find_triangle_matches, vote_filter,
+    QuadGrid, TETRA_TOL_FACTOR, bijective_filter, build_quads, build_quads_presorted,
+    build_triangles, extract_star_pairs, extract_triangle_pairs, filter_by_scale,
+    filter_triangles_by_scale, find_triangle_matches, vote_filter,
 };
 use crate::types::{MatchedStar, PairedPositions, PlateConstants, Star, StarList, WcsSolution};
 use crate::wcs::output::derive_wcs;
@@ -401,6 +401,8 @@ struct SpiralCtx<'a> {
     img: &'a crate::types::ImageBuffer,
     stars: &'a StarList,
     img_quads: &'a crate::types::QuadList,
+    /// `img_quads` bucketed for matching (built once, used at every position).
+    img_grid: &'a QuadGrid,
     img_tris: &'a crate::quads::TriangleList,
     nrstars_image: usize,
     /// The most image stars worth using: `-s`, or fewer if the database cannot hold
@@ -536,7 +538,9 @@ fn try_position(ctx: &SpiralCtx<'_>, idx: usize, sx: i32, sy: i32) -> PositionTr
                 return failed;
             }
             crate::quads::r#match::sort_catalog_quads(&mut cat_quads);
-            let raw = find_matches_sorted(ctx.img_quads, &cat_quads, params.quad_tolerance);
+            let raw = ctx
+                .img_grid
+                .find_matches(ctx.img_quads, &cat_quads, params.quad_tolerance);
             let n_raw = raw.len();
             log::info!("Found {n_raw} references");
             let mut filtered = vote_filter(ctx.img_quads, &cat_quads, &raw, params.quad_tolerance);
@@ -1197,6 +1201,11 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     }
 
     let min_quads: usize = 3 + nrstars_image / 140;
+    let img_grid = if params.method == SolveMethod::Quads {
+        QuadGrid::build(&img_quads, params.quad_tolerance)
+    } else {
+        QuadGrid::build(&crate::types::QuadList::default(), params.quad_tolerance)
+    };
 
     let oversize: f64 = match params.speed {
         SearchSpeed::Auto if nrstars_image < 35 => 2.0,
@@ -1245,6 +1254,7 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         img,
         stars: &stars,
         img_quads: &img_quads,
+        img_grid: &img_grid,
         img_tris: &img_tris,
         nrstars_image,
         star_limit,
