@@ -652,9 +652,16 @@ The FITS `CD` matrix is the same thing in degrees:
     CD1_1 = −a/3600    CD1_2 = −b/3600
     CD2_1 = +d/3600    CD2_2 = +e/3600
 
-    CDELT1 = −√(CD1_1² + CD1_2²)     CDELT2 = +√(CD2_1² + CD2_2²)
-    CROTA2 = atan2(CD2_1, CD2_2)     [degrees]
+    f      = −1 if det CD < 0 (the sky's usual handedness), else +1 (mirrored)
+    CDELT1 = f·√(CD1_1² + CD1_2²)    CDELT2 = +√(CD2_1² + CD2_2²)
+    CROTA2 = atan2(f·CD2_1, CD2_2)   CROTA1 = atan2(−CD1_2/(f·CDELT1), CD1_1/CDELT1)
 ```
+
+These invert astap_cli's own construction of its CD matrix, so `CDELT1/2` and
+`CROTA1/2` in the `.wcs`, `.ini` and an `--update`d header are what ASTAP would write
+(checked against astap_cli 2026.07.30 on normal, mirrored and 90°-rotated frames).
+Before 0.5, arcsec wrote `|CDELT1|` and used `atan2(CD2_1, CD2_2)` for both rotations,
+which has the opposite sign to FITS `CROTA2`.
 
 ### 7.3 Solving the least-squares system
 

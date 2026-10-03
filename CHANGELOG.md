@@ -51,6 +51,15 @@ one is called out as such.
 
 ### Changed
 
+- ASTAP compatibility: `CDELT1`, `CROTA1` and `CROTA2` in the `.wcs` file, the `.ini`
+  and an `--update`d header now match current `astap_cli`. `CDELT1` carries the parity
+  (negative for a normally oriented image, positive for a mirrored one; arcsec wrote
+  its absolute value), `CROTA2` has the FITS sign (arcsec's was reversed: a frame
+  rotated 90° read as −90°), and `CROTA1` is computed separately instead of copying
+  `CROTA2`. The CD matrix, which N.I.N.A., Siril and wcslib read, is unchanged.
+  Library: `WcsSolution::cdelt1`/`crota2` follow the same convention, and
+  `WcsSolution::crota1()` and `wcs::output::old_style_wcs` are new.
+
 - With several blind indexes in the catalogue directory, the solver uses the one built
   from the deepest database instead of the first by file name.
 - Index build times re-measured on a quiet machine: 22–30 s for the default 287 MB index

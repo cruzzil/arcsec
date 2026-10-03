@@ -123,8 +123,12 @@ matching or the WCS fit.
 - **Angles are radians inside `arcsec-core`.** Degrees, hours and arcseconds appear
   only at the CLI boundary and in output files. `--ra` is in hours and `--spd` is
   south-pole distance (90 + Dec) in degrees, both ASTAP conventions.
-- **The sign of CDELT1.** `WcsSolution.cdelt1` is negative, as FITS requires; the
-  `.wcs` file writes its absolute value, as ASTAP does. Neither is a bug.
+- **CDELT and CROTA follow astap_cli.** `CDELT1` carries the image's parity (negative
+  for the sky's usual handedness, positive when mirrored), `CDELT2` is positive, and
+  `CROTA1`/`CROTA2` are the rotations of the +X and +Y axes in the FITS (Calabretta &
+  Greisen) sense, exactly as `astap_cli` derives them from the CD matrix
+  (`wcs::output::old_style_wcs`). The CD matrix is what readers should use; these
+  old-style keywords are there for ASTAP compatibility.
 - **`core` and `alloc` before `std`.** Clippy denies `std_instead_of_core` and
   `std_instead_of_alloc` across the workspace, which keeps operating-system
   dependencies visible and out of the pure maths.

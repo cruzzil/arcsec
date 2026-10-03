@@ -2246,8 +2246,11 @@ mod tests {
         assert!(wcs.raw_matches > 0);
         assert_matches_agree(wcs, 0.3, 1.0);
         assert!(wcs.mag_limit > 10.0 && wcs.mag_limit <= 14.5);
+        // astap_cli's convention: CDELT1 carries the parity, negative for the sky's
+        // usual handedness and positive for a mirrored image; CDELT2 is positive.
+        let truth_det = s.truth.cd[0] * s.truth.cd[3] - s.truth.cd[1] * s.truth.cd[2];
         assert!(
-            wcs.cdelt1 < 0.0 && wcs.cdelt2 > 0.0,
+            (wcs.cdelt1 > 0.0) == (truth_det > 0.0) && wcs.cdelt2 > 0.0,
             "CDELT sign convention"
         );
     }
@@ -2287,7 +2290,16 @@ mod tests {
         assert!(wcs.step_distances.len() > 1);
         // The pixel scale and rotation come back too.
         assert!((wcs.cdelt2 * 3600.0 - 5.0).abs() < 0.01, "{}", wcs.cdelt2);
-        assert!((wcs.crota2 - 23.0).abs() < 0.05, "crota2 {}", wcs.crota2);
+        // TruthWcs's `rot_deg` turns the image the other way from FITS CROTA2
+        // (Calabretta & Greisen: CD2_1 = CDELT1·sin CROTA2 with CDELT1 < 0), which is
+        // what astap_cli reports, so a 23° truth reads as CROTA2 = −23°.
+        assert!((wcs.crota2 + 23.0).abs() < 0.05, "crota2 {}", wcs.crota2);
+        assert!(
+            (wcs.crota1() + 23.0).abs() < 0.05,
+            "crota1 {}",
+            wcs.crota1()
+        );
+        assert!(wcs.cdelt1 < 0.0, "an unmirrored image has CDELT1 < 0");
     }
 
     #[test]

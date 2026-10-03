@@ -245,7 +245,7 @@ On a successful solve arcsec writes, next to the image (or at `-o <base>`):
 - `<base>.wcs` — the solution as a FITS header (`CRVAL`, `CRPIX`, `CD`, `CDELT`,
   `CROTA`, and SIP terms with `--sip`), as ASTAP and Astrometry.net write it. Always
   written; `--wcs` is accepted for compatibility.
-- `<base>.ini` — ASTAP's summary: `PLTSOLVD`, `CRVAL1/2`, `CDELT1/2`, `CROTA2` and the
+- `<base>.ini` — ASTAP's summary: `PLTSOLVD`, `CRVAL1/2`, `CDELT1/2`, `CROTA1/2` and the
   fit statistics.
 
 When a solve fails, `<base>.ini` is still written, holding `PLTSOLVD=F` and the command
