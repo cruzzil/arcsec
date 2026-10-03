@@ -17,4 +17,4 @@ pub use build::{
     BuildParams, BuildProgress, DEFAULT_TIERS, TierSpec, build_index, default_index_path,
     tier_fov_range,
 };
-pub use format::{BlindIndex, BuiltIndex, TierInfo, is_blind_index};
+pub use format::{BlindIndex, BuiltIndex, SourceStamp, TierInfo, is_blind_index};

@@ -34,6 +34,10 @@ external ASTAP solver, but can use arcsec's solutions: see [Use with Siril](../s
    arcsec catalog install d50             # what it recommended
    ```
 
+   The install also builds arcsec's [blind index](../catalogues/#the-blind-index) from
+   the catalogue (it shows the size and time first: about 290 MB and half a minute
+   for D50). That is what makes N.I.N.A.'s blind solves fast, below.
+
    If ASTAP is already installed with its databases, you can
    [use those instead](#reusing-astaps-star-databases) and skip the download.
 
@@ -71,6 +75,15 @@ that arcsec sees the databases with:
 arcsec catalog list
 ```
 
+Then build the blind index once. ASTAP's folder under Program Files is only writable
+by an administrator, so run this from a PowerShell opened with **Run as
+administrator** (it takes about half a minute and adds one file, about 290 MB, that
+ASTAP ignores):
+
+```powershell
+arcsec catalog index build
+```
+
 The solver never modifies these files. The catalogue manager does act on the folder,
 though: `arcsec catalog remove` there would delete ASTAP's files too. It lists what it
 will delete and asks first.
@@ -90,6 +103,15 @@ N.I.N.A. builds the command line from its own settings, using ASTAP's options:
 
 The field of view N.I.N.A. sends comes from the focal length and pixel size in its
 equipment settings, so if solves fail, check those first.
+
+## Blind solves
+
+When N.I.N.A. blind-solves (with ASTAP chosen as the blind solver, or when a normal
+solve fails and it retries blind), it sends `-r 180`: search the whole sky. With the
+blind index installed, arcsec checks the five fields round the position N.I.N.A. gave,
+then asks the index, and answers in a second or two. Without one, it searches the sky
+field by field, which can take minutes, and prints a hint saying how to build the
+index. `arcsec catalog list` shows whether one is installed.
 
 When arcsec finishes, N.I.N.A. reads `<image>.ini` next to the image: `PLTSOLVD=T` with
 the solution on success, `PLTSOLVD=F` on failure. arcsec writes this file on failure
@@ -137,6 +159,13 @@ set N.I.N.A.'s downsample factor to a fixed value.
 arcsec found no star database in its catalogue folder. Run `arcsec catalog list` to
 see which folder it is using and what is installed there. If you set
 `ARCSEC_CATALOG_DIR`, restart N.I.N.A. so it picks up the change.
+
+### Blind solves take minutes
+
+There is no blind index in the catalogue folder: run `arcsec catalog list`, which says
+so and shows the command and what it costs (`arcsec catalog index build`). Catalogues
+installed with arcsec 0.4 or earlier, and ASTAP's folder, do not have one until you
+build it.
 
 ### It fails on images that should solve
 

@@ -62,6 +62,12 @@ scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db
 scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db --offset-hint 0.3
 ```
 
+`catalog install` also builds the blind index into the catalogue directory, and the
+solver consults an installed index automatically at `-r` 10° and above. The benchmark's
+default `-r 5` never does; to measure the spiral alone at wider radii, install with
+`--no-index`, or make sure neither the catalogue directory nor the `--db` directory
+holds a `*.arcsecix` (the solver looks in both).
+
 For a change with wider reach — detection, the fit, anything that might behave
 differently on real cameras, wide fields or unusual formats — run the expanded corpus too
 (635 images from ten archives plus simulated camera artefacts, about 6.5 GB beyond v1;

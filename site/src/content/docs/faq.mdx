@@ -58,19 +58,32 @@ reads ASTAP's `.1476`, `.290` and `.001` files directly and never modifies them.
 
 ## Can it solve with no position at all?
 
-Yes, with Astrometry.net index files and the `-i` option: arcsec estimates the
-position from the index, then finishes the solve against a star database as usual.
+Yes. Installing a solving catalogue also builds arcsec's
+[blind index](../catalogues/#the-blind-index) from it, with nothing more to download,
+and with that arcsec finds a field anywhere on the sky in a second or two:
 
 ```sh
-arcsec catalog install anet-4100
-arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
 
-It works best on wider fields. The `anet-4100` set (355 MB) covers fields of about
-0.7° and wider. For narrower fields the `anet-5200` set is needed, and it is an 8.8 GB
-download. You still need to know the field size (`--fov`, or `FOCALLEN` and `XPIXSZ`
-in the header). If your mount reports where it is pointing, you do not need blind
-solving at all.
+It does not even need the field size: without `--fov` or `FOCALLEN` and `XPIXSZ` in
+the header it tries pixel scales from 0.3″ to 60″. A wide search (`-r` of 10° or more,
+as N.I.N.A.'s blind solve sends) uses the index without `-i`. If your catalogues were
+installed before arcsec built the index, or are ASTAP's, run
+`arcsec catalog index build` once; `arcsec catalog list` shows whether you have one.
+
+The index covers fields from 0.3° up by default; add `--index-min-fov 0.15` when you
+install D80 for narrower ones. Astrometry.net index files (`arcsec catalog install
+anet-4100`) also work with `-i`, but are slower and find fewer fields.
+
+## Why does installing a catalogue build an index, and can I skip it?
+
+The blind index is what makes solving with no position (and N.I.N.A.'s blind mode)
+take seconds instead of minutes, and it can only be built from a catalogue you have.
+`arcsec catalog install` says what it will cost before it starts (about 287 MB, half a
+minute and 0.6 GB of memory for D50 on a desktop) and asks about a larger build
+separately. `--no-index` skips it, and `arcsec catalog remove` takes it away with the
+catalogue.
 
 ## Which image formats does it read?
 

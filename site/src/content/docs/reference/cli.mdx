@@ -30,7 +30,7 @@ everything below.
 | `-d <dir>` | Star database folder | the catalogue folder if it holds a database, else the current folder |
 | `-D <name>` | Star database to use: `d80`, `d50`, `d20`, `d05`, `v50`, `v05`, `g05`, `w08` | chosen by field size |
 | `-o <base>` | Base path for the output files | the image path without its extension |
-| `-i`, `--index <path>` | Astrometry.net index file, or a folder of `index-*.fits` files, for [blind solving](#blind-solving) | off |
+| `-i`, `--index <path>` | Blind index: arcsec's own (`<name>.arcsecix`, or the catalogue folder holding it), or Astrometry.net `index-*.fits` files. See [blind solving](#blind-solving) | off; arcsec's index is used by itself for searches of 10° or more |
 | `--threads <n>` | Maximum worker threads; `0` for one per core. `1` runs single-threaded | `0` |
 | `--method <m>` | Matching method: `quads`, or the experimental `tetra` (three-star triangles) | `quads` |
 | `--speed <mode>` | Search mode: `auto`, or `slow`, which reads twice the field at every search position for more overlap | `auto` |
@@ -85,18 +85,26 @@ reported in the original image's pixels.
 
 ### Blind solving
 
-With `-i`, arcsec first estimates the position from Astrometry.net index files, with
-no hint at all, and then refines it against a star database as usual, so a star
-database must be installed too. `-i` takes one index file or a folder; arcsec picks the
-index files whose scale suits the field.
+arcsec's blind index is built from the installed star catalogue: `arcsec catalog
+install` builds it, or `arcsec catalog index build` for catalogues installed otherwise
+(see the [catalogue guide](../../catalogues/#the-blind-index)). With `-i` naming it, or
+the catalogue folder that holds it, arcsec finds the field with no position hint, and
+with no pixel scale if neither `--fov` nor the header gives one; the result is then
+verified against the star catalogue like any other solve.
 
 ```sh
-arcsec catalog install anet-4100
-arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
+arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
 
-Blind solving works best on wider fields. The `anet-4100` set covers fields of about
-0.7° and wider; for narrower fields, the `anet-5200` set is an 8.8 GB download.
+Without `-i`, a search of `-r` 10° or more that reaches past five fields round the
+position (N.I.N.A.'s blind solve sends `-r 180`) uses the installed index once those
+five fields have failed. If none is installed, arcsec prints a one-line hint on the
+error output saying how to build one; the solve and its output are otherwise the same.
+
+`-i` also takes Astrometry.net index files: one file or a folder of `index-*.fits`, of
+which arcsec picks those whose scale suits the field. They only estimate the position,
+which is then refined against the star catalogue. The `anet-4100` set covers fields of
+about 0.7° and wider; for narrower fields, the `anet-5200` set is an 8.8 GB download.
 
 ## Output files
 
@@ -173,9 +181,11 @@ A usage error exits with 1, not the 2 most command-line parsers use, because 2 m
 | `arcsec catalog path` | Print the catalogue folder |
 | `arcsec catalog recommend --fov <deg>` | Suggest catalogues for a field size |
 | `arcsec catalog recommend --like <image>` | Suggest catalogues, reading the field size from an image header |
-| `arcsec catalog install <name>...` | Download and unpack catalogues, e.g. `d50 v05 g05` |
-| `arcsec catalog remove <name>...` | Delete installed catalogue files |
-| `arcsec catalog verify` | Check installed catalogues for missing or truncated files |
+| `arcsec catalog install <name>...` | Download and unpack catalogues, e.g. `d50 v05 g05`, and build the blind index from a solving catalogue |
+| `arcsec catalog remove <name>...` | Delete installed catalogue files, and the blind index built from them |
+| `arcsec catalog verify` | Check installed catalogues for missing or truncated files, and the blind index for damage or a changed source |
+| `arcsec catalog index build` | Build the blind index from the installed catalogues |
+| `arcsec catalog index info` | Describe the blind index: source, fields, tiers, size |
 
 Options:
 
@@ -183,8 +193,15 @@ Options:
 |---|---|---|
 | `--dir <dir>` | all | Catalogue folder. Default: `ARCSEC_CATALOG_DIR`, else the [per-platform folder](../../catalogues/#where-they-are-stored) |
 | `--photometry` | `recommend` | Also suggest a photometric catalogue |
-| `-y`, `--yes` | `install`, `remove` | Do not ask for confirmation |
+| `-y`, `--yes` | `install`, `remove`, `index build` | Do not ask for confirmation (`index build` asks only before a large build) |
 | `--keep-archive` | `install` | Keep the downloaded archive after unpacking |
+| `--no-index` | `install` | Do not build the blind index |
+| `--index-min-fov <deg>` | `install` | Smallest field (short side) the blind index serves; default from the catalogues, e.g. `0.3` for D80. `0.15` reaches D80's narrowest fields |
+| `--index-max-fov <deg>` | `install` | Largest field the blind index serves; default `30`, or `80` with W08 |
+| `--keep-index` | `remove` | Keep the blind index built from a removed catalogue |
+| `--min-fov`, `--max-fov <deg>` | `index build` | As `--index-min-fov` and `--index-max-fov` |
+| `-D <name>`, `--db <dir>`, `-o <file>` | `index build` | Build from a particular catalogue or folder, or to another file |
+| `--threads <n>` | `index build` | Worker threads; `0` for one per core |
 
 ## Environment
 

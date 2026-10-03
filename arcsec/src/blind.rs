@@ -173,9 +173,48 @@ pub fn find_arcsec_index(path: &Path) -> Option<PathBuf> {
     if path.is_file() {
         return arcsec_core::index::is_blind_index(path).then(|| path.to_path_buf());
     }
-    crate::catalog_cmd::index_cmd::index_files(path)
-        .into_iter()
-        .find(|p| arcsec_core::index::is_blind_index(p))
+    // Several indexes (say one left from G05 beside one from D80): the one built
+    // from the deepest database; failing a readable one, the first by magic, so
+    // that a damaged file is reported rather than silently ignored.
+    crate::catalog_cmd::plan::Existing::preferred(path)
+        .map(|e| e.path)
+        .or_else(|| {
+            crate::catalog_cmd::index_cmd::index_files(path)
+                .into_iter()
+                .find(|p| arcsec_core::index::is_blind_index(p))
+        })
+}
+
+/// A one-line stderr hint when a search is wide enough that an installed index
+/// would be used, but there is none: say how to build one and what it costs. The
+/// solve itself is unchanged; nothing is built during a solve.
+pub fn missing_index_hint(
+    explicit: Option<&PathBuf>,
+    template: &arcsec_core::pipeline::SolveParams,
+) -> Option<String> {
+    if explicit.is_some()
+        || template.search_radius <= stage_one_radius(template)
+        || template.search_radius < AUTO_MIN_RADIUS
+    {
+        return None;
+    }
+    let cat_dir = crate::catalog_cmd::default_dir();
+    if find_arcsec_index(&cat_dir).is_some() || find_arcsec_index(&template.db_path).is_some() {
+        return None;
+    }
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    };
+    let db_flag = if same(&template.db_path, &cat_dir) {
+        String::new()
+    } else {
+        format!(" --db {}", template.db_path.display())
+    };
+    let s = crate::catalog_cmd::index_cmd::build_suggestion(&template.db_path, &db_flag)?;
+    Some(format!(
+        "Hint: no blind index is installed, so a search this wide can take minutes; {s}."
+    ))
 }
 
 /// Search radius, in fields, that the spiral covers before an automatically found

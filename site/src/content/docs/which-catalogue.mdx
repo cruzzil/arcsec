@@ -28,9 +28,11 @@ This is the same rule `arcsec catalog recommend` uses, so the two always agree:
 The photometric catalogues (the V-series) add Johnson-V magnitudes and colour, for
 photometry and colour calibration in software that reads ASTAP's databases. arcsec
 can solve with them too, but the picker recommends a solving catalogue for that.
-The blind index set is only needed to [solve with no position
-hint](../faq/#can-it-solve-with-no-position-at-all), and even then arcsec finishes the
-solve against a solving catalogue, so you need one of those as well.
+Installing the solving catalogue also builds arcsec's
+[blind index](../catalogues/#the-blind-index) from it, which lets arcsec
+[solve with no position hint](../faq/#can-it-solve-with-no-position-at-all); the
+picker shows its size. For fields under 0.3° it adds `--index-min-fov 0.15` to the
+install command, since the default index stops at 0.3°.
 
 The [catalogue guide](../catalogues/) lists every catalogue, where they are installed and
 how to share them with ASTAP.

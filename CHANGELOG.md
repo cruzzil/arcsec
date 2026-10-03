@@ -11,6 +11,44 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **The blind index is built when a solving database is installed.**
+  `arcsec catalog install d50` (or `d05`, `d20`, `d80`, `g05`, `w08`) downloads the
+  database and then builds arcsec's blind index from it, so blind solving and
+  N.I.N.A.'s blind mode (`-r 180`) work without a second step. The confirmation shows
+  the index's size, build time and peak memory beside the download size ("~287.4 MB on
+  disk, ~25 s, ~0.6 GB memory" for D50); a build over 1 GB, over 5 minutes or needing
+  more than half the available memory gets its own notice and question, so the
+  download can be accepted and the index declined. One index per catalogue directory,
+  from the deepest database installed, covering every installed database's fields
+  (0.3°–30° for D20–D80, 0.6° for D05, 3° for G05, up to 80° with W08); installing a
+  deeper or wider database rebuilds it, keeping any tiers it had. Free disk space is
+  checked before downloading. New flags: `--no-index`, `--index-min-fov`,
+  `--index-max-fov` on `install`; `--keep-index` on `remove`; `--yes` on
+  `index build`. `--yes` answers every question; with no terminal and no `--yes`,
+  `install` and `remove` still cancel.
+- Databases installed before this (or shared with ASTAP) get the index from
+  `arcsec catalog index build`, whose field range now defaults from the installed
+  databases, or from re-running `catalog install`. `catalog list` and `catalog verify`
+  say when there is no index and what building one costs, and `catalog recommend`
+  lists the index with the database it suggests (adding `--index-min-fov 0.15` for
+  fields under 0.3°). When a search is wide enough to use an index and none is
+  installed, the solver prints a one-line hint on stderr; stdout and the solve are
+  unchanged, and nothing is built during a solve.
+- **Stale index detection.** An index now records a fingerprint of its source
+  database (file count, sizes, and a hash of each file's name, size and first 4 kB) in
+  header space version 1 reserved, so older indexes still open and older arcsec reads
+  new ones. `catalog verify` reports an index whose database has changed since as a
+  problem, and `catalog install` rebuilds it; indexes from 0.4 are reported as
+  unchecked.
+- `catalog remove <db>` removes the blind index built from that database with it
+  (listed in the confirmation; `--keep-index` keeps it).
+- Index builds report each tier with the time left on stderr (redrawn in place at a
+  terminal), compare the result with the estimate, clear a `.part` left by an
+  interrupted write first, and on Unix remove their own `.part` when interrupted while
+  writing; `catalog list` mentions any left over.
+
 ### Changed
 
 - ASTAP compatibility: `CDELT1`, `CROTA1` and `CROTA2` in the `.wcs` file, the `.ini`
@@ -21,6 +59,13 @@ one is called out as such.
   `CROTA2`. The CD matrix, which N.I.N.A., Siril and wcslib read, is unchanged.
   Library: `WcsSolution::cdelt1`/`crota2` follow the same convention, and
   `WcsSolution::crota1()` and `wcs::output::old_style_wcs` are new.
+
+- With several blind indexes in the catalogue directory, the solver uses the one built
+  from the deepest database instead of the first by file name.
+- Index build times re-measured on a quiet machine: 22–30 s for the default 287 MB index
+  from D80 (24 threads; about 75 s on one), 1.5–2 minutes for the 698 MB index down to
+  0.15°. The "about 2 minutes" and "13 minutes" quoted before were measured under a load
+  average of 50–80.
 
 ## [0.4.0] - 2026-10-02
 

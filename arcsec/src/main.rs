@@ -293,6 +293,12 @@ fn main() {
         || matches.get_one::<f64>("spd").is_some()
         || image_io::read_ra_dec(file).is_some();
     let own_index = blind::arcsec_index_for(matches.get_one::<PathBuf>("index"), &template);
+    if own_index.is_none()
+        && let Some(hint) =
+            blind::missing_index_hint(matches.get_one::<PathBuf>("index"), &template)
+    {
+        eprintln!("{hint}");
+    }
     let index_wcs = match own_index.as_ref().map(|ix| {
         blind::index_stage(
             &img,
