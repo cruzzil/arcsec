@@ -11,6 +11,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-04
+
 ### Added
 
 - **libarcsec, a C library** for solving in-process from C and C++ (Siril first):
@@ -98,6 +100,9 @@ one is called out as such.
 
 ### Fixed
 
+- HCOMPRESS-compressed FITS images decode as CFITSIO does when lossy (the last
+  pixel was not rescaled) or smoothed, and a malformed HCOMPRESS tile is reported as
+  an error instead of crashing (hcompress 0.4.1).
 - A gzip-wrapped FITS file whose trailer claimed an impossible uncompressed size
   (a 22-byte file claiming 3.9 GB) made CFITSIO allocate that much before failing,
   taking seconds and gigabytes. Claims beyond deflate's 1032:1 limit are now refused
@@ -442,7 +447,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/cruzzil/arcsec/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cruzzil/arcsec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cruzzil/arcsec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cruzzil/arcsec/compare/v0.1.2...v0.2.0

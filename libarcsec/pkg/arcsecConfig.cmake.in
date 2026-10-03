@@ -1,6 +1,6 @@
 # CMake package configuration for libarcsec, the arcsec plate solver's C library.
 #
-#   find_package(arcsec 0.4 REQUIRED)
+#   find_package(arcsec 0.5 REQUIRED)
 #   target_link_libraries(myapp PRIVATE arcsec::arcsec)          # shared library
 #   target_link_libraries(myapp PRIVATE arcsec::arcsec_static)   # static library
 #

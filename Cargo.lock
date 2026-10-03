@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arcsec-core",
  "arcsec-io",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libc",
  "log",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec-io"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arcsec-core",
  "asdf-rs",
@@ -542,12 +542,11 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hcompress"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14a8a1454b22f049610883adfd706b2012303c3971ea4fafecaf9b4e8e436867"
+checksum = "6cc10f21b09169c3fac325570d042218b912fe69630e0b50634ec7eec08b5f1a"
 dependencies = [
  "bytemuck",
- "bytes",
 ]
 
 [[package]]
@@ -687,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "libarcsec"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arcsec-core",
  "arcsec-io",
