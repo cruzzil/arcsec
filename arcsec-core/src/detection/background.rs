@@ -324,8 +324,8 @@ pub fn get_background(img: &ImageBuffer, max_stars: usize) -> Background {
 
     // --- Star levels: threshold where histogram count drops below empirical limits ---
     let max_range = 65001usize;
-    let factor = 6 * max_stars;
-    let factor2 = 24 * max_stars;
+    let factor = max_stars.saturating_mul(6);
+    let factor2 = max_stars.saturating_mul(24);
 
     let mut above = 0usize;
     let mut star_level_raw = 0.0f64;

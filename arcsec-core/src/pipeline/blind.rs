@@ -597,11 +597,21 @@ fn run_blind_pass(
 /// - [`ArcsecError::InsufficientStars`] if fewer than 5 stars are detected.
 /// - [`ArcsecError::InsufficientQuads`] if no hypothesis verifies; `found` is the
 ///   best verification score reached.
+/// - [`ArcsecError::InvalidParameter`] for a quad tolerance outside
+///   `0..=`[`MAX_QUAD_TOLERANCE`](crate::pipeline::solver::MAX_QUAD_TOLERANCE),
+///   which would match every code to every other.
 pub fn blind_solve(
     img: &crate::types::ImageBuffer,
     index: &AnetIndex,
     params: &BlindSolveParams,
 ) -> Result<(f64, f64, usize)> {
+    use crate::pipeline::solver::MAX_QUAD_TOLERANCE;
+    if !(0.0..=MAX_QUAD_TOLERANCE).contains(&params.quad_tolerance) {
+        return Err(ArcsecError::InvalidParameter(format!(
+            "quad tolerance must be between 0 and {MAX_QUAD_TOLERANCE}, got {}",
+            params.quad_tolerance
+        )));
+    }
     // ── Phase A: detect stars ─────────────────────────────────────────────────
     crate::cancel::progress(crate::cancel::stage::BLIND_INDEX, -1.0);
     let bg = get_background(img, params.max_stars);

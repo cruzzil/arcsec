@@ -181,6 +181,13 @@ pub fn download(url: &str, dest: &Path, label: &str) -> Result<(), String> {
 /// component (`..`, `/`) is skipped. Members `wanted` rejects are skipped too, so
 /// packaging files (a `.deb`'s `copyright`, a zip's readme) never reach the
 /// catalogue directory the solver reads.
+///
+/// The member is written beside its final name and renamed into place. The solver
+/// memory-maps star-database files, and a file truncated under a mapping faults the
+/// process reading it (SIGBUS), so a reinstall must never rewrite a tile in place
+/// while a solve may be reading it; nor may an interrupted one leave a short tile
+/// that reads as corrupt. Renaming also replaces a symbolic link at the name rather
+/// than writing through it.
 fn extract_member(
     mut reader: impl Read,
     path: &Path,
@@ -194,12 +201,18 @@ fn extract_member(
         return Ok(false);
     }
     let out_path = dest.join(name);
-    let mut out = BufWriter::new(
-        fs::File::create(&out_path).map_err(|e| format!("{}: {e}", out_path.display()))?,
-    );
-    io::copy(&mut reader, &mut out)
-        .and_then(|_| out.flush())
-        .map_err(|e| format!("{}: {e}", out_path.display()))?;
+    let part = part_path(&out_path);
+    let written = (|| {
+        let mut out = BufWriter::new(fs::File::create(&part)?);
+        io::copy(&mut reader, &mut out)?;
+        out.flush()?;
+        drop(out);
+        fs::rename(&part, &out_path)
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&part);
+        return Err(format!("{}: {e}", out_path.display()));
+    }
     Ok(true)
 }
 
@@ -310,8 +323,20 @@ pub fn extract_deb(
         let mut tar_out = BufWriter::new(
             fs::File::create(&tar_path).map_err(|e| format!("{}: {e}", tar_path.display()))?,
         );
-        lzma_rs::xz_decompress(&mut BufReader::new(payload), &mut tar_out)
-            .map_err(|e| format!("{}: xz decompress failed: {e:?}", archive.display()))?;
+        // lzma-rs overflows an addition on a corrupt stream footer (a backward
+        // size of u32::MAX), which panics in a build with overflow checks; a
+        // corrupt download is an error, not a crash.
+        let mut input = BufReader::new(payload);
+        std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            lzma_rs::xz_decompress(&mut input, &mut tar_out)
+        }))
+        .map_err(|_| {
+            format!(
+                "{}: xz decompress failed: corrupt stream",
+                archive.display()
+            )
+        })?
+        .map_err(|e| format!("{}: xz decompress failed: {e:?}", archive.display()))?;
         tar_out
             .flush()
             .map_err(|e| format!("{}: {e}", tar_path.display()))?;
@@ -481,6 +506,76 @@ mod tests {
             "escaped the destination"
         );
         assert!(n <= 2);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Reinstalling replaces each file rather than rewriting it: a solve may have
+    /// the old one memory-mapped, and truncating a mapped file faults the reader.
+    /// A link at the name is replaced too, not written through.
+    #[test]
+    fn extraction_replaces_files_instead_of_rewriting_them() {
+        let dir = scratch("replace");
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let tile = out.join("d50_0101.1476");
+        fs::write(&tile, b"old tile").unwrap();
+        let old = fs::File::open(&tile).unwrap();
+        #[cfg(unix)]
+        {
+            fs::write(dir.join("victim"), b"untouched").unwrap();
+            std::os::unix::fs::symlink(dir.join("victim"), out.join("d50_0201.1476")).unwrap();
+        }
+        let mut b = tar::Builder::new(Vec::new());
+        for name in ["d50_0101.1476", "d50_0201.1476"] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(8);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, name, &b"new tile"[..]).unwrap();
+        }
+        let n = untar(Cursor::new(b.into_inner().unwrap()), &out, &|_| true).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(fs::read(&tile).unwrap(), b"new tile");
+        // The file a reader already had open still holds what it held.
+        let mut was = String::new();
+        let mut old = old;
+        old.read_to_string(&mut was).unwrap();
+        assert_eq!(was, "old tile");
+        #[cfg(unix)]
+        {
+            assert_eq!(fs::read(dir.join("victim")).unwrap(), b"untouched");
+            assert!(
+                fs::symlink_metadata(out.join("d50_0201.1476"))
+                    .unwrap()
+                    .is_file()
+            );
+        }
+        let left: Vec<_> = fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 2, "temporary files left behind: {left:?}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `.deb` whose xz payload has a footer with a backward size of `u32::MAX`
+    /// (found by fuzzing): lzma-rs computes `(backward_size + 1) << 2`, which
+    /// overflows. The install must fail with an error, not a panic.
+    #[test]
+    fn a_corrupt_xz_payload_is_an_error() {
+        let dir = scratch("xz");
+        let xz: &[u8] = b"\xfd7zXZ\x00\x00\x04\xe6\xd6\xb4F\x00\x00\x00\x00\x1c\xdfD!x\x00\x00\
+            \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00";
+        let deb = dir.join("bad.deb");
+        fs::write(&deb, ar_with(&[("data.tar.xz", xz)])).unwrap();
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let err = extract_deb(&deb, &out, &|_| true).unwrap_err();
+        assert!(err.contains("xz decompress failed"), "{err}");
+        assert!(
+            !dir.join("bad.deb.tar").exists(),
+            "temporary tar left behind"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

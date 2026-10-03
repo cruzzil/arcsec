@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 arcsec-core = { workspace = true }
+log = { workspace = true }
 libc = "0.2"
 rsfitsio = "0.470.3"
 xisf = "0.5.1"

@@ -128,6 +128,12 @@ pub fn read_asdf_image(path: &Path) -> Result<ImageBuffer, String> {
     let array = locate_image(&tree)?;
     let (width, height) =
         shape_2d(&array).ok_or_else(|| "ASDF array is not two-dimensional".to_string())?;
+    // The whole array is decoded, every plane of a cube included, so it is the
+    // array's size that must be bounded before the crate allocates for it.
+    let elements = element_count(&array)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(usize::MAX);
+    image_io::checked_pixel_count(elements, 1, 1)?;
 
     let values = file
         .read_array_f64(&array)
@@ -156,7 +162,7 @@ pub fn read_asdf_dimensions(path: &Path) -> Option<(u32, u32)> {
     let (_, tree) = open_tree(path).ok()?;
     let array = locate_image(&tree).ok()?;
     let (w, h) = shape_2d(&array)?;
-    Some((w as u32, h as u32))
+    Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?))
 }
 
 /// Read a number from the first tree path that has one.
@@ -215,7 +221,7 @@ pub fn read_asdf_pixel_scale(path: &Path) -> Option<f64> {
             "pixel_scale",
         ],
     )
-    .filter(|v| *v > 0.0)
+    .filter(|v| v.is_finite() && *v > 0.0)
     {
         return Some(scale);
     }
@@ -385,6 +391,31 @@ mod tests {
         let err = read_asdf_image(&p).expect_err("should refuse");
         assert!(err.contains("two-dimensional"), "unhelpful error: {err}");
         assert_eq!(read_asdf_dimensions(&p), None);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A shape no block could fill, declared over a 16-byte block: refused before
+    /// the array is decoded, whichever plane would have been used.
+    #[test]
+    fn an_absurd_shape_is_refused_before_reading() {
+        let p = write_asdf(
+            "arcsec_a_huge.asdf",
+            "data",
+            &[2, 2],
+            &[1.0, 2.0, 3.0, 4.0],
+            &[],
+        );
+        let good = std::fs::read(&p).unwrap();
+        let text = String::from_utf8_lossy(&good).into_owned();
+        let shape = text.find("shape: [2, 2]").expect("fixture shape");
+        for huge in ["shape: [100000, 100000]", "shape: [65536, 65536, 65536]"] {
+            let mut bytes = good[..shape].to_vec();
+            bytes.extend_from_slice(huge.as_bytes());
+            bytes.extend_from_slice(&good[shape + "shape: [2, 2]".len()..]);
+            std::fs::write(&p, &bytes).unwrap();
+            let err = read_asdf_image(&p).expect_err(huge);
+            assert!(err.contains("limit"), "{huge}: {err}");
+        }
         std::fs::remove_file(&p).ok();
     }
 

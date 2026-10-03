@@ -20,6 +20,11 @@ license = "MIT"
 repository = "https://github.com/cruzzil/arcsec"
 homepage = "https://cruzzil.github.io/arcsec/"
 
+# `cargo fuzz` builds with `--cfg fuzzing`; a few limits are lowered under it so the
+# fuzzers exercise the rejection paths (see fuzz/).
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 # Prefer core:: and alloc:: over std:: wherever the item lives there. Nothing here is
 # no_std, but the distinction documents which parts of the code actually depend on the
 # operating system, and keeps that dependency from creeping into the pure maths.

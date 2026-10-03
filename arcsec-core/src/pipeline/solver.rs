@@ -19,7 +19,7 @@ use crate::types::{MatchedStar, PairedPositions, PlateConstants, Star, StarList,
 use crate::wcs::output::derive_wcs;
 
 use super::distortion::{Pair, Refined, StarGrid, best_linear, max_departure_px, refine};
-use super::spiral::SpiralSearch;
+use super::spiral::{spiral_len, spiral_position};
 
 /// Which pattern-matching algorithm to use in the catalog spiral loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -190,6 +190,14 @@ fn fit_pattern_pairs(
 /// 2 degrees (22 stars, spread 0.221, rms 0.65", rotation wrong by 1.56 degrees)
 /// from the Dec -88 field (46 stars, spread 0.207, rms 0.66", correct to 2.3").
 const MIN_VERIFIED_STARS: usize = 30;
+/// Most fields of search radius `solve_image` accepts: past this the spiral has
+/// trillions of positions and could never finish.
+const MAX_SPIRAL_RINGS: f64 = 1e6;
+/// Largest quad tolerance `solve_image` accepts, fourteen times the default (0.007).
+/// The ratios being compared lie in 0..1, so a much larger tolerance matches every
+/// image pattern to every catalogue pattern: tens of millions of pairs, gigabytes
+/// for the 3-star method, and never a solution.
+pub const MAX_QUAD_TOLERANCE: f64 = 0.1;
 /// Fewest verified stars accepted for an image with `nrstars_image` detections:
 /// [`MIN_VERIFIED_STARS`], relaxed to 15% of the detections for a sparse image, but
 /// never below 10. Unchanged from 200 detections up.
@@ -1349,8 +1357,9 @@ fn seeded_fallback(ctx: &SpiralCtx<'_>, deep: &StarList) -> Option<PositionOutco
 ///
 /// # Errors
 ///
-/// - [`ArcsecError::InvalidParameter`] if `fov` is not positive and finite, or
-///   `search_radius` is negative or not finite.
+/// - [`ArcsecError::InvalidParameter`] if `fov` is not positive and finite,
+///   `search_radius` is negative or not finite or more than a million fields, or
+///   `quad_tolerance` is outside `0..=`[`MAX_QUAD_TOLERANCE`].
 /// - [`ArcsecError::CatalogNotFound`] if `db_path` holds no database called `db_name`.
 /// - [`ArcsecError::InsufficientStars`] if fewer than 5 stars are detected.
 /// - [`ArcsecError::InsufficientQuads`] if no spiral position yields a verified match.
@@ -1369,6 +1378,22 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         return Err(ArcsecError::InvalidParameter(format!(
             "search radius must be non-negative, got {} rad",
             params.search_radius
+        )));
+    }
+    if !(0.0..=MAX_QUAD_TOLERANCE).contains(&params.quad_tolerance) {
+        return Err(ArcsecError::InvalidParameter(format!(
+            "quad tolerance must be between 0 and {MAX_QUAD_TOLERANCE}, got {}",
+            params.quad_tolerance
+        )));
+    }
+    // A radius of a million fields or more (a field under an arcsecond searched
+    // over the whole sky) is a search that cannot finish; refuse it rather than
+    // start. Real fields come nowhere near: 0.1° over 180° is 1800 fields.
+    if params.search_radius / params.fov > MAX_SPIRAL_RINGS {
+        return Err(ArcsecError::InvalidParameter(format!(
+            "a search radius of {:.0} fields cannot be searched (field {} rad)",
+            params.search_radius / params.fov,
+            params.fov
         )));
     }
 
@@ -1535,26 +1560,29 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     }
     .clamp(1, 64);
 
-    let positions: Vec<(i32, i32)> = SpiralSearch::new(max_distance).collect();
+    // The positions are computed as they are reached rather than collected first:
+    // a small field and a wide radius make a spiral of millions of positions, and
+    // a nonsensical field size from a corrupt header one of 10¹⁹.
+    let n_positions = usize::try_from(spiral_len(max_distance)).unwrap_or(usize::MAX);
     // Progress in at most 200 steps, each reported once, by whichever worker
     // starts the first position past it.
     let reported = core::sync::atomic::AtomicUsize::new(0);
-    let n_positions = positions.len().max(1);
-    let (step_distances, winner) = search_in_order(positions.len(), n_threads, |idx| {
+    let progress_total = n_positions.max(1);
+    let (step_distances, winner) = search_in_order(n_positions, n_threads, |idx| {
         // A cancelled search runs out the remaining positions as no-ops.
         if cancelled() {
             return (None, None);
         }
         if let Some(c) = &cancel {
-            let bucket = idx * 200 / n_positions;
+            let bucket = (idx as u128 * 200 / progress_total as u128) as usize;
             if bucket > reported.fetch_max(bucket, core::sync::atomic::Ordering::Relaxed) {
                 c.progress(
                     crate::cancel::stage::SEARCHING,
-                    idx as f64 / n_positions as f64,
+                    idx as f64 / progress_total as f64,
                 );
             }
         }
-        let (sx, sy) = positions[idx];
+        let (sx, sy) = spiral_position(idx as u64);
         let t = try_position(&ctx, idx, sx, sy);
         (t.sep_deg, t.outcome)
     });
@@ -1894,7 +1922,11 @@ mod tests {
 
     #[test]
     fn spiral_covers_origin_first() {
-        assert_eq!(SpiralSearch::new(5).next(), Some((0, 0)));
+        assert_eq!(
+            super::super::spiral::SpiralSearch::new(5).next(),
+            Some((0, 0))
+        );
+        assert_eq!(spiral_position(0), (0, 0));
     }
 
     #[test]
@@ -3039,6 +3071,10 @@ mod tests {
             (0.01, -0.1),
             (0.01, f64::NAN),
             (0.01, f64::INFINITY),
+            // A field of 1e-300 rad (from a corrupt header) over the sky: the spiral
+            // would have 10^19 positions.
+            (1e-300, core::f64::consts::PI),
+            (1e-7, core::f64::consts::PI),
         ] {
             let p = SolveParams {
                 fov,
@@ -3048,6 +3084,18 @@ mod tests {
             assert!(
                 matches!(solve_image(&img, &p), Err(ArcsecError::InvalidParameter(_))),
                 "fov {fov}, radius {radius}"
+            );
+        }
+        // A tolerance that matches everything to everything (found by fuzzing: the
+        // 3-star method then asked for gigabytes of triangle pairs).
+        for quad_tolerance in [f64::NAN, -0.001, 0.11, 1e141, f64::INFINITY] {
+            let p = SolveParams {
+                quad_tolerance,
+                ..base.clone()
+            };
+            assert!(
+                matches!(solve_image(&img, &p), Err(ArcsecError::InvalidParameter(_))),
+                "tolerance {quad_tolerance}"
             );
         }
     }

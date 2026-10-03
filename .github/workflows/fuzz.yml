@@ -1,0 +1,87 @@
+name: Fuzz
+
+# The cargo-fuzz targets in fuzz/ (see CONTRIBUTING.md, "Fuzzing"). Weekly, every
+# target runs for a few minutes from its saved corpus. On a pull request that touches
+# the code they compile, they are built and run for seconds, as a check that they
+# still compile against the readers. Advisory either way: a finding shows up on the
+# run and as an uploaded artifact, but never blocks a merge.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "300"
+  pull_request:
+    paths:
+      - "fuzz/**"
+      - "arcsec/src/**"
+      - "arcsec-core/src/**"
+      - "arcsec-io/src/**"
+      - ".github/workflows/fuzz.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - image_fits
+          - image_xisf
+          - image_asdf
+          - catalog_tiles
+          - anet_index
+          - arcsecix
+          - archive
+          - detect
+          - solve_params
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      # The corpus each run grows is kept between runs, so coverage accumulates.
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '20' || inputs.seconds || '300' }}
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          # install-action falls back to a musl build of cargo-fuzz, which defaults to
+          # its own target; ASan needs the glibc one.
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} -- \
+            -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -malloc_limit_mb=1024 \
+            -timeout=60 -max_len=400000
+
+      - name: Upload the failing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
