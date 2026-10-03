@@ -111,6 +111,7 @@ dependencies = [
  "arcsec-core",
  "asdf-rs",
  "libc",
+ "log",
  "rsfitsio",
  "xisf",
 ]
