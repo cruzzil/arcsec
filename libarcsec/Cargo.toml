@@ -11,9 +11,6 @@ documentation = "https://cruzzil.github.io/arcsec/c-library/"
 readme = "README.md"
 keywords = ["astronomy", "plate-solving", "ffi", "astrometry", "wcs"]
 categories = ["science", "external-ffi-bindings"]
-# The C library is distributed as built artefacts (release archives), not through
-# crates.io: a Rust program wants arcsec-core directly. See README.md.
-publish = false
 
 [lib]
 # libarcsec.so / libarcsec.dylib / arcsec.dll, and libarcsec.a / arcsec.lib.

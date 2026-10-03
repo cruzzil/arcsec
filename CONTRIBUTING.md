@@ -247,9 +247,8 @@ share one version, set in `[workspace.package]` in the root `Cargo.toml`.
    binaries and the C library (`libarcsec/dist.sh`) for Linux (x86-64, arm64), macOS
    (arm64) and Windows (x86-64), and publishes a GitHub Release with checksums and the
    changelog section as its notes.
-5. Publish to crates.io, `arcsec-core` and `arcsec-io` first since the CLI depends on
-   them; the C library (`libarcsec`) is `publish = false` and ships only as release
-   archives. Either run the
+5. Publish to crates.io: `arcsec-core` and `arcsec-io` first, since the CLI and the C
+   library (`libarcsec`) depend on them. Either run the
    "Publish to crates.io" workflow from the Actions tab on the tag (dry run first), or
    locally from a clean checkout of the tag:
 
@@ -259,5 +258,5 @@ share one version, set in `[workspace.package]` in the root `Cargo.toml`.
    ```
 
    `--workspace` publishes in dependency order and waits for `arcsec-core` to reach the
-   index before publishing `arcsec`. A version on crates.io cannot be replaced, only
+   index before publishing `arcsec` and `libarcsec`. A version on crates.io cannot be replaced, only
    yanked, so check the dry run.

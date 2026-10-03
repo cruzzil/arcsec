@@ -23,7 +23,7 @@ one is called out as such.
   cancel callbacks. Separate solver handles may
   solve concurrently, each with its own thread budget. Release archives
   `arcsec-lib-v<version>-<platform>` carry it for every platform the program is built
-  for. See [libarcsec/README.md](libarcsec/README.md) and the website's C library page.
+  for, and its source is published on crates.io as `libarcsec`. See [libarcsec/README.md](libarcsec/README.md) and the website's C library page.
 - `arcsec-core`: `auto` (the command line's decisions as a library: `SolveRequest`,
   `Plan`, catalogue directory, database selection, binning, index discovery and the
   deepest-index preference),

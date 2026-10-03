@@ -13,7 +13,8 @@
 # Usage: libarcsec/dist.sh [--target TRIPLE] [--profile PROFILE] DEST
 #
 #   --target    a Rust target triple; default: the host
-#   --profile   cargo profile; default: dist (release without debug info)
+#   --profile   cargo profile; default: dist (release without debug info), or
+#               release when run from the crates.io source, which has no dist
 #
 # To install system-wide: libarcsec/dist.sh /tmp/stage && sudo cp -a /tmp/stage/. /usr/local/
 # (then `sudo ldconfig` on Linux). The pkg-config and CMake files find everything
@@ -22,12 +23,13 @@ set -euo pipefail
 
 target=""
 profile="dist"
+profile_set=0
 dest=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) target="$2"; shift 2 ;;
-    --profile) profile="$2"; shift 2 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --profile) profile="$2"; profile_set=1; shift 2 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) dest="$1"; shift ;;
   esac
@@ -35,13 +37,21 @@ done
 [ -n "$dest" ] || { echo "usage: $0 [--target TRIPLE] [--profile PROFILE] DEST" >&2; exit 2; }
 
 here="$(cd "$(dirname "$0")" && pwd)"
-root="$(cd "$here/.." && pwd)"
+# Run from the repository (libarcsec/ inside the workspace) or from the crate's own
+# source as crates.io ships it, where this directory is the root and the workspace's
+# `dist` profile does not exist.
+if [ -f "$here/../Cargo.toml" ] && grep -q '^\[workspace\]' "$here/../Cargo.toml"; then
+  root="$(cd "$here/.." && pwd)"; crate=libarcsec
+else
+  root="$here"; crate=.
+  [ "$profile_set" = 1 ] || profile=release
+fi
 cd "$root"
 
 host="$(rustc -vV | sed -n 's/^host: //p')"
 [ -n "$target" ] || target="$host"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-abi="$(sed -n 's/^pub const ARCSEC_ABI_VERSION: u32 = \([0-9]*\);/\1/p' libarcsec/src/lib.rs)"
+abi="$(sed -n 's/^pub const ARCSEC_ABI_VERSION: u32 = \([0-9]*\);/\1/p' "$crate/src/lib.rs")"
 
 # One build gives the shared and static libraries; the static library's system
 # dependencies come from rustc's --print native-static-libs.
@@ -52,12 +62,12 @@ cargo rustc --locked --color never -p libarcsec --lib --profile "$profile" --tar
   -- --print native-static-libs 2> >(tee "$log" >&2)
 native="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1 | sed 's/\x1b\[[0-9;]*m//g')"
 rm -f "$log"
-out="target/$target/$profile"
+out="${CARGO_TARGET_DIR:-target}/$target/$profile"
 
 mkdir -p "$dest/include" "$dest/lib/pkgconfig" "$dest/lib/cmake/arcsec" "$dest/share/doc/arcsec"
 dest="$(cd "$dest" && pwd)"
-cp libarcsec/include/arcsec.h "$dest/include/"
-cp libarcsec/README.md "$dest/share/doc/arcsec/README.md"
+cp "$crate/include/arcsec.h" "$dest/include/"
+cp "$crate/README.md" "$dest/share/doc/arcsec/README.md"
 cp LICENSE "$dest/share/doc/arcsec/LICENSE"
 
 libs_extra=""
@@ -101,9 +111,9 @@ fill() {
       -e "s|@STATIC_NAME@|$static|g" -e "s|@SONAME@|$soname|g" \
       -e "s|@SIZEOF_VOID_P@|$ptr|g" "$1"
 }
-fill libarcsec/pkg/arcsec.pc.in > "$dest/lib/pkgconfig/arcsec.pc"
-fill libarcsec/pkg/arcsecConfig.cmake.in > "$dest/lib/cmake/arcsec/arcsecConfig.cmake"
-fill libarcsec/pkg/arcsecConfigVersion.cmake.in > "$dest/lib/cmake/arcsec/arcsecConfigVersion.cmake"
+fill "$crate/pkg/arcsec.pc.in" > "$dest/lib/pkgconfig/arcsec.pc"
+fill "$crate/pkg/arcsecConfig.cmake.in" > "$dest/lib/cmake/arcsec/arcsecConfig.cmake"
+fill "$crate/pkg/arcsecConfigVersion.cmake.in" > "$dest/lib/cmake/arcsec/arcsecConfigVersion.cmake"
 
 echo "libarcsec $version (ABI $abi) for $target in $dest:"
 (cd "$dest" && find . -type f -o -type l | sort | sed 's|^\./|  |')
