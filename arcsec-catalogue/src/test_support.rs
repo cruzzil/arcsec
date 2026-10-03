@@ -1,7 +1,7 @@
 //! Fixtures for the catalogue manager's tests: a temporary directory and a tiny
-//! star database. arcsec-core's richer fixtures are private to that crate; the
-//! all-sky `.001` layout is simple enough to write here, and is a real database
-//! format, so `catalog` and the index builder treat it exactly as an installed one.
+//! star database. The all-sky `.001` layout is simple enough to write here, and is
+//! a real database format, so the registry and the index builder treat it exactly
+//! as an installed one.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub struct TempDir(PathBuf);
 
 impl TempDir {
+    /// Create a new empty directory; `tag` goes in its name.
+    #[must_use]
     pub fn new(tag: &str) -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
@@ -20,6 +22,8 @@ impl TempDir {
         Self(p)
     }
 
+    /// The directory.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.0
     }

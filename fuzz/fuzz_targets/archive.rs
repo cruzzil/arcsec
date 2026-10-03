@@ -59,15 +59,15 @@ fuzz_target!(|data: &[u8]| {
         }
         1 => {
             fs::write(&archive, rest).unwrap();
-            extract_deb(&archive, &out, &wanted)
+            extract_deb(&archive, &out, &wanted, &mut |_| {})
         }
         2 => {
             fs::write(&archive, ar_with("data.tar", rest)).unwrap();
-            extract_deb(&archive, &out, &wanted)
+            extract_deb(&archive, &out, &wanted, &mut |_| {})
         }
         _ => {
             fs::write(&archive, ar_with("data.tar.xz", rest)).unwrap();
-            extract_deb(&archive, &out, &wanted)
+            extract_deb(&archive, &out, &wanted, &mut |_| {})
         }
     };
     // Nothing may land beside the destination, and the decompressed payload is

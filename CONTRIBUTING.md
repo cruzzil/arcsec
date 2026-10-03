@@ -92,8 +92,9 @@ A crash leaves its input in `fuzz/artifacts/<target>/`. Reproduce it with
 fix it where it happens, and add the shrunk input (or a test that builds it) as a
 regression test next to the fix. Under the fuzzer (`cfg(fuzzing)`) the image readers let
 panics through rather than turning them into errors, and the pixel limit is lowered, so
-that both are findings rather than hidden. The image readers, the CLI's own sources, are
-compiled into the fuzz crate from `arcsec/src/` (see `fuzz/src/lib.rs`).
+that both are findings rather than hidden. The fuzz crate depends on the crates it
+tests by path: the image readers come from `arcsec-io` and the archive extraction from
+`arcsec-catalogue` (see `fuzz/src/lib.rs`).
 
 A scheduled workflow (`.github/workflows/fuzz.yml`) runs every target for five minutes
 each week, keeping the corpus between runs, and builds and briefly runs them on a pull
@@ -191,7 +192,8 @@ matching or the WCS fit.
 - **`unsafe` FFI lives only in `libarcsec/`.** The C library (crate `libarcsec`) is
   the boundary between C and Rust and nothing else: solving stays in `arcsec-core`, the
   decisions the CLI makes for a user in `arcsec_core::auto` (shared by the CLI and the
-  library, so they cannot drift), and image reading in `arcsec-io`. Every `extern "C"`
+  library, so they cannot drift), image reading in `arcsec-io`, and catalogue management
+  (the registry, downloads, the blind index build) in `arcsec-catalogue`. Every `extern "C"`
   function runs its body under `error::guard` (no panic crosses into C), checks its
   pointers, and reads caller structs through `util::read_versioned`. The header
   `libarcsec/include/arcsec.h` is generated: after changing the API, run
@@ -233,12 +235,13 @@ what to keep in step.
 
 ## Releasing
 
-The `arcsec`, `arcsec-core` and `arcsec-io` crates and the C library (`libarcsec`)
-share one version, set in `[workspace.package]` in the root `Cargo.toml`.
+The `arcsec`, `arcsec-core`, `arcsec-io` and `arcsec-catalogue` crates and the C
+library (`libarcsec`) share one version, set in `[workspace.package]` in the root
+`Cargo.toml`.
 
-1. Set the new version in `[workspace.package]` and in the `arcsec-core` and
-   `arcsec-io` entries of `[workspace.dependencies]`, then run `cargo check` so
-   `Cargo.lock` follows.
+1. Set the new version in `[workspace.package]` and in the `arcsec-core`, `arcsec-io`
+   and `arcsec-catalogue` entries of `[workspace.dependencies]`, then run `cargo check`
+   so `Cargo.lock` follows.
 2. In `CHANGELOG.md`, rename `[Unreleased]` to the new version with today's date, add
    a fresh empty `[Unreleased]` above it, and update the comparison links at the bottom.
 3. Commit, and let CI pass on `main`.
@@ -247,8 +250,9 @@ share one version, set in `[workspace.package]` in the root `Cargo.toml`.
    binaries and the C library (`libarcsec/dist.sh`) for Linux (x86-64, arm64), macOS
    (arm64) and Windows (x86-64), and publishes a GitHub Release with checksums and the
    changelog section as its notes.
-5. Publish to crates.io: `arcsec-core` and `arcsec-io` first, since the CLI and the C
-   library (`libarcsec`) depend on them. Either run the
+5. Publish to crates.io in dependency order: `arcsec-core` first, then `arcsec-io` and
+   `arcsec-catalogue`, which depend on it, then the CLI (`arcsec`) and the C library
+   (`libarcsec`). Either run the
    "Publish to crates.io" workflow from the Actions tab on the tag (dry run first), or
    locally from a clean checkout of the tag:
 
@@ -257,6 +261,6 @@ share one version, set in `[workspace.package]` in the root `Cargo.toml`.
    cargo publish --workspace --locked
    ```
 
-   `--workspace` publishes in dependency order and waits for `arcsec-core` to reach the
-   index before publishing `arcsec` and `libarcsec`. A version on crates.io cannot be replaced, only
+   `--workspace` publishes in that order and waits for each crate to reach the index
+   before publishing the ones that depend on it. A version on crates.io cannot be replaced, only
    yanked, so check the dry run.

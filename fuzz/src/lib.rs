@@ -1,25 +1,10 @@
 //! Shared support for the fuzz targets.
 //!
-//! The image readers come from the `arcsec-io` crate. The archive extraction lives
-//! in the `arcsec` binary crate, which has no library target to depend on, so its
-//! source file is compiled into this crate directly.
+//! The image readers come from the `arcsec-io` crate, and the catalogue archive
+//! extraction from `arcsec-catalogue`.
 
-// As in arcsec's main.rs: `alloc` must be declared before `alloc::` paths resolve.
-extern crate alloc;
-
+pub use arcsec_catalogue::fetch;
 pub use arcsec_io::{asdf_io, fits_io, image_io, xisf_io};
-
-/// The CLI's `catalog_cmd/fetch.rs`, which refers to its parent as `super`; this
-/// crate's root stands in for that parent.
-#[allow(dead_code)]
-#[path = "../../arcsec/src/catalog_cmd/fetch.rs"]
-pub mod fetch;
-
-/// Stand-in for the CLI's byte-count formatter, which only progress output uses.
-#[must_use]
-pub fn human(bytes: u64) -> String {
-    format!("{bytes} B")
-}
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

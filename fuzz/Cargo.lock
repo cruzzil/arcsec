@@ -24,8 +24,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
+name = "arcsec-catalogue"
+version = "0.5.0"
+dependencies = [
+ "arcsec-core",
+ "libc",
+ "lzma-rs",
+ "tar",
+ "ureq",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
 name = "arcsec-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libc",
  "log",
@@ -37,23 +50,15 @@ dependencies = [
 name = "arcsec-fuzz"
 version = "0.0.0"
 dependencies = [
+ "arcsec-catalogue",
  "arcsec-core",
  "arcsec-io",
- "asdf-rs",
- "libc",
  "libfuzzer-sys",
- "log",
- "lzma-rs",
- "rsfitsio",
- "tar",
- "ureq",
- "xisf",
- "zip",
 ]
 
 [[package]]
 name = "arcsec-io"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arcsec-core",
  "asdf-rs",
@@ -279,7 +284,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -677,7 +682,7 @@ dependencies = [
  "getrandom 0.2.17",
  "libc",
  "untrusted",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -711,7 +716,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -871,7 +876,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1105,6 +1110,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
 dependencies = [
  "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+dependencies = [
+ "windows-link",
 ]
 
 [[package]]

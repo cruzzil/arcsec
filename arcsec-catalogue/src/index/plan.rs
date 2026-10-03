@@ -17,13 +17,11 @@ use std::path::{Path, PathBuf};
 
 use arcsec_core::index::{BlindIndex, SourceStamp, TierSpec, tier_fov_range};
 
-use super::human;
-use super::index_cmd::tiers_for;
+use super::tiers_for;
+use crate::error::{Error, Result};
+use crate::format::{duration, gigabytes, human_bytes as human};
 
-/// Databases an index can be built from, deepest first: the first installed one is
-/// the default source, and an index built from an earlier one is preferred. Shared
-/// with the solver's choice of index ([`arcsec_core::auto::preferred_index`]).
-pub use arcsec_core::auto::{SOURCES, depth_rank};
+use arcsec_core::auto::{SOURCES, depth_rank};
 
 /// Fields (short side, degrees) an index built for database `db` covers by default.
 ///
@@ -34,6 +32,7 @@ pub use arcsec_core::auto::{SOURCES, depth_rank};
 /// half of those fields blind (docs/offline-index.md §7.1), so it is offered, not
 /// built unasked. The high end is 30° for everything below W08: the 3° and 1.5°
 /// tiers cost under 3 MB together.
+#[must_use]
 pub fn default_fields(db: &str) -> (f64, f64) {
     match db.to_ascii_lowercase().as_str() {
         "d05" => (0.6, 30.0),
@@ -66,6 +65,7 @@ pub struct Plan {
 impl Plan {
     /// A plan for `source` covering `min_fov`–`max_fov`, minus any tier the database
     /// is too shallow for.
+    #[must_use]
     pub fn new(source: &str, min_fov: f64, max_fov: f64) -> Self {
         let mut tiers = tiers_for(min_fov, max_fov);
         if let Some(r) = shallowest_useless_radius(source) {
@@ -81,6 +81,8 @@ impl Plan {
 
     /// The plan for a set of installed solving databases: built from the deepest,
     /// covering every one's default field range. `min`/`max` override the range.
+    /// `None` if none of `dbs` is a solving database.
+    #[must_use]
     pub fn for_databases(dbs: &[&str], min: Option<f64>, max: Option<f64>) -> Option<Self> {
         let source = SOURCES.into_iter().find(|s| dbs.contains(s))?;
         let lo = dbs
@@ -96,11 +98,13 @@ impl Plan {
 
     /// The fields the plan's tiers actually serve, which is a little wider than
     /// asked for: (smallest, largest) short side in degrees.
+    #[must_use]
     pub fn coverage(&self) -> (f64, f64) {
         coverage_of(self.tiers.iter().map(|t| t.radius_deg))
     }
 
     /// One line: `D80, fields 0.3°–30°`.
+    #[must_use]
     pub fn label(&self) -> String {
         format!(
             "{}, fields {}°–{}°",
@@ -112,6 +116,7 @@ impl Plan {
 }
 
 /// Fields served by tiers of these disc radii (degrees).
+#[must_use]
 pub fn coverage_of(radii: impl Iterator<Item = f64>) -> (f64, f64) {
     radii
         .map(tier_fov_range)
@@ -221,6 +226,7 @@ pub struct Estimate {
 
 impl Estimate {
     /// Estimate the cost of `plan` on `threads` worker threads.
+    #[must_use]
     pub fn of(plan: &Plan, threads: usize) -> Self {
         let threads = threads.max(1) as f64;
         let costs: Vec<TierCost> = plan
@@ -252,6 +258,7 @@ impl Estimate {
     }
 
     /// `~287 MB on disk, ~30 s, ~0.6 GB memory`.
+    #[must_use]
     pub fn summary(&self) -> String {
         format!(
             "~{} on disk, {}, ~{} memory",
@@ -259,29 +266,6 @@ impl Estimate {
             duration(self.secs),
             gigabytes(self.ram)
         )
-    }
-}
-
-/// A duration for a prompt, rounded the way a person would say it.
-pub fn duration(secs: f64) -> String {
-    if secs < 10.0 {
-        "under 10 s".to_string()
-    } else if secs < 55.0 {
-        format!("~{} s", ((secs / 5.0).round() * 5.0) as u64)
-    } else if secs < 3600.0 {
-        format!("~{} min", ((secs / 60.0).round() as u64).max(1))
-    } else {
-        let m = (secs / 60.0).round() as u64;
-        format!("~{} h {} min", m / 60, m % 60)
-    }
-}
-
-/// `0.6 GB`, or `90 MB` below 0.1 GB.
-pub fn gigabytes(bytes: u64) -> String {
-    if bytes < 100_000_000 {
-        human(bytes)
-    } else {
-        format!("{:.1} GB", bytes as f64 / 1e9)
     }
 }
 
@@ -297,7 +281,7 @@ pub const NOTICE_RAM_FRACTION: f64 = 0.5;
 /// Headroom kept free on the disk beyond the index itself: 10 % plus this.
 pub const DISK_MARGIN: u64 = 100_000_000;
 
-/// What the machine has to spare (see `sys`), injectable for tests.
+/// What the machine has to spare (see [`crate::sys`]), injectable for tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Machine {
     /// Free bytes on the catalogue's disk, if known.
@@ -309,11 +293,13 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// Probe the real machine for building into `dir` with `threads` (0 = all).
+    /// Probe the real machine for building into `dir` with `threads` (0 =
+    /// [`arcsec_core::max_threads`]).
+    #[must_use]
     pub fn probe(dir: &Path, threads: usize) -> Self {
         Self {
-            free_disk: super::sys::free_space(dir),
-            avail_ram: super::sys::available_memory(),
+            free_disk: crate::sys::free_space(dir),
+            avail_ram: crate::sys::available_memory(),
             threads: if threads == 0 {
                 arcsec_core::max_threads()
             } else {
@@ -324,50 +310,108 @@ impl Machine {
 }
 
 /// Bytes that must be free to write `bytes` of new files.
+#[must_use]
 pub fn disk_needed(bytes: u64) -> u64 {
     bytes + bytes / 10 + DISK_MARGIN
 }
 
-/// `Err` with a message if `needed` bytes will not fit on a disk with `free` bytes
-/// (unknown free space never blocks).
-pub fn check_disk(dir: &Path, needed: u64, free: Option<u64>) -> Result<(), String> {
+/// [`Error::NoSpace`] if `needed` bytes (before the margin of [`disk_needed`]) will
+/// not fit in `dir`, on a disk with `free` bytes. Unknown free space never blocks.
+///
+/// # Errors
+///
+/// [`Error::NoSpace`].
+pub fn check_disk(dir: &Path, needed: u64, free: Option<u64>) -> Result<()> {
     match free {
-        Some(f) if f < disk_needed(needed) => Err(format!(
-            "not enough free space in {}: this needs about {} and {} is free",
-            dir.display(),
-            human(disk_needed(needed)),
-            human(f)
-        )),
+        Some(f) if f < disk_needed(needed) => Err(Error::NoSpace {
+            dir: dir.to_path_buf(),
+            needed: disk_needed(needed),
+            free: f,
+        }),
         _ => Ok(()),
     }
 }
 
-/// Why a build deserves its own notice, if it does: one phrase per reason.
-pub fn concerns(est: &Estimate, m: &Machine) -> Vec<String> {
+/// A reason a build deserves its own notice and question. `Display` gives one
+/// phrase: `it needs 1.5 GB of disk`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Concern {
+    /// The index is bigger than [`NOTICE_BYTES`].
+    Disk {
+        /// Its size, bytes.
+        bytes: u64,
+    },
+    /// The build takes longer than [`NOTICE_SECS`].
+    Time {
+        /// Expected seconds.
+        secs: f64,
+        /// On this many threads.
+        threads: usize,
+    },
+    /// The build needs more memory than is available.
+    MemoryShort {
+        /// Peak memory, bytes.
+        need: u64,
+        /// Available, bytes.
+        avail: u64,
+    },
+    /// The build needs more than [`NOTICE_RAM_FRACTION`] of the memory available.
+    MemoryTight {
+        /// Peak memory, bytes.
+        need: u64,
+        /// Available, bytes.
+        avail: u64,
+    },
+}
+
+impl core::fmt::Display for Concern {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Disk { bytes } => write!(f, "it needs {} of disk", human(bytes)),
+            Self::Time { secs, threads } => {
+                write!(f, "it takes {} on {threads} threads", duration(secs))
+            }
+            Self::MemoryShort { need, avail } => write!(
+                f,
+                "it needs ~{} of memory and only {} is available; the build may fail or swap heavily",
+                gigabytes(need),
+                gigabytes(avail)
+            ),
+            Self::MemoryTight { need, avail } => write!(
+                f,
+                "it needs ~{} of memory, more than half of the {} available",
+                gigabytes(need),
+                gigabytes(avail)
+            ),
+        }
+    }
+}
+
+/// Why a build deserves its own notice, if it does. Unknown memory never raises a
+/// concern.
+#[must_use]
+pub fn concerns(est: &Estimate, m: &Machine) -> Vec<Concern> {
     let mut v = Vec::new();
     if est.bytes > NOTICE_BYTES {
-        v.push(format!("it needs {} of disk", human(est.bytes)));
+        v.push(Concern::Disk { bytes: est.bytes });
     }
     if est.secs > NOTICE_SECS {
-        v.push(format!(
-            "it takes {} on {} threads",
-            duration(est.secs),
-            m.threads
-        ));
+        v.push(Concern::Time {
+            secs: est.secs,
+            threads: m.threads,
+        });
     }
     if let Some(avail) = m.avail_ram {
         if est.ram as f64 > avail as f64 {
-            v.push(format!(
-                "it needs ~{} of memory and only {} is available; the build may fail or swap heavily",
-                gigabytes(est.ram),
-                gigabytes(avail)
-            ));
+            v.push(Concern::MemoryShort {
+                need: est.ram,
+                avail,
+            });
         } else if est.ram as f64 > NOTICE_RAM_FRACTION * avail as f64 {
-            v.push(format!(
-                "it needs ~{} of memory, more than half of the {} available",
-                gigabytes(est.ram),
-                gigabytes(avail)
-            ));
+            v.push(Concern::MemoryTight {
+                need: est.ram,
+                avail,
+            });
         }
     }
     v
@@ -390,6 +434,7 @@ pub struct Existing {
 
 impl Existing {
     /// Read an index's header; `None` if it is not a usable index.
+    #[must_use]
     pub fn open(path: &Path) -> Option<Self> {
         let ix = BlindIndex::open(path).ok()?;
         Some(Self {
@@ -402,11 +447,13 @@ impl Existing {
 
     /// The index the solver uses in `dir`: the one built from the deepest database
     /// (by [`SOURCES`]), then by file name.
+    #[must_use]
     pub fn preferred(dir: &Path) -> Option<Self> {
         arcsec_core::auto::preferred_index(dir).and_then(|p| Self::open(&p))
     }
 
     /// Whether its tiers serve every field of `plan` (with 1 % slack).
+    #[must_use]
     pub fn covers(&self, plan: &Plan) -> bool {
         let (lo, hi) = plan.coverage();
         self.coverage.0 <= lo * 1.01 && self.coverage.1 >= hi * 0.99
@@ -427,6 +474,7 @@ pub enum Freshness {
 }
 
 /// Compare an index's recorded source with the database in `db_dir`.
+#[must_use]
 pub fn freshness(ex: &Existing, db_dir: &Path) -> Freshness {
     if !arcsec_core::catalog::catalog_present(db_dir, &ex.source) {
         return Freshness::SourceMissing;
@@ -492,6 +540,7 @@ impl core::fmt::Display for Rebuild {
 
 /// Why the index in a directory should be (re)built for `plan`, or `None` if the one
 /// there already serves it.
+#[must_use]
 pub fn rebuild_reason(existing: Option<&Existing>, plan: &Plan, db_dir: &Path) -> Option<Rebuild> {
     let Some(ex) = existing else {
         return Some(Rebuild::Missing);
@@ -517,6 +566,7 @@ pub fn rebuild_reason(existing: Option<&Existing>, plan: &Plan, db_dir: &Path) -
 /// Widen `plan` to keep whatever the existing index already served, so a rebuild
 /// prompted by a new database never drops tiers the user chose (`--min-fov 0.15`).
 /// Bounds the user set explicitly are kept as given.
+#[must_use]
 pub fn keep_existing_range(
     plan: Plan,
     existing: Option<&Existing>,
@@ -551,7 +601,7 @@ pub fn keep_existing_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog_cmd::testutil::TempDir;
+    use crate::test_support::TempDir;
     use arcsec_core::index::{BuiltIndex, TierInfo};
 
     fn radii(p: &Plan) -> Vec<f64> {
@@ -636,17 +686,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn durations_read_naturally() {
-        assert_eq!(duration(3.0), "under 10 s");
-        assert_eq!(duration(22.0), "~20 s");
-        assert_eq!(duration(107.0), "~2 min");
-        assert_eq!(duration(782.0), "~13 min");
-        assert_eq!(duration(5400.0), "~1 h 30 min");
-        assert_eq!(gigabytes(1_276_000_000), "1.3 GB");
-        assert_eq!(gigabytes(90_000_000), "90.0 MB");
-    }
-
     fn est(bytes: u64, secs: f64, ram: u64) -> Estimate {
         Estimate {
             bytes,
@@ -679,9 +718,12 @@ mod tests {
             ..roomy
         };
         let c = concerns(&est(287_000_000, 30.0, 650_000_000), &pi);
-        assert!(c.len() == 1 && c[0].contains("more than half"), "{c:?}");
+        assert!(
+            c.len() == 1 && c[0].to_string().contains("more than half"),
+            "{c:?}"
+        );
         let c = concerns(&est(287_000_000, 30.0, 1_300_000_000), &pi);
-        assert!(c[0].contains("may fail"), "{c:?}");
+        assert!(c[0].to_string().contains("may fail"), "{c:?}");
         // Unknown memory never raises a concern.
         let unknown = Machine {
             avail_ram: None,
@@ -694,7 +736,9 @@ mod tests {
     fn the_disk_check_refuses_only_when_it_knows() {
         let d = Path::new("/cat");
         assert!(check_disk(d, 287_000_000, Some(10_000_000_000)).is_ok());
-        let e = check_disk(d, 287_000_000, Some(300_000_000)).unwrap_err();
+        let e = check_disk(d, 287_000_000, Some(300_000_000))
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("not enough free space"), "{e}");
         assert!(check_disk(d, 287_000_000, None).is_ok());
         assert_eq!(disk_needed(1_000_000_000), 1_200_000_000);

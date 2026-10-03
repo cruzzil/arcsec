@@ -42,7 +42,7 @@ whatever the base path. Components build links with `url()` from `src/lib/url.ts
 The site states facts about the CLI; when those change, the site must too.
 
 - **Catalogues.** `src/lib/catalogues.ts` copies the registry in
-  `arcsec/src/catalog_cmd/registry.rs` and the rule in `cmd_recommend`. After changing
+  `arcsec-catalogue/src/registry.rs` and the rule in `recommend` (`manage.rs`). After changing
   either, update it and compare a few answers with `arcsec catalog recommend --fov <deg>`.
 - **Options, exit codes and output files** are described in
   `src/content/docs/reference/cli.mdx`; compare with `arcsec --help`.

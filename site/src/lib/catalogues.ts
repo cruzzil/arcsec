@@ -1,8 +1,9 @@
 // The catalogues `arcsec catalog` can install, and its `recommend` rule.
 //
-// This mirrors REGISTRY in arcsec/src/catalog_cmd/registry.rs and cmd_recommend in
-// arcsec/src/catalog_cmd/mod.rs, and the blind-index sizes the cost model in
-// arcsec/src/catalog_cmd/plan.rs gives. Keep them in step: if a catalogue, size, field
+// This mirrors REGISTRY in arcsec-catalogue/src/registry.rs, `recommend` in
+// arcsec-catalogue/src/manage.rs and `cmd_recommend` in arcsec/src/catalog_cmd/mod.rs,
+// and the blind-index sizes the cost model in arcsec-catalogue/src/index/plan.rs
+// gives. Keep them in step: if a catalogue, size, field
 // range or index plan changes there, change it here too, and re-check a few fields
 // against `arcsec catalog recommend --fov <deg>`.
 

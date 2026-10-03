@@ -2,14 +2,29 @@
 
 All notable changes to arcsec are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The `arcsec`, `arcsec-core`
-and `arcsec-io` crates and the C library (libarcsec) share one version number.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The `arcsec`, `arcsec-core`,
+`arcsec-io` and `arcsec-catalogue` crates and the C library (libarcsec) share one version
+number.
 
 The ASTAP-compatible command line - flags, stdout format, output files and exit codes -
 is part of the public interface: a change to any of them is listed here, and a breaking
 one is called out as such.
 
 ## [Unreleased]
+
+### Added
+
+- `arcsec-catalogue`, a new crate holding what `arcsec catalog` does, for other
+  front-ends to reuse: the registry of installable catalogues, the catalogue directory,
+  database choice for a field (re-exported from `arcsec-core`), downloading and
+  unpacking, removing and verifying, and planning, costing and building the blind index.
+  Results and errors are typed; downloads and index builds report progress through a
+  callback and stop when an `arcsec_core::cancel` token is cancelled. Downloading is
+  behind the default `download` feature, so a program that only needs to find
+  catalogues can leave out the HTTPS and archive code. The command line now uses it;
+  its behaviour and output are unchanged.
+- `arcsec-core`: `index::build_index` stops with `ArcsecError::Cancelled` when the
+  thread's cancellation token is cancelled.
 
 ## [0.5.0] - 2026-10-04
 
