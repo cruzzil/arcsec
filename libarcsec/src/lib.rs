@@ -9,7 +9,7 @@
 //!
 //! The C API is declared in `include/arcsec.h`, which is generated from this
 //! source by cbindgen and checked by a test (`ARCSEC_BLESS=1 cargo test -p
-//! arcsec-capi header` regenerates it). `README.md` describes the API for C
+//! libarcsec header` regenerates it). `README.md` describes the API for C
 //! programmers: ownership, threading, errors and versioning.
 //!
 //! # Rules every entry point follows

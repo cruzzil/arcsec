@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../../.."
 run() {
   echo "── $1 ──"
   shift
-  env "$@" cargo test --locked -p arcsec-capi --test c_api -- --nocapture
+  env "$@" cargo test --locked -p libarcsec --test c_api -- --nocapture
 }
 
 want=${1:-all}

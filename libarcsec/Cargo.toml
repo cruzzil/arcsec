@@ -1,5 +1,5 @@
 [package]
-name = "arcsec-capi"
+name = "libarcsec"
 description = "C library interface to the arcsec plate solver (libarcsec)"
 version.workspace = true
 edition.workspace = true

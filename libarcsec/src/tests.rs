@@ -670,6 +670,6 @@ fn header_is_current() {
     assert!(
         committed == generated,
         "include/arcsec.h is out of date: regenerate it with \
-         `ARCSEC_BLESS=1 cargo test -p arcsec-capi header_is_current` and commit it"
+         `ARCSEC_BLESS=1 cargo test -p libarcsec header_is_current` and commit it"
     );
 }

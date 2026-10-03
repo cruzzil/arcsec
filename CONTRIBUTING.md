@@ -130,14 +130,14 @@ matching or the WCS fit.
 - **Threads go through `arcsec_core::max_threads()`**, so `--threads 1` stays genuinely
   single-threaded. A thread a solver spawns inherits the caller's
   `with_max_threads` limit and cancellation token (see `auto/blind.rs`).
-- **`unsafe` FFI lives only in `libarcsec/`.** The C library (crate `arcsec-capi`) is
+- **`unsafe` FFI lives only in `libarcsec/`.** The C library (crate `libarcsec`) is
   the boundary between C and Rust and nothing else: solving stays in `arcsec-core`, the
   decisions the CLI makes for a user in `arcsec_core::auto` (shared by the CLI and the
   library, so they cannot drift), and image reading in `arcsec-io`. Every `extern "C"`
   function runs its body under `error::guard` (no panic crosses into C), checks its
   pointers, and reads caller structs through `util::read_versioned`. The header
   `libarcsec/include/arcsec.h` is generated: after changing the API, run
-  `ARCSEC_BLESS=1 cargo test -p arcsec-capi header_is_current` and commit the result.
+  `ARCSEC_BLESS=1 cargo test -p libarcsec header_is_current` and commit the result.
   A change that would break a compiled C program raises `ARCSEC_ABI_VERSION` (and
   `ABI` in `libarcsec/build.rs`); adding functions, or fields at the end of a struct,
   does not. See [libarcsec/README.md](libarcsec/README.md).
@@ -175,7 +175,7 @@ what to keep in step.
 
 ## Releasing
 
-The `arcsec`, `arcsec-core` and `arcsec-io` crates and the C library (`arcsec-capi`)
+The `arcsec`, `arcsec-core` and `arcsec-io` crates and the C library (`libarcsec`)
 share one version, set in `[workspace.package]` in the root `Cargo.toml`.
 
 1. Set the new version in `[workspace.package]` and in the `arcsec-core` and
@@ -190,7 +190,7 @@ share one version, set in `[workspace.package]` in the root `Cargo.toml`.
    (arm64) and Windows (x86-64), and publishes a GitHub Release with checksums and the
    changelog section as its notes.
 5. Publish to crates.io, `arcsec-core` and `arcsec-io` first since the CLI depends on
-   them; the C library (`arcsec-capi`) is `publish = false` and ships only as release
+   them; the C library (`libarcsec`) is `publish = false` and ships only as release
    archives. Either run the
    "Publish to crates.io" workflow from the Actions tab on the tag (dry run first), or
    locally from a clean checkout of the tag:

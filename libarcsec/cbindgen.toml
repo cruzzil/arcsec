@@ -1,6 +1,6 @@
 # cbindgen configuration for include/arcsec.h. The header is committed and a test
-# (`cargo test -p arcsec-capi header`) fails if it differs from what this generates;
-# regenerate with `ARCSEC_BLESS=1 cargo test -p arcsec-capi header`.
+# (`cargo test -p libarcsec header`) fails if it differs from what this generates;
+# regenerate with `ARCSEC_BLESS=1 cargo test -p libarcsec header`.
 
 language = "C"
 include_guard = "ARCSEC_H"

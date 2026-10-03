@@ -93,17 +93,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arcsec-capi"
-version = "0.4.0"
-dependencies = [
- "arcsec-core",
- "arcsec-io",
- "cbindgen",
- "cc",
- "log",
-]
-
-[[package]]
 name = "arcsec-core"
 version = "0.4.0"
 dependencies = [
@@ -691,6 +680,17 @@ checksum = "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598"
 dependencies = [
  "cfg-if",
  "cpufeatures",
+]
+
+[[package]]
+name = "libarcsec"
+version = "0.4.0"
+dependencies = [
+ "arcsec-core",
+ "arcsec-io",
+ "cbindgen",
+ "cc",
+ "log",
 ]
 
 [[package]]
