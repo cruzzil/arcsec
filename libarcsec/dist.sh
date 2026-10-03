@@ -46,9 +46,11 @@ abi="$(sed -n 's/^pub const ARCSEC_ABI_VERSION: u32 = \([0-9]*\);/\1/p' libarcse
 # One build gives the shared and static libraries; the static library's system
 # dependencies come from rustc's --print native-static-libs.
 log="$(mktemp)"
-cargo rustc --locked -p libarcsec --lib --profile "$profile" --target "$target" \
+# --color never: with CARGO_TERM_COLOR=always (as in CI) the note line ends in an
+# ANSI reset, which would end up glued to the last library (`-lc\e[0m`).
+cargo rustc --locked --color never -p libarcsec --lib --profile "$profile" --target "$target" \
   -- --print native-static-libs 2> >(tee "$log" >&2)
-native="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1)"
+native="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1 | sed 's/\x1b\[[0-9;]*m//g')"
 rm -f "$log"
 out="target/$target/$profile"
 

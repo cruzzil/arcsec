@@ -12,6 +12,9 @@ usize_is_size_t = true
 sys_includes = ["stddef.h", "stdint.h"]
 no_includes = true
 line_length = 100
+# Always LF: the default ("Auto") gives CRLF on Windows, and the header test
+# compares byte for byte.
+line_endings = "LF"
 tab_width = 4
 
 header = """

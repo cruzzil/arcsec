@@ -661,7 +661,7 @@ fn header_is_current() {
         .expect("cbindgen could not generate the header");
     let mut generated = Vec::new();
     bindings.write(&mut generated);
-    let generated = String::from_utf8(generated).unwrap();
+    let generated = String::from_utf8(generated).unwrap().replace("\r\n", "\n");
     let path = std::path::Path::new(dir).join("include").join("arcsec.h");
     if std::env::var_os("ARCSEC_BLESS").is_some() {
         std::fs::write(&path, &generated).unwrap();
@@ -670,9 +670,15 @@ fn header_is_current() {
     let committed = std::fs::read_to_string(&path)
         .unwrap_or_default()
         .replace("\r\n", "\n");
-    assert!(
-        committed == generated,
-        "include/arcsec.h is out of date: regenerate it with \
-         `ARCSEC_BLESS=1 cargo test -p libarcsec header_is_current` and commit it"
-    );
+    if committed != generated {
+        let first = committed
+            .lines()
+            .zip(generated.lines())
+            .position(|(a, b)| a != b)
+            .map_or_else(|| "length".to_string(), |i| format!("line {}", i + 1));
+        panic!(
+            "include/arcsec.h is out of date (first difference: {first}): regenerate it \
+             with `ARCSEC_BLESS=1 cargo test -p libarcsec header_is_current` and commit it"
+        );
+    }
 }
