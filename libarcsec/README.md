@@ -36,6 +36,18 @@ sudo cp -a /tmp/arcsec/. /usr/local/ # optional: install it
 sudo ldconfig                        # Linux, after installing
 ```
 
+Or from the source published on crates.io, without cloning the repository (the
+crate is `libarcsec`; there `dist.sh` builds the `release` profile, since the
+workspace's `dist` profile does not come with it):
+
+```bash
+curl -L https://crates.io/api/v1/crates/libarcsec/X.Y.Z/download | tar xz
+cd libarcsec-X.Y.Z && ./dist.sh /tmp/arcsec
+```
+
+A Rust program should depend on [`arcsec-core`](https://crates.io/crates/arcsec-core)
+instead; libarcsec is only the C surface over it.
+
 `dist.sh` builds the `dist` profile (optimised, no debug info) and produces:
 
 | Path | Linux | macOS | Windows (MSVC) |
