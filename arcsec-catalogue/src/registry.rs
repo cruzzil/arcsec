@@ -1,5 +1,5 @@
-//! Every catalogue `arcsec catalog` knows how to install, and how to recognise its
-//! files on disk.
+//! Every catalogue arcsec knows how to install, and how to recognise its files on
+//! disk.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ pub enum Purpose {
 }
 
 impl Purpose {
+    /// One word for listings: `solving`, `photometry` or `blind`.
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Solving => "solving",
@@ -36,9 +38,12 @@ pub enum Archive {
     Loose,
 }
 
+/// One installable catalogue.
+#[derive(Debug)]
 pub struct Entry {
     /// Short name the user types.
     pub id: &'static str,
+    /// What it is for.
     pub purpose: Purpose,
     /// Download URL. For `Loose` sets this is a descriptive template only; the
     /// individual URLs come from [`loose_files`].
@@ -50,6 +55,7 @@ pub struct Entry {
     pub fov: Option<(f64, f64)>,
     /// How to recognise this catalogue's files on disk.
     pub files: Files,
+    /// One line describing it.
     pub desc: &'static str,
 }
 
@@ -68,8 +74,16 @@ pub struct Entry {
 /// claims, so a prefix match would delete files that are not arcsec's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Files {
-    AstapDb { prefix: &'static str },
-    AnetIndex { set: AnetSet },
+    /// An ASTAP star database, `<prefix>_RRCC.<ext>`.
+    AstapDb {
+        /// The file name prefix (`d50`).
+        prefix: &'static str,
+    },
+    /// A set of Astrometry.net index files.
+    AnetIndex {
+        /// Which set.
+        set: AnetSet,
+    },
 }
 
 /// The Astrometry.net index sets arcsec can install.
@@ -108,11 +122,11 @@ impl AnetSet {
     }
 }
 
-/// Extensions an ASTAP star database can use, and the file count each implies.
-pub use arcsec_core::auto::ASTAP_EXTS;
+use arcsec_core::auto::ASTAP_EXTS;
 
 impl Files {
     /// Does `name` belong to this catalogue?
+    #[must_use]
     pub fn owns(&self, name: &str) -> bool {
         match *self {
             Self::AstapDb { prefix } => {
@@ -252,11 +266,13 @@ pub const REGISTRY: &[Entry] = &[
 ];
 
 /// Look up a catalogue by the name the user typed, ignoring case.
+#[must_use]
 pub fn find(id: &str) -> Option<&'static Entry> {
     REGISTRY.iter().find(|e| e.id.eq_ignore_ascii_case(id))
 }
 
 /// `(url, file name)` of every file in a `Loose` entry; empty for any other.
+#[must_use]
 pub fn loose_files(e: &Entry) -> Vec<(String, String)> {
     match e.id {
         "anet-4100" => (7..=19)
@@ -284,6 +300,7 @@ pub fn loose_files(e: &Entry) -> Vec<(String, String)> {
 }
 
 /// Is `e` present in `dir`? (At least partly, for a `Loose` set.)
+#[must_use]
 pub fn is_installed(dir: &Path, e: &Entry) -> bool {
     e.files.probe(dir).is_some()
 }
@@ -293,6 +310,7 @@ pub fn is_installed(dir: &Path, e: &Entry) -> bool {
 /// Differs from [`is_installed`] only for `Loose` sets, where an interrupted
 /// install leaves some of the files; `install` must then fetch the rest rather
 /// than report the set as already installed.
+#[must_use]
 pub fn is_complete(dir: &Path, e: &Entry) -> bool {
     match e.archive {
         Archive::Loose => loose_files(e)
@@ -319,11 +337,13 @@ fn installed_files(dir: &Path, files: &Files) -> Vec<PathBuf> {
 }
 
 /// Files belonging to `e` that are present in `dir`.
+#[must_use]
 pub fn files_of(dir: &Path, e: &Entry) -> Vec<PathBuf> {
     installed_files(dir, &e.files)
 }
 
 /// Bytes an installed catalogue occupies on disk.
+#[must_use]
 pub fn installed_size(dir: &Path, e: &Entry) -> u64 {
     files_of(dir, e)
         .iter()
@@ -334,6 +354,7 @@ pub fn installed_size(dir: &Path, e: &Entry) -> u64 {
 
 /// How many files a complete install of `e` has, when that is known before looking
 /// at the disk. For an ASTAP database it depends on the grid, so see `verify`.
+#[must_use]
 pub fn expected_file_count(e: &Entry) -> Option<usize> {
     match e.archive {
         Archive::Loose => Some(loose_files(e).len()),
@@ -343,6 +364,7 @@ pub fn expected_file_count(e: &Entry) -> Option<usize> {
 
 /// The number of files an installed ASTAP database should have, from the extension
 /// of the file that [`is_installed`] found.
+#[must_use]
 pub fn astap_file_count(dir: &Path, e: &Entry) -> Option<usize> {
     let Files::AstapDb { .. } = e.files else {
         return None;

@@ -25,17 +25,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 libfuzzer-sys = "0.4.13"
 arcsec-core = { path = "../arcsec-core" }
 arcsec-io = { path = "../arcsec-io" }
-# The CLI's archive extraction is compiled into this crate from its source file
-# (see src/lib.rs), so it needs its dependencies, at the CLI's versions.
-rsfitsio = "0.470.3"
-libc = "0.2"
-log = "0.4.34"
-xisf = "0.5.1"
-asdf-rs = "0.2.1"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-tar = "0.4.46"
-lzma-rs = "0.3.0"
-ureq = "3.4.2"
+arcsec-catalogue = { path = "../arcsec-catalogue" }
 
 [[bin]]
 name = "image_fits"

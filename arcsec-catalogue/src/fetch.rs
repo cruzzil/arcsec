@@ -1,15 +1,45 @@
-//! Downloading and unpacking catalogues.
+//! Downloading and unpacking catalogues: resumable HTTPS downloads, and zip and
+//! `.deb` (ar, tar, xz) extraction that cannot write outside its destination.
+//!
+//! [`crate::install`] puts these together for a registry entry; they are public for
+//! programs that fetch files of their own the same way.
 
 use std::fs;
-use std::io::{self, BufReader, BufWriter, IsTerminal as _, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
-use super::human;
+use crate::error::{Error, Result};
 
-/// Is stderr a terminal? Controls whether progress redraws in place.
-fn stderr_is_terminal() -> bool {
-    io::stderr().is_terminal()
+/// Progress of one [`download`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadEvent {
+    /// The transfer has begun. `total` is the complete length if the server said,
+    /// and `resumed_from` the bytes an earlier attempt left, now being continued.
+    Started {
+        /// Complete length, bytes.
+        total: Option<u64>,
+        /// Bytes already on disk.
+        resumed_from: u64,
+    },
+    /// More bytes have arrived (reported per chunk of up to 1 MiB).
+    Progress {
+        /// Bytes on disk so far, including any resumed from.
+        written: u64,
+        /// Complete length, if known.
+        total: Option<u64>,
+    },
+    /// The server closed the transfer after `written` bytes. Whether that is the
+    /// whole file is checked afterwards ([`Error::Truncated`]).
+    Finished {
+        /// Bytes on disk.
+        written: u64,
+    },
+    /// An earlier attempt had already received every byte but was stopped before
+    /// renaming the file into place; it has been renamed, and nothing transferred.
+    AlreadyComplete {
+        /// The file's size.
+        bytes: u64,
+    },
 }
 
 /// `name` with `suffix` appended: `a.zip` + `.part` = `a.zip.part`.
@@ -20,7 +50,8 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Where the resumable partial download of `dest` is kept.
-fn part_path(dest: &Path) -> PathBuf {
+#[must_use]
+pub fn part_path(dest: &Path) -> PathBuf {
     with_suffix(dest, ".part")
 }
 
@@ -43,15 +74,33 @@ fn range_starts_at(content_range: Option<&str>, have: u64) -> bool {
         == Some(have)
 }
 
-/// Stream `url` to `dest`, reporting progress.
+/// Stream `url` to `dest`, reporting progress to `on_event`. `label` names the
+/// download in errors.
 ///
-/// Downloads to `dest.part` and renames on success, so an interrupted run never
-/// leaves a half file that later looks installed. Existing `.part` files are resumed
-/// with a Range request where the server allows it — these are multi-hundred-megabyte
-/// downloads and starting over is not acceptable.
-pub fn download(url: &str, dest: &Path, label: &str) -> Result<(), String> {
+/// Downloads to `dest.part` ([`part_path`]) and renames on success, so an
+/// interrupted run never leaves a half file that later looks installed. An existing
+/// `.part` file is resumed with a Range request where the server allows it — these
+/// are multi-hundred-megabyte downloads and starting over is not acceptable.
+///
+/// Stops with [`Error::Cancelled`] between chunks once the thread's
+/// [`arcsec_core::cancel`] token is cancelled, keeping the `.part` file to resume.
+///
+/// # Errors
+///
+/// A network or HTTP failure, a server that resumes at the wrong offset, a transfer
+/// cut short, or a file that cannot be written.
+pub fn download(
+    url: &str,
+    dest: &Path,
+    label: &str,
+    on_event: &mut dyn FnMut(DownloadEvent),
+) -> Result<()> {
     let part = part_path(dest);
     let have = fs::metadata(&part).map_or(0, |m| m.len());
+    let net = |e: &dyn core::fmt::Display| Error::Network {
+        label: label.to_string(),
+        message: e.to_string(),
+    };
 
     // Statuses are checked here rather than turned into errors by ureq, so that a
     // 416 on a resume can be told apart from a real failure.
@@ -65,7 +114,7 @@ pub fn download(url: &str, dest: &Path, label: &str) -> Result<(), String> {
     if have > 0 {
         req = req.header("Range", &format!("bytes={have}-"));
     }
-    let resp = req.call().map_err(|e| format!("{label}: {e}"))?;
+    let resp = req.call().map_err(|e| net(&e))?;
     let status = resp.status().as_u16();
 
     // 416: the partial file is not a prefix the server can continue. If the server
@@ -78,17 +127,20 @@ pub fn download(url: &str, dest: &Path, label: &str) -> Result<(), String> {
             .get("content-range")
             .and_then(|v| v.to_str().ok());
         if unsatisfied_range_length(range) == Some(have) {
-            fs::rename(&part, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-            eprintln!("  {label}: already downloaded ({})", human(have));
+            fs::rename(&part, dest).map_err(Error::io(dest))?;
+            on_event(DownloadEvent::AlreadyComplete { bytes: have });
             return Ok(());
         }
-        fs::remove_file(&part).map_err(|e| format!("{}: {e}", part.display()))?;
-        return download(url, dest, label);
+        fs::remove_file(&part).map_err(Error::io(&part))?;
+        return download(url, dest, label, on_event);
     }
 
     let resuming = status == 206;
     if !(status == 200 || resuming) {
-        return Err(format!("{label}: HTTP {status}"));
+        return Err(Error::Http {
+            label: label.to_string(),
+            status,
+        });
     }
     if resuming {
         let range = resp
@@ -97,11 +149,10 @@ pub fn download(url: &str, dest: &Path, label: &str) -> Result<(), String> {
             .and_then(|v| v.to_str().ok());
         if !range_starts_at(range, have) {
             let _ = fs::remove_file(&part);
-            return Err(format!(
-                "{label}: the server resumed at the wrong offset ({}); the partial \
-                 download was discarded, run the install again",
-                range.unwrap_or("no Content-Range")
-            ));
+            return Err(Error::BadResume {
+                label: label.to_string(),
+                range: range.unwrap_or("no Content-Range").to_string(),
+            });
         }
     }
     let total = resp
@@ -117,58 +168,45 @@ pub fn download(url: &str, dest: &Path, label: &str) -> Result<(), String> {
         .write(true)
         .truncate(!resuming)
         .open(&part)
-        .map_err(|e| format!("{}: {e}", part.display()))?;
-
-    let tty = stderr_is_terminal();
-    let (cr, tail) = if tty { ("\r", "   ") } else { ("", "\n") };
-    // Animate only on a terminal. Redirected to a file or a pipe, carriage returns
-    // do not overwrite, so an unconditional update turns a 117 MB download into
-    // hundreds of lines of noise.
-    let interval_ms = if tty { 300 } else { 15_000 };
+        .map_err(Error::io(&part))?;
 
     let mut written = if resuming { have } else { 0 };
+    on_event(DownloadEvent::Started {
+        total,
+        resumed_from: written,
+    });
     let mut reader = resp.into_body().into_reader();
     let mut buf = vec![0u8; 1 << 20];
-    let mut last_report = Instant::now();
     loop {
-        let n = reader.read(&mut buf).map_err(|e| format!("{label}: {e}"))?;
+        if arcsec_core::cancel::is_cancelled() {
+            // Keep what arrived: the next attempt resumes from it.
+            let _ = out.sync_all();
+            return Err(Error::Cancelled);
+        }
+        let n = reader.read(&mut buf).map_err(|e| net(&e))?;
         if n == 0 {
             break;
         }
-        out.write_all(&buf[..n])
-            .map_err(|e| format!("{}: {e}", part.display()))?;
+        out.write_all(&buf[..n]).map_err(Error::io(&part))?;
         written += n as u64;
-        if last_report.elapsed().as_millis() > interval_ms {
-            match total {
-                Some(t) if t > 0 => eprint!(
-                    "{cr}  {label}: {} / {} ({:.0}%){tail}",
-                    human(written),
-                    human(t),
-                    written as f64 / t as f64 * 100.0,
-                ),
-                _ => eprint!("{cr}  {label}: {}{tail}", human(written)),
-            }
-            let _ = io::stderr().flush();
-            last_report = Instant::now();
-        }
+        on_event(DownloadEvent::Progress { written, total });
     }
-    out.sync_all()
-        .map_err(|e| format!("{}: {e}", part.display()))?;
+    out.sync_all().map_err(Error::io(&part))?;
     drop(out);
-    eprintln!("{cr}  {label}: {} downloaded          ", human(written));
+    on_event(DownloadEvent::Finished { written });
 
     // A connection that closes early can look like a clean end of stream. Keep the
     // partial file so the next run resumes it, but do not promote it.
     if let Some(t) = total
         && written != t
     {
-        return Err(format!(
-            "{label}: download ended at {} of {}; run the install again to resume",
-            human(written),
-            human(t)
-        ));
+        return Err(Error::Truncated {
+            label: label.to_string(),
+            written,
+            total: t,
+        });
     }
-    fs::rename(&part, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    fs::rename(&part, dest).map_err(Error::io(dest))?;
     Ok(())
 }
 
@@ -193,7 +231,10 @@ fn extract_member(
     path: &Path,
     dest: &Path,
     wanted: &dyn Fn(&str) -> bool,
-) -> Result<bool, String> {
+) -> Result<bool> {
+    if arcsec_core::cancel::is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     let Some(name) = path.file_name() else {
         return Ok(false);
     };
@@ -211,23 +252,30 @@ fn extract_member(
     })();
     if let Err(e) = written {
         let _ = fs::remove_file(&part);
-        return Err(format!("{}: {e}", out_path.display()));
+        return Err(Error::io(out_path)(e));
     }
     Ok(true)
 }
 
-/// Unpack the wanted files of a `.zip` into `dest`, flattening paths.
-pub fn extract_zip(
-    archive: &Path,
-    dest: &Path,
-    wanted: &dyn Fn(&str) -> bool,
-) -> Result<usize, String> {
-    let f = fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
-    let mut zip = zip::ZipArchive::new(BufReader::new(f))
-        .map_err(|e| format!("{}: {e}", archive.display()))?;
+/// Unpack the files of a `.zip` that `wanted` accepts (by file name) into `dest`,
+/// flattening paths. Returns how many were extracted.
+///
+/// # Errors
+///
+/// An unreadable or corrupt archive, a file that cannot be written, or
+/// [`Error::Cancelled`] between members.
+pub fn extract_zip(archive: &Path, dest: &Path, wanted: &dyn Fn(&str) -> bool) -> Result<usize> {
+    let bad = |e: &dyn core::fmt::Display| Error::Archive {
+        path: archive.to_path_buf(),
+        message: e.to_string(),
+    };
+    let f = fs::File::open(archive).map_err(Error::io(archive))?;
+    let mut zip = zip::ZipArchive::new(BufReader::new(f)).map_err(|e| bad(&e))?;
     let mut n = 0;
     for i in 0..zip.len() {
-        let item = zip.by_index(i).map_err(|e| e.to_string())?;
+        let item = zip
+            .by_index(i)
+            .map_err(|e| Error::Malformed(e.to_string()))?;
         if item.is_dir() {
             continue;
         }
@@ -288,41 +336,51 @@ fn ar_member<R: Read + Seek>(
     Ok(None)
 }
 
-/// Unpack a `.deb`: find `data.tar.xz`, xz-decompress it, then untar the wanted
-/// files, flattening paths (the ASTAP packages install under `opt/astap/`).
+/// Unpack a `.deb`: find `data.tar.xz`, xz-decompress it, then untar the files
+/// `wanted` accepts, flattening paths (the ASTAP packages install under
+/// `opt/astap/`). `on_decompress` is told the payload's name before the
+/// decompression, which takes a while for a large package. Returns how many files
+/// were extracted.
 ///
 /// Streams throughout: the payload is decompressed to a temporary file beside the
 /// archive rather than into memory, because D80's is over a gigabyte and a
 /// Raspberry Pi is a common place to run this.
+///
+/// # Errors
+///
+/// As [`extract_zip`], and a package whose payload is neither plain nor
+/// xz-compressed.
 pub fn extract_deb(
     archive: &Path,
     dest: &Path,
     wanted: &dyn Fn(&str) -> bool,
-) -> Result<usize, String> {
-    let io_err = |e: io::Error| format!("{}: {e}", archive.display());
-    let mut f = fs::File::open(archive).map_err(io_err)?;
+    on_decompress: &mut dyn FnMut(&str),
+) -> Result<usize> {
+    let bad = |message: String| Error::Archive {
+        path: archive.to_path_buf(),
+        message,
+    };
+    let mut f = fs::File::open(archive).map_err(Error::io(archive))?;
     let (name, start, size) = ar_member(&mut f, "data.tar")
-        .map_err(io_err)?
-        .ok_or_else(|| format!("{}: no data.tar member (not a .deb?)", archive.display()))?;
-    f.seek(SeekFrom::Start(start)).map_err(io_err)?;
+        .map_err(Error::io(archive))?
+        .ok_or_else(|| bad("no data.tar member (not a .deb?)".to_string()))?;
+    f.seek(SeekFrom::Start(start)).map_err(Error::io(archive))?;
     let payload = f.take(size);
 
     if name == "data.tar" {
         return untar(payload, dest, wanted);
     }
     if !name.ends_with(".xz") {
-        return Err(format!(
-            "{}: {name}: only xz-compressed .deb payloads are supported",
-            archive.display()
-        ));
+        return Err(bad(format!(
+            "{name}: only xz-compressed .deb payloads are supported"
+        )));
     }
 
-    eprintln!("  decompressing {name} ...");
+    on_decompress(&name);
     let tar_path = with_suffix(archive, ".tar");
     let result = (|| {
-        let mut tar_out = BufWriter::new(
-            fs::File::create(&tar_path).map_err(|e| format!("{}: {e}", tar_path.display()))?,
-        );
+        let mut tar_out =
+            BufWriter::new(fs::File::create(&tar_path).map_err(Error::io(&tar_path))?);
         // lzma-rs overflows an addition on a corrupt stream footer (a backward
         // size of u32::MAX), which panics in a build with overflow checks; a
         // corrupt download is an error, not a crash.
@@ -330,19 +388,11 @@ pub fn extract_deb(
         std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
             lzma_rs::xz_decompress(&mut input, &mut tar_out)
         }))
-        .map_err(|_| {
-            format!(
-                "{}: xz decompress failed: corrupt stream",
-                archive.display()
-            )
-        })?
-        .map_err(|e| format!("{}: xz decompress failed: {e:?}", archive.display()))?;
-        tar_out
-            .flush()
-            .map_err(|e| format!("{}: {e}", tar_path.display()))?;
+        .map_err(|_| bad("xz decompress failed: corrupt stream".to_string()))?
+        .map_err(|e| bad(format!("xz decompress failed: {e:?}")))?;
+        tar_out.flush().map_err(Error::io(&tar_path))?;
         drop(tar_out);
-        let tar_in =
-            fs::File::open(&tar_path).map_err(|e| format!("{}: {e}", tar_path.display()))?;
+        let tar_in = fs::File::open(&tar_path).map_err(Error::io(&tar_path))?;
         untar(BufReader::new(tar_in), dest, wanted)
     })();
     let _ = fs::remove_file(&tar_path);
@@ -350,17 +400,18 @@ pub fn extract_deb(
 }
 
 /// Extract the wanted regular files of a tar stream into `dest`, flattening paths.
-fn untar(reader: impl Read, dest: &Path, wanted: &dyn Fn(&str) -> bool) -> Result<usize, String> {
+fn untar(reader: impl Read, dest: &Path, wanted: &dyn Fn(&str) -> bool) -> Result<usize> {
+    let malformed = |e: io::Error| Error::Malformed(e.to_string());
     let mut ar = tar::Archive::new(reader);
     let mut n = 0;
-    for entry in ar.entries().map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+    for entry in ar.entries().map_err(malformed)? {
+        let entry = entry.map_err(malformed)?;
         // Regular files only: a symlink or hard link member could otherwise point
         // the next write outside `dest`.
         if !entry.header().entry_type().is_file() {
             continue;
         }
-        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        let path = entry.path().map_err(malformed)?.into_owned();
         if extract_member(entry, &path, dest, wanted)? {
             n += 1;
         }
@@ -570,7 +621,9 @@ mod tests {
         fs::write(&deb, ar_with(&[("data.tar.xz", xz)])).unwrap();
         let out = dir.join("out");
         fs::create_dir_all(&out).unwrap();
-        let err = extract_deb(&deb, &out, &|_| true).unwrap_err();
+        let err = extract_deb(&deb, &out, &|_| true, &mut |_| {})
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("xz decompress failed"), "{err}");
         assert!(
             !dir.join("bad.deb.tar").exists(),

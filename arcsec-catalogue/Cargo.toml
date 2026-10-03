@@ -1,0 +1,49 @@
+[package]
+name = "arcsec-catalogue"
+description = "Catalogue management for the arcsec plate solver: which star databases and blind indexes exist, where they live, downloading them and building the blind index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcsec-catalogue"
+readme = "README.md"
+keywords = ["astronomy", "plate-solving", "star-catalog", "astap", "gaia"]
+categories = ["science"]
+# Only what a build needs. The README is added automatically via `readme`.
+include = ["src/**/*.rs", "LICENSE"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["download"]
+# Downloading and unpacking catalogues (`fetch`, `install`): HTTPS through ureq
+# (rustls, so `ring` and a C compiler), zip, tar and xz. Without it the crate still
+# knows what exists, what is installed, where, and builds the blind index.
+download = ["dep:ureq", "dep:zip", "dep:tar", "dep:lzma-rs"]
+# Exposes `arcsec_catalogue::test_support` (a temporary directory and a tiny star
+# database) to the tests of other workspace crates. Not part of the public API.
+test-support = []
+
+[dependencies]
+arcsec-core = { workspace = true }
+ureq = { version = "3.4.2", optional = true }
+# ASTAP's catalogue zips are all deflate (checked 2026-09-26), so only that
+# method is enabled. The defaults add zstd, bzip2, lzma, ppmd and AES, and zstd
+# compiles bundled C.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+tar = { version = "0.4.46", optional = true }
+lzma-rs = { version = "0.3.0", optional = true }
+
+# Free disk space and memory before building a blind index or downloading (sys.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+
+
+[package.metadata.docs.rs]
+all-features = true

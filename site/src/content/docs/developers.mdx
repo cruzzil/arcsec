@@ -64,6 +64,17 @@ The solving code is published separately as
 [`arcsec-core`](https://crates.io/crates/arcsec-core), for use from other Rust programs.
 Its API documentation is on [docs.rs](https://docs.rs/arcsec-core).
 
+Two smaller crates sit beside it, for programs that want more of what the command line
+does:
+
+- [`arcsec-io`](https://docs.rs/arcsec-io) reads FITS, XISF and ASDF images, and writes
+  ASTAP's `.wcs` and `.ini` files.
+- [`arcsec-catalogue`](https://docs.rs/arcsec-catalogue) is `arcsec catalog` as a
+  library: which catalogues exist and which are installed, where they live, which to use
+  for a field, downloading and verifying them, and building the blind index. Downloading
+  is an optional feature, so a program that only needs to find catalogues does not pull
+  in the HTTPS code.
+
 ## The C library
 
 Programs written in C or C++ can solve in-process with **libarcsec**, a shared or static

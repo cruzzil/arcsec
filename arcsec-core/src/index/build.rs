@@ -332,9 +332,13 @@ fn read_strip(params: &BuildParams, lo: f64, hi: f64, cap: f64) -> Result<Vec<Sr
 /// Build an index. Deterministic: the same database and tiers give the same file
 /// (apart from the build time), whatever the thread count.
 ///
+/// Stops with [`crate::ArcsecError::Cancelled`] before the next declination strip
+/// once the thread's [`crate::cancel`] token is cancelled.
+///
 /// # Errors
 ///
-/// [`crate::ArcsecError::CatalogIo`] if a database file cannot be read.
+/// [`crate::ArcsecError::CatalogIo`] if a database file cannot be read, or
+/// [`crate::ArcsecError::Cancelled`].
 pub fn build_index(
     params: &BuildParams,
     mut progress: impl FnMut(&BuildProgress),
@@ -378,6 +382,10 @@ pub fn build_index(
         let mut stars_read = 0usize;
 
         for si in 0..n_strips {
+            // A strip of a deep tier takes seconds: the place to notice a cancel.
+            if crate::cancel::is_cancelled() {
+                return Err(crate::ArcsecError::Cancelled);
+            }
             let lo = -FRAC_PI_2 + si as f64 * strip;
             let hi = (lo + strip).min(FRAC_PI_2);
             let src = read_strip(params, lo - r, hi + r, spec.mag_cap)?;

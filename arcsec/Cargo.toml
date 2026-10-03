@@ -23,20 +23,12 @@ env_logger = { workspace = true }
 log = { workspace = true }
 arcsec-core = { workspace = true }
 arcsec-io = { workspace = true }
+arcsec-catalogue = { workspace = true }
 # Signal handling while an index is written (catalog_cmd/index_cmd.rs).
 libc = "0.2"
-ureq = "3.4.2"
-# ASTAP's catalogue zips are all deflate (checked 2026-09-26), so only that
-# method is enabled. The defaults add zstd, bzip2, lzma, ppmd and AES, and zstd
-# compiles bundled C.
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-tar = "0.4.46"
-lzma-rs = "0.3.0"
 
-# Free disk space and memory before building a blind index (catalog_cmd/sys.rs).
-# Already in the dependency tree through other crates.
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+[dev-dependencies]
+arcsec-catalogue = { workspace = true, features = ["test-support"] }
 
 # Gives arcsec.exe a Windows version resource; see build.rs.
 [target.'cfg(windows)'.build-dependencies]
