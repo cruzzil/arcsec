@@ -39,7 +39,10 @@ use alloc::borrow::Cow;
 use core::f64::consts::PI;
 use std::path::{Path, PathBuf};
 
-pub use blind::{collect_index_files, find_arcsec_index};
+pub use blind::{
+    SOURCES, collect_index_files, depth_rank, find_arcsec_index, preferred_index,
+    wants_installed_index,
+};
 pub use db::{
     ASTAP_EXTS, DB_FOV_RANGES, available_dbs, default_db_path, has_star_database, select_db_for_fov,
 };

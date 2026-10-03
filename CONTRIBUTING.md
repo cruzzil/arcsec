@@ -67,6 +67,12 @@ scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db
 scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db --offset-hint 0.3
 ```
 
+`catalog install` also builds the blind index into the catalogue directory, and the
+solver consults an installed index automatically at `-r` 10° and above. The benchmark's
+default `-r 5` never does; to measure the spiral alone at wider radii, install with
+`--no-index`, or make sure neither the catalogue directory nor the `--db` directory
+holds a `*.arcsecix` (the solver looks in both).
+
 For a change with wider reach — detection, the fit, anything that might behave
 differently on real cameras, wide fields or unusual formats — run the expanded corpus too
 (635 images from ten archives plus simulated camera artefacts, about 6.5 GB beyond v1;
@@ -122,8 +128,12 @@ matching or the WCS fit.
 - **Angles are radians inside `arcsec-core`.** Degrees, hours and arcseconds appear
   only at the CLI boundary and in output files. `--ra` is in hours and `--spd` is
   south-pole distance (90 + Dec) in degrees, both ASTAP conventions.
-- **The sign of CDELT1.** `WcsSolution.cdelt1` is negative, as FITS requires; the
-  `.wcs` file writes its absolute value, as ASTAP does. Neither is a bug.
+- **CDELT and CROTA follow astap_cli.** `CDELT1` carries the image's parity (negative
+  for the sky's usual handedness, positive when mirrored), `CDELT2` is positive, and
+  `CROTA1`/`CROTA2` are the rotations of the +X and +Y axes in the FITS (Calabretta &
+  Greisen) sense, exactly as `astap_cli` derives them from the CD matrix
+  (`wcs::output::old_style_wcs`). The CD matrix is what readers should use; these
+  old-style keywords are there for ASTAP compatibility.
 - **`core` and `alloc` before `std`.** Clippy denies `std_instead_of_core` and
   `std_instead_of_alloc` across the workspace, which keeps operating-system
   dependencies visible and out of the pure maths.

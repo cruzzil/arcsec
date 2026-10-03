@@ -140,7 +140,8 @@ int main(int argc, char **argv) {
         CHECK(angle_diff(wcs.crval1, ra) < 0.01 && fabs(wcs.crval2 - dec) < 0.01);
         CHECK(fabs(wcs.pixel_scale_arcsec - scale) < 0.01);
         CHECK(wcs.matched_stars >= 10);
-        CHECK(wcs.cdelt1 < 0.0 && !wcs.mirrored);
+        CHECK(wcs.cdelt1 < 0.0 && wcs.cdelt2 > 0.0 && !wcs.mirrored);
+        CHECK(fabs(wcs.crota1 - wcs.crota2) < 0.1);
         CHECK(wcs.sip_order == 0 || wcs.sip_order == 3);
         CHECK(strcmp(arcsec_result_database(result), "d50") == 0);
 

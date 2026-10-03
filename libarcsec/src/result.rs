@@ -68,11 +68,18 @@ pub struct arcsec_wcs {
     pub cd2_1: f64,
     /// CD2_2, degrees per pixel.
     pub cd2_2: f64,
-    /// CDELT1, degrees per pixel: negative, as FITS has it for an unmirrored image.
+    /// CDELT1, degrees per pixel, carrying the parity: negative for an image with
+    /// the sky's usual orientation, positive for a mirrored one. With CDELT2 and
+    /// CROTA1/2 these are the old-style keywords as `astap_cli` (and the `arcsec`
+    /// command line) write them; the CD matrix is the authoritative WCS.
     pub cdelt1: f64,
-    /// CDELT2, degrees per pixel.
+    /// CDELT2, degrees per pixel (positive).
     pub cdelt2: f64,
-    /// CROTA2, degrees.
+    /// CROTA1, degrees: the rotation of the image's +X axis. It differs from
+    /// `crota2` only when the plate is slightly skewed.
+    pub crota1: f64,
+    /// CROTA2, degrees: the rotation of the +Y axis, with the FITS sign (a frame
+    /// rotated 90° east of north reads +90).
     pub crota2: f64,
     /// Pixel scale, arcseconds per pixel.
     pub pixel_scale_arcsec: f64,
@@ -112,6 +119,7 @@ unsafe impl Versioned for arcsec_wcs {
             cd2_2: 0.0,
             cdelt1: 0.0,
             cdelt2: 0.0,
+            crota1: 0.0,
             crota2: 0.0,
             pixel_scale_arcsec: 0.0,
             rms_arcsec: 0.0,
@@ -221,6 +229,7 @@ pub unsafe extern "C" fn arcsec_result_wcs(
         v.cd2_2 = w.cd2_2;
         v.cdelt1 = w.cdelt1;
         v.cdelt2 = w.cdelt2;
+        v.crota1 = w.crota1();
         v.crota2 = w.crota2;
         v.pixel_scale_arcsec = (w.cd1_1 * w.cd2_2 - w.cd1_2 * w.cd2_1).abs().sqrt() * 3600.0;
         v.rms_arcsec = w.residual_rms;

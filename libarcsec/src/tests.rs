@@ -154,8 +154,11 @@ fn a_synthetic_field_solves_through_the_c_api() {
     assert!((w.crval2 - dec.to_degrees()).abs() < 2e-4);
     assert!((w.pixel_scale_arcsec - 5.0).abs() < 0.01);
     assert!(w.matched_stars >= 10 && w.mirrored == 0);
-    assert!(w.cdelt1 < 0.0);
-    assert!((w.crota2 - 23.0).abs() < 0.1, "crota2 {}", w.crota2);
+    // Old-style keywords as astap_cli writes them: signed CDELT1, FITS-sign CROTA.
+    assert!(w.cdelt1 < 0.0 && w.cdelt2 > 0.0);
+    assert!((w.cdelt1.abs() * 3600.0 - 5.0).abs() < 0.01);
+    assert!((w.crota2 + 23.0).abs() < 0.1, "crota2 {}", w.crota2);
+    assert!((w.crota1 - w.crota2).abs() < 0.1, "crota1 {}", w.crota1);
 
     // The database was chosen by field size.
     // SAFETY: live result; the string lives as long as it.

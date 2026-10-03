@@ -23,7 +23,7 @@ use core::f64::consts::{FRAC_PI_2, PI};
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::format::{BuiltIndex, IndexStar, STAR_BANDS, TierInfo, star_band};
+use super::format::{BuiltIndex, IndexStar, STAR_BANDS, SourceStamp, TierInfo, star_band};
 use super::pattern::{Tangent, canonical, descriptor, key, unit};
 use crate::catalog::format_1476::for_each_star_in_dec_band;
 use crate::error::Result;
@@ -351,6 +351,7 @@ pub fn build_index(
 
     let mut out = BuiltIndex {
         source: params.db_name.clone(),
+        source_stamp: SourceStamp::of_database(&params.db_path, &params.db_name)?,
         ..BuiltIndex::default()
     };
     // Stars as appended (duplicates across strips are merged at the end).

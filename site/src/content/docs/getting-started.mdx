@@ -122,23 +122,45 @@ arcsec catalog recommend --fov 1.5
 For a 1.50° field:
 
   solving      d05         102.2 MB  Gaia DR3 to 500 stars/deg². Smallest useful solving database.
-  blind        anet-4100   355.5 MB  optional: solve with no position hint
+  blind index  built from d05 on install, no download: ~144.7 MB, under 10 s
 
   arcsec catalog install d05
 ```
 
-Then install what it suggests. It shows the download size and asks before starting:
+Then install what it suggests. It shows the download size, and what the blind index it
+builds afterwards will cost, and asks before starting:
 
 ```sh
 arcsec catalog install d05
 ```
 
+```
+Installing into /home/me/.local/share/arcsec/catalogs
+
+  d05          102.2 MB  Gaia DR3 to 500 stars/deg². Smallest useful solving database.
+
+Total download: 102.2 MB
+Then build a blind index from D05, fields 0.6°–30° (no blind index is installed yet):
+  ~144.9 MB on disk, under 10 s, ~0.3 GB memory
+  (--no-index to skip it)
+
+Continue? [y/N]
+```
+
+The [blind index](../catalogues/#the-blind-index) lets arcsec solve with no position
+hint, in a second or two, and is what N.I.N.A.'s blind solves use. It is built from the
+catalogue, so there is nothing more to download. A large one (over 1 GB, over five
+minutes, or more than half your free memory) is asked about separately, and
+`--no-index` skips it.
+
 Catalogues go into a per-user folder that the solver searches by default, so from now
 on you need neither `-d` nor `-D`. `arcsec catalog path` prints where that is.
 
-<Aside type="tip" title="Already have ASTAP?">
+<Aside type="tip" title="Already have ASTAP, or catalogues from arcsec 0.4?">
 arcsec reads ASTAP's star databases as they are. Point it at ASTAP's folder instead of
 downloading again: see [sharing with ASTAP](../catalogues/#if-you-already-have-astap).
+Either way, build the blind index once with `arcsec catalog index build`;
+`arcsec catalog list` shows whether you have one.
 </Aside>
 
 ## 3. Solve an image

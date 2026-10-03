@@ -10,8 +10,10 @@ rewritten 2026-10-02 when the index was built. The plan's original sections (siz
 cell, an astrometry.net-style code index) are summarised in §10, with why the built
 design differs.
 
-**Status (2026-10-02): built, behind `--index` and an opt-in automatic fallback.**
-`arcsec catalog index build` writes `<db>.arcsecix` into the catalogue directory;
+**Status (2026-10-02): built, behind `--index` and an opt-in automatic fallback;
+since 2026-10-03 built by default.** `arcsec catalog install` builds the index after
+installing a solving database (§2.8), and `arcsec catalog index build` writes
+`<db>.arcsecix` into the catalogue directory for databases installed otherwise;
 `arcsec -i <file|dir>` solves blind with it; and when an index is installed, a search
 of `-r` ≥ 10° reaching past five fields round the hint consults it after the first five
 fields of the spiral. On the 596-image corpus (tiers A/B/C/S), measured on main after the
@@ -35,7 +37,8 @@ evidence for each came out stronger than the plan expected:
 1. **No Astrometry.net dependency for blind solving.** `-i` used to need index files on
    top of the ASTAP database (`anet-4100` is 355 MB and covers only fields ≥ ~0.7°). The
    arcsec index is built from D80 (or whichever database is installed) in 2–13 minutes,
-   with nothing downloaded.
+   with nothing downloaded. (Re-measured on a quiet machine, 2026-10-03: 22–30 s for the
+   default index, 1.5–2 minutes down to 0.15°; §2.5.)
 2. **Wide-radius and hint-free speed.** The spiral is `O((r/FOV)²)`: N.I.N.A.'s blind
    mode (`-r 180`, no position) took 76–418 s per image. The index answers in a second or
    two whatever the radius (§7.3).
@@ -108,9 +111,11 @@ step by about 2×, so a field normally sees two tiers. "Size" is the tier's keys
 `arcsec catalog index build --min-fov F --max-fov G` builds the tiers that cover fields
 F–G: every tier overlapping the span, but of the tiers reaching below F only the widest,
 and of those reaching above G only the narrowest. The defaults, 0.3°–30°, give the six
-tiers 3°–0.1°: **287 MB**, built in 2 minutes. `--min-fov 0.15` adds the 0.06° tier for
-D80's narrowest fields: **698 MB**, 13 minutes (both on 24 threads, under a load average
-of 50–80 from other jobs). For comparison D80 itself is 1.3 GB, G05 102 MB.
+tiers 3°–0.1°: **287 MB**, built in 22–30 s on 24 threads (2 minutes under a load
+average of 50–80 from other jobs). `--min-fov 0.15` adds the 0.06° tier for D80's
+narrowest fields: **698 MB**, 1.5–2 minutes (13 under that load). For comparison D80
+itself is 1.3 GB, G05 102 MB. Since §2.8 the default range follows the installed
+databases rather than being fixed at 0.3°–30°.
 
 ### 2.4 File format: `ARCSECIX` version 1
 
@@ -121,7 +126,7 @@ One file, memory-mapped, little-endian, every section 8-byte aligned
 header (256 bytes)  magic "ARCSECIX", version, byte-order marker, header length,
                     descriptor bins, tier/star/pattern counts, build time, source
                     database, a table of 5 sections {offset, length, CRC-32},
-                    and a CRC-32 of the header itself
+                    the source database's fingerprint, and a CRC-32 of the header
 tiers               40 bytes each: radius, mag cap, group size, pattern range, anchors
 stars               12 bytes each: RA, Dec (f32 radians), mag ×100 (i16), widest tier
 star directory      first star of each of 720 quarter-degree declination bands
@@ -140,6 +145,12 @@ quads               4 × u32 star indices per pattern, canonical vertex order
   `VERSION`; an old file is then refused with "rebuild it" rather than silently matching
   nothing.
 * **Written atomically**: to `<file>.arcsecix.part`, then renamed.
+* **Source fingerprint** (added 2026-10-03, bytes 192–211, still version 1): the
+  source database's file count, total size and an FNV-1a hash over each file's name,
+  size and first 4 kB. `catalog verify` recomputes it to tell a stale index from a
+  current one. Modification times are left out on purpose: copying a database to
+  another disk must not make its index stale. The bytes were reserved and written as
+  zero before, so older files read as "not recorded" and older readers ignore them.
 * **Sorted by star band and RA**, the star table doubles as the verification catalogue:
   `stars_near` finds a field's stars with two binary searches per band.
 
@@ -154,7 +165,7 @@ answers the disc queries; anchors are found in parallel; the result is identical
 thread count (tested). Stars reached from two strips or two tiers are merged by exact
 position at the end, keeping the widest tier.
 
-Build cost on D80, 24 threads, machine load 50–80:
+Build cost on D80, 24 threads, machine load 50–80 (the first measurements):
 
 | Index | Tiers | Patterns | Stars | Size | Time | Peak RSS |
 |---|---|---|---|---|---|---|
@@ -162,8 +173,29 @@ Build cost on D80, 24 threads, machine load 50–80:
 | fields 0.3°–30° (default) | 3°…0.1° | 9.71 M | 4.52 M | 287 MB | 122 s | 847 MB |
 | fields 0.15°–30° | 3°…0.06° | 22.6 M | 12.9 M | 698 MB | 782 s | 1.55 GB |
 
-The deepest tier dominates everything: it reads 52 M stars, and its strip reading is
-serial. Reading strips in parallel would cut the 13 minutes several-fold if it matters.
+Re-measured 2026-10-03 on the same 24-thread machine at a load average of 9–12, for
+the automatic build's cost model (§2.8); page cache warm, as it is straight after an
+install:
+
+| Source | Fields | Threads | Patterns | Stars | Size | Time | Peak RSS |
+|---|---|---|---|---|---|---|---|
+| D80 | 0.3°–30° | 24 / 8 / 4 / 2 / 1 | 9.71 M | 4.52 M | 287 MB | 22 / 25 / 37 / 68 / 74 s | 548 / 475 / 488 / 491 / 499 MB |
+| D80 | 0.15°–30° | 24 | 22.6 M | 12.9 M | 698 MB | 107 s | 1.28 GB |
+| D05 | 0.6°–30° | 24 / 2 | 5.28 M | 1.48 M | 145 MB | 6.5 / 13.6 s | 303 / 269 MB |
+| D05 | 0.3°–30° | 24 | 9.71 M | 4.52 M | 287 MB | 20.5 s | 544 MB |
+| G05 | 3°–30° | 24 | 0.46 M | 0.12 M | 12.5 MB | 1.1 s | 90 MB |
+| G05 | 0.15°–144° (all nine tiers) | 24 | 19.8 M | 11.3 M | 610 MB | 46 s | 1.10 GB |
+| W08 | 10°–80° (12°, 6°, 3° tiers) | 24 | 27.8 k | 7.7 k | 0.76 MB | 0.03 s | 10 MB |
+
+Two things stand out. The deepest tier dominates everything (on D80 it reads 52 M
+stars), but even so the build is minutes only under heavy load. And the tiers down to
+0.1° are practically **the same whatever the source**: D05 and G05, at 500 stars/deg²,
+give 986 573 and 986 517 anchors in the 0.1° tier against D80's 986 604, because the
+tier's magnitude cap (14.2) is shallower than any of them almost everywhere. Only the
+0.06° tier (cap 16) differs: 2.49 M anchors from D05 against 2.82 M from D80. W08, at
+magnitude 8, is complete only for the 3° tier and wider; built from W08 alone, the 12°,
+6° and 3° tiers blind-solve the corpus's 20°–33° SHASSA fields and a 24° TESS frame
+(4 of 5 tried; the 50° field fails, as it does hinted).
 
 ### 2.6 Solver
 
@@ -203,12 +235,14 @@ serial. Reading strips in parallel would cut the 13 minutes several-fold if it m
 ### 2.7 Command line
 
 ```bash
-arcsec catalog index build                    # deepest installed database, fields 0.3°–30°
+arcsec catalog install d80                    # downloads D80, then builds the index (§2.8)
+arcsec catalog install d80 --no-index         # download only
+arcsec catalog index build                    # deepest installed database, fields from them
 arcsec catalog index build --min-fov 0.15     # down to D80's floor (698 MB)
 arcsec catalog index build --db ~/star_database -D d80 -o idx.arcsecix
 arcsec catalog index info                     # tiers, sizes, source
 arcsec catalog list                           # lists built indexes too
-arcsec catalog verify                         # checks every section CRC too
+arcsec catalog verify                         # every section CRC, and staleness
 
 arcsec -f image.fits -i ~/.local/share/arcsec/catalogs        # blind: any position
 arcsec -f image.fits -i idx.arcsecix --fov 1.2                # blind, scale known
@@ -238,6 +272,46 @@ arcsec -f image.fits -i idx.arcsecix --fov 1.2                # blind, scale kno
   that is the automatic path, and the five-field first stage is skipped when there is no
   hint at all (no `-ra`/`-spd` and no RA/Dec in the header).
 * **Pixel scale**: from `--fov` or FOCALLEN/XPIXSZ, ±20 %; with neither, 0.3–60″/px.
+* **Several indexes in one directory** (one left from G05 beside one from D80): the one
+  built from the deepest database is used.
+* **No index**: a search wide enough for the automatic path prints one line on stderr
+  saying how to build one and what it costs. Nothing is built during a solve.
+
+### 2.8 Built by default (2026-10-03)
+
+The index started as an opt-in build. Since it costs seconds to a minute and a few
+hundred MB, and turns N.I.N.A.'s blind mode from minutes into seconds, `catalog install`
+now builds it after installing a solving database, warning first when the build is big
+(`arcsec/src/catalog_cmd/plan.rs`, `docs/catalogues.md` §5):
+
+* **What**: one index per catalogue directory, from the deepest installed solving
+  database (D80 > D50 > D20 > D05 > G05 > W08), covering the union of their default
+  ranges: 0.3°–30° for D20–D80, 0.6°–30° for D05, 3°–30° for G05, 10°–80° for W08 (whose
+  magnitude-8 stars fill only the 3° tier and wider). D80 and D50 stop at 0.3°, not their
+  0.15°/0.2° floor: the 0.06° tier is 410 MB of the 698 MB and finds 54 of 113 fields
+  blind in that band (§7.1), so it is offered (`--index-min-fov 0.15`, and by `catalog
+  recommend` for fields under 0.3°) rather than built unasked.
+* **When it is rebuilt**: no index; an index from a shallower database than one now
+  installed; a source database whose fingerprint has changed; or an index that does not
+  cover the installed databases' fields (W08 added to D80). A rebuild keeps tiers the old
+  index had, and replaces indexes built from other databases, since the solver uses one.
+* **The cost model**: per tier, the stars read, patterns kept and stars stored, measured
+  on D80, D05, G05 and W08 (§2.5; D20 and D50 use D80's, an over-estimate). Size is
+  then exact to a few percent; time is `stars read × (1.06 µs + 2.5 µs / threads)`,
+  within ±30 % of the fourteen builds above (one 2-thread run was 30 % slower); peak
+  memory is `60 MB + 37 B × patterns + 29 B × stored stars`, within 5 % above 200 MB.
+  Stored stars are the deepest tier's plus 11.6 % of the others' (the rest are shared).
+  `plan.rs`'s `the_estimate_matches_measured_builds` test pins the model to these
+  builds.
+* **When to ask separately**: over 1 GB, over 5 minutes, or more than half the
+  available memory (`MemAvailable` on Linux, free physical memory on Windows, total
+  memory on macOS). Otherwise the build rides on the download's confirmation. Free
+  disk space is checked before downloading; unknown values never block.
+* **Interruption**: the build is in memory until the write, which goes to `.part`; a
+  Unix signal during the write removes the `.part` (signals the process was started
+  ignoring stay ignored), and the next build clears any left behind. Rebuilding after an
+  interrupted install is just re-running it: the database is found installed and the
+  index offered again. Resumable shards were not needed at these build times.
 
 ---
 
@@ -456,7 +530,8 @@ Deferred:
   chosen for the assumed 1″/px; a hypothesis many times wider than D80's range is then
   verified against the wrong catalogue.
 * **Builder conveniences** from the plan: `--like <image>`, `--dec-range`, resumable
-  shards, a size/time prompt before building, parallel strip reading.
+  shards, parallel strip reading. (The size/time prompt before building was added with
+  the automatic build, §2.8.)
 * **Replacing the spiral's online quads** with the index (plan §6.3) — not attempted;
   the hinted path is untouched.
 * **Distribution** of pre-built files (plan phase 6): unnecessary while a build takes

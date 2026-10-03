@@ -16,11 +16,15 @@
 
 mod fetch;
 pub mod index_cmd;
+pub mod plan;
+mod prompt;
 mod registry;
+mod sys;
+#[cfg(test)]
+mod testutil;
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use registry::{
@@ -28,6 +32,12 @@ use registry::{
     is_complete, loose_files,
 };
 use registry::{REGISTRY, is_installed};
+
+use plan::{
+    Estimate, Existing, Machine, Plan, SOURCES, check_disk, concerns, depth_rank,
+    keep_existing_range, rebuild_reason,
+};
+use prompt::{Prompter, Terminal, install_questions};
 
 use arcsec_io::image_io;
 
@@ -77,20 +87,36 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                 ),
             }
         }
-        Some(("install", sm)) => {
-            cmd_install(&dir, &names(sm), sm.get_flag("yes"), sm.get_flag("keep"))
-        }
-        Some(("remove", sm)) => cmd_remove(&dir, &names(sm), sm.get_flag("yes")),
+        Some(("install", sm)) => cmd_install(
+            &dir,
+            &names(sm),
+            sm.get_flag("yes"),
+            sm.get_flag("keep"),
+            &IndexOpts {
+                skip: sm.get_flag("no-index"),
+                min_fov: sm.get_one::<f64>("index-min-fov").copied(),
+                max_fov: sm.get_one::<f64>("index-max-fov").copied(),
+            },
+            &mut Terminal,
+        ),
+        Some(("remove", sm)) => cmd_remove(
+            &dir,
+            &names(sm),
+            sm.get_flag("yes"),
+            sm.get_flag("keep-index"),
+            &mut Terminal,
+        ),
         Some(("verify", _)) => cmd_verify(&dir),
         Some(("index", sm)) => match sm.subcommand() {
             Some(("build", b)) => index_cmd::cmd_build(
                 &dir,
                 b.get_one::<PathBuf>("db"),
                 b.get_one::<String>("name"),
-                *b.get_one::<f64>("min-fov").unwrap_or(&0.3),
-                *b.get_one::<f64>("max-fov").unwrap_or(&30.0),
+                b.get_one::<f64>("min-fov").copied(),
+                b.get_one::<f64>("max-fov").copied(),
                 b.get_one::<PathBuf>("out"),
                 *b.get_one::<usize>("threads").unwrap_or(&0),
+                b.get_flag("yes"),
             ),
             Some(("info", i)) => index_cmd::cmd_info(&dir, i.get_one::<PathBuf>("file")),
             _ => Err("unknown index subcommand".to_string()),
@@ -175,16 +201,8 @@ fn cmd_list(dir: &Path) {
     for e in REGISTRY {
         println!("  {:<11} {}", e.id, e.desc);
     }
-    let indexes = index_cmd::index_files(dir);
-    println!("\nBlind indexes (built locally with `arcsec catalog index build`):");
-    if indexes.is_empty() {
-        println!("  none");
-    }
-    for p in indexes {
-        if let Err(e) = index_cmd::describe(&p) {
-            println!("  {}: {e}", p.display());
-        }
-    }
+    println!("\nBlind index (arcsec's own, built from a star database; nothing to download):");
+    print_index_status(dir);
 }
 
 /// Suggest catalogues for a field size.
@@ -222,14 +240,21 @@ fn cmd_recommend(dir: &Path, fov_deg: f64, want_photometry: bool) {
             None => println!("  photometry   no catalogue covers this field size"),
         }
     }
-    match pick(Purpose::BlindIndex) {
-        Some(e) => println!(
-            "  blind        {:<10} {:>9}  optional: solve with no position hint{}",
+    // The blind index is built from the solving database on install, so there is
+    // nothing to choose; say what it will cost. The default index stops at 0.3°
+    // fields, so a narrower field needs the 0.06° tier, asked for at install.
+    let narrow = fov_deg < NARROW_INDEX_FOV;
+    let index_flag = if narrow { " --index-min-fov 0.15" } else { "" };
+    if let Some(e) = pick(Purpose::Solving)
+        && let Some(plan) = Plan::for_databases(&[e.id], narrow.then_some(0.15), None)
+    {
+        let est = Estimate::of(&plan, arcsec_core::max_threads());
+        println!(
+            "  blind index  built from {} on install{index_flag}, no download: ~{}, {}",
             e.id,
-            human(e.bytes),
-            installed_tag(dir, e)
-        ),
-        None => println!("  blind        no index set covers this field size"),
+            human(est.bytes),
+            plan::duration(est.secs)
+        );
     }
 
     let ids: Vec<&str> = [
@@ -242,21 +267,83 @@ fn cmd_recommend(dir: &Path, fov_deg: f64, want_photometry: bool) {
     .map(|e| e.id)
     .collect();
     if !ids.is_empty() {
-        println!("\n  arcsec catalog install {}", ids.join(" "));
+        println!("\n  arcsec catalog install {}{index_flag}", ids.join(" "));
     }
 }
 
-/// Ask on stderr and read a yes/no answer from stdin; anything but `y`/`yes`,
-/// including end of input, is a no.
-fn confirm() -> bool {
-    eprint!("Continue? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line).is_ok()
-        && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+/// Fields narrower than this (degrees) need the blind index's deepest tier, which
+/// the default index leaves out; `recommend` adds `--index-min-fov 0.15` for them.
+const NARROW_INDEX_FOV: f64 = 0.3;
+
+/// The blind-index lines of `catalog list`: each index with its source and any
+/// staleness, or what building one would take.
+fn print_index_status(dir: &Path) {
+    let files = index_cmd::index_files(dir);
+    let used = Existing::preferred(dir).map(|e| e.path);
+    for p in &files {
+        let name = p
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let Some(ex) = Existing::open(p) else {
+            let why = arcsec_core::index::BlindIndex::open(p)
+                .err()
+                .map_or_else(String::new, |e| e.to_string());
+            println!("  {name}: unusable ({why}); rebuild it with `arcsec catalog index build`");
+            continue;
+        };
+        let size = fs::metadata(p).map_or(0, |m| m.len());
+        let tag = if files.len() > 1 && used.as_ref() == Some(p) {
+            "  [used by the solver]"
+        } else {
+            ""
+        };
+        println!(
+            "  {name:<15} from {}, fields {:.2}°–{:.0}°, {}{tag}",
+            ex.source.to_uppercase(),
+            ex.coverage.0,
+            ex.coverage.1,
+            human(size)
+        );
+        if let Some(note) = index_cmd::freshness_note(&ex, dir) {
+            println!("      {note}");
+        }
+    }
+    let sources = index_cmd::installed_sources(dir);
+    if files.is_empty() {
+        match index_cmd::build_suggestion(dir, "") {
+            Some(s) => println!("  none: {s}"),
+            None => println!("  none (installing a solving database builds one)"),
+        }
+    } else if let Some(plan) = Plan::for_databases(&sources, None, None)
+        && let Some(why) = rebuild_reason(Existing::preferred(dir).as_ref(), &plan, dir)
+        // A changed database is already flagged STALE on the index's own line.
+        && !matches!(why, plan::Rebuild::Changed(_))
+    {
+        println!("  rebuild suggested: {why}; run `arcsec catalog index build`");
+    }
+    for p in index_cmd::stale_parts(dir) {
+        println!(
+            "  {} is left from an interrupted build; delete it, or the next build will",
+            p.display()
+        );
+    }
 }
 
-fn cmd_remove(dir: &Path, ids: &[String], assume_yes: bool) -> Result<(), String> {
+/// Index files in `dir` built from database `db` (by their header).
+fn indexes_built_from(dir: &Path, db: &str) -> Vec<PathBuf> {
+    index_cmd::index_files(dir)
+        .into_iter()
+        .filter(|p| Existing::open(p).is_some_and(|e| e.source.eq_ignore_ascii_case(db)))
+        .collect()
+}
+
+fn cmd_remove(
+    dir: &Path,
+    ids: &[String],
+    assume_yes: bool,
+    keep_index: bool,
+    prompter: &mut dyn Prompter,
+) -> Result<(), String> {
     let mut wanted = Vec::new();
     for id in ids {
         let e = find(id)
@@ -265,6 +352,19 @@ fn cmd_remove(dir: &Path, ids: &[String], assume_yes: bool) -> Result<(), String
             wanted.push(e);
         }
     }
+
+    // A blind index built from a database goes with it unless --keep-index: it
+    // still solves on its own, but nothing would update or verify it any more, and
+    // it is usually the bigger file.
+    let indexes: Vec<PathBuf> = if keep_index {
+        Vec::new()
+    } else {
+        wanted
+            .iter()
+            .filter(|e| e.purpose == Purpose::Solving)
+            .flat_map(|e| indexes_built_from(dir, e.id))
+            .collect()
+    };
 
     // The catalogue directory may be shared with ASTAP (docs/catalogues.md §6), in
     // which case these are ASTAP's files too, so say exactly what will go first.
@@ -283,8 +383,16 @@ fn cmd_remove(dir: &Path, ids: &[String], assume_yes: bool) -> Result<(), String
             human(bytes)
         );
     }
+    for p in &indexes {
+        println!(
+            "  {:<23} {:>9}  blind index built from it (keep it with --keep-index)",
+            p.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            human(fs::metadata(p).map_or(0, |m| m.len()))
+        );
+    }
     println!();
-    if !assume_yes && !confirm() {
+    if !assume_yes && !prompter.ask("Continue?") {
         println!("Cancelled.");
         return Ok(());
     }
@@ -302,6 +410,16 @@ fn cmd_remove(dir: &Path, ids: &[String], assume_yes: bool) -> Result<(), String
             files.len(),
             human(freed)
         );
+    }
+    for p in &indexes {
+        let freed = fs::metadata(p).map_or(0, |m| m.len());
+        fs::remove_file(p).map_err(|err| format!("{}: {err}", p.display()))?;
+        println!("removed {}: {} freed", p.display(), human(freed));
+    }
+    if Existing::preferred(dir).is_none()
+        && let Some(s) = index_cmd::build_suggestion(dir, "")
+    {
+        println!("\nNo blind index is left; {s}.");
     }
     Ok(())
 }
@@ -337,41 +455,83 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
 
         if bad.is_empty() {
             println!(
-                "  {:<11} ok  ({} files, {})",
+                "  {:<12} ok  ({} files, {})",
                 e.id,
                 files.len(),
                 human(installed_size(dir, e))
             );
         } else {
             problems += bad.len();
-            println!("  {:<11} PROBLEMS:", e.id);
+            println!("  {:<12} PROBLEMS:", e.id);
             for b in bad {
                 println!("      {b}");
             }
         }
     }
-    for p in index_cmd::index_files(dir) {
+    let index_files = index_cmd::index_files(dir);
+    for p in &index_files {
         checked += 1;
         let name = p
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let res = arcsec_core::index::BlindIndex::open(&p).and_then(|ix| {
+        let res = arcsec_core::index::BlindIndex::open(p).and_then(|ix| {
             ix.validate()?;
             Ok(ix)
         });
         match res {
-            Ok(ix) => println!(
-                "  {name:<11} ok  ({} patterns, {})",
-                ix.n_patterns(),
-                human(ix.file_size() as u64)
-            ),
+            Ok(ix) => {
+                let ex = Existing::open(p);
+                match ex.as_ref().map(|ex| plan::freshness(ex, dir)) {
+                    Some(plan::Freshness::Changed) => {
+                        problems += 1;
+                        println!(
+                            "  {name:<12} STALE: {} has changed since it was built - rebuild it with `arcsec catalog index build`",
+                            ix.source().to_uppercase()
+                        );
+                    }
+                    _ => {
+                        println!(
+                            "  {name:<12} ok  ({} patterns, {})",
+                            ix.n_patterns(),
+                            human(ix.file_size() as u64)
+                        );
+                        if let Some(note) = ex
+                            .as_ref()
+                            .and_then(|ex| index_cmd::freshness_note(ex, dir))
+                        {
+                            println!("      {note}");
+                        }
+                    }
+                }
+            }
             Err(e) => {
                 problems += 1;
                 println!(
-                    "  {name:<11} PROBLEM: {e} - rebuild it with `arcsec catalog index build`"
+                    "  {name:<12} PROBLEM: {e} - rebuild it with `arcsec catalog index build`"
                 );
             }
         }
+    }
+    let sources = index_cmd::installed_sources(dir);
+    if let Some(plan) = Plan::for_databases(&sources, None, None) {
+        let existing = Existing::preferred(dir);
+        match (existing.as_ref(), index_cmd::build_suggestion(dir, "")) {
+            (None, Some(s)) => println!("  blind index none: {s}"),
+            (Some(_), _) => {
+                if let Some(why) = rebuild_reason(existing.as_ref(), &plan, dir)
+                    && !matches!(why, plan::Rebuild::Changed(_))
+                {
+                    println!("  blind index: {why}; `arcsec catalog index build` rebuilds it");
+                }
+            }
+            (None, None) => {}
+        }
+    }
+    for p in index_cmd::stale_parts(dir) {
+        println!(
+            "  note: {} is left from an interrupted build; delete it, or the next build will",
+            p.display()
+        );
     }
     if checked == 0 {
         println!("No catalogues installed in {}", dir.display());
@@ -379,13 +539,82 @@ fn cmd_verify(dir: &Path) -> Result<(), String> {
     }
     if problems > 0 {
         return Err(format!(
-            "{problems} problem(s) found; re-run `arcsec catalog install <name>`"
+            "{problems} problem(s) found; re-run `arcsec catalog install <name>`, or `arcsec catalog index build` for an index"
         ));
     }
     Ok(())
 }
 
-fn cmd_install(dir: &Path, ids: &[String], assume_yes: bool, keep: bool) -> Result<(), String> {
+/// `catalog install`'s blind-index options.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndexOpts {
+    /// `--no-index`: download only.
+    pub skip: bool,
+    /// `--index-min-fov`.
+    pub min_fov: Option<f64>,
+    /// `--index-max-fov`.
+    pub max_fov: Option<f64>,
+}
+
+/// A blind index `install` will build once the downloads are in.
+#[derive(Debug, Clone)]
+struct IndexAction {
+    plan: Plan,
+    est: Estimate,
+    /// Why: no index yet, a deeper database, a stale or too-narrow index.
+    reason: plan::Rebuild,
+    /// Indexes in the directory the new one supersedes (removed after it is built).
+    replaces: Vec<PathBuf>,
+}
+
+/// The index to build after installing so that `dbs` (every solving database that
+/// will then be in `dir`) are served, or `None` if the one there already does.
+fn index_action(dir: &Path, dbs: &[&str], opts: &IndexOpts, threads: usize) -> Option<IndexAction> {
+    if opts.skip {
+        return None;
+    }
+    let base = Plan::for_databases(dbs, opts.min_fov, opts.max_fov)?;
+    let existing = Existing::preferred(dir);
+    let reason = rebuild_reason(existing.as_ref(), &base, dir)?;
+    let plan = keep_existing_range(
+        base,
+        existing.as_ref(),
+        opts.min_fov.is_some(),
+        opts.max_fov.is_some(),
+    );
+    // Our own indexes, by their default names: the new one replaces any built from
+    // another database, since the solver uses only one.
+    let replaces = SOURCES
+        .iter()
+        .map(|db| arcsec_core::index::default_index_path(dir, db))
+        .filter(|p| p.is_file())
+        .collect();
+    let est = Estimate::of(&plan, threads);
+    Some(IndexAction {
+        plan,
+        est,
+        reason,
+        replaces,
+    })
+}
+
+/// Disk an install of `e` needs at its peak: an archive and its extracted files
+/// side by side (assumed no smaller than the archive), or the loose files.
+fn download_disk(e: &Entry) -> u64 {
+    match e.archive {
+        Archive::Loose => e.bytes,
+        Archive::Zip | Archive::Deb => e.bytes.saturating_mul(2),
+    }
+}
+
+fn cmd_install(
+    dir: &Path,
+    ids: &[String],
+    assume_yes: bool,
+    keep: bool,
+    index: &IndexOpts,
+    prompter: &mut dyn Prompter,
+) -> Result<(), String> {
     let mut wanted: Vec<&'static Entry> = Vec::new();
     for id in ids {
         let e = find(id).ok_or_else(|| {
@@ -399,40 +628,123 @@ fn cmd_install(dir: &Path, ids: &[String], assume_yes: bool, keep: bool) -> Resu
             wanted.push(e);
         }
     }
-    if wanted.is_empty() {
+
+    // The solving databases there will be once this is done, deepest first.
+    let mut dbs = index_cmd::installed_sources(dir);
+    for e in &wanted {
+        if let Some(s) = SOURCES.iter().find(|s| **s == e.id)
+            && !dbs.contains(s)
+        {
+            dbs.push(s);
+        }
+    }
+    dbs.sort_by_key(|d| depth_rank(d));
+    let machine = Machine::probe(dir, 0);
+    let action = index_action(dir, &dbs, index, machine.threads);
+    if wanted.is_empty() && action.is_none() {
         return Ok(());
     }
 
-    let total: u64 = wanted.iter().map(|e| e.bytes).sum();
     println!("Installing into {}\n", dir.display());
-    for e in &wanted {
-        println!("  {:<11} {:>9}  {}", e.id, human(e.bytes), e.desc);
+    let total: u64 = wanted.iter().map(|e| e.bytes).sum();
+    if !wanted.is_empty() {
+        for e in &wanted {
+            println!("  {:<11} {:>9}  {}", e.id, human(e.bytes), e.desc);
+        }
+        println!("\nTotal download: {}", human(total));
     }
-    println!("\nTotal download: {}", human(total));
-    if !assume_yes && !confirm() {
+    if let Some(a) = &action {
+        println!(
+            "{}uild a blind index from {} ({}):",
+            if wanted.is_empty() { "B" } else { "Then b" },
+            a.plan.label(),
+            a.reason
+        );
+        println!("  {}", a.est.summary());
+        for r in &a.replaces {
+            println!(
+                "  replacing {}",
+                r.file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            );
+        }
+        let narrow = if a.plan.source == "d80" && a.plan.min_fov > 0.15 {
+            "; --index-min-fov 0.15 for D80's narrowest fields"
+        } else {
+            ""
+        };
+        println!("  (--no-index to skip it{narrow})");
+    }
+
+    let need = wanted.iter().map(|e| download_disk(e)).sum::<u64>()
+        + action.as_ref().map_or(0, |a| a.est.bytes);
+    check_disk(dir, need, machine.free_disk)?;
+    let worries = action
+        .as_ref()
+        .map_or_else(Vec::new, |a| concerns(&a.est, &machine));
+    index_cmd::print_concerns(&worries);
+    println!();
+
+    let answer = install_questions(
+        !wanted.is_empty(),
+        action.is_some(),
+        !worries.is_empty(),
+        assume_yes,
+        prompter,
+    );
+    if !answer.download && !answer.build_index {
         println!("Cancelled.");
         return Ok(());
     }
 
-    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-
-    for e in wanted {
-        println!("\n{} — {}", e.id, e.desc);
-        match e.archive {
-            Archive::Loose => install_loose(dir, e)?,
-            Archive::Zip | Archive::Deb => install_archive(dir, e, keep)?,
+    if answer.download {
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for e in &wanted {
+            println!("\n{} — {}", e.id, e.desc);
+            match e.archive {
+                Archive::Loose => install_loose(dir, e)?,
+                Archive::Zip | Archive::Deb => install_archive(dir, e, keep)?,
+            }
+            if is_installed(dir, e) {
+                println!("  {} installed ({})", e.id, human(installed_size(dir, e)));
+            } else {
+                return Err(format!(
+                    "{}: extraction finished but no catalogue files appeared in {}",
+                    e.id,
+                    dir.display()
+                ));
+            }
         }
-        if is_installed(dir, e) {
-            println!("  {} installed ({})", e.id, human(installed_size(dir, e)));
+    }
+
+    if let Some(a) = &action {
+        if answer.build_index {
+            build_after_install(dir, a, machine.threads)?;
         } else {
-            return Err(format!(
-                "{}: extraction finished but no catalogue files appeared in {}",
-                e.id,
-                dir.display()
-            ));
+            println!(
+                "\nSkipped the blind index. Build it later with `arcsec catalog index build`."
+            );
         }
     }
     println!("\nDone. The solver uses {} by default.", dir.display());
+    Ok(())
+}
+
+/// Build the index `install` planned, then remove the ones it supersedes.
+fn build_after_install(dir: &Path, a: &IndexAction, threads: usize) -> Result<(), String> {
+    let out = arcsec_core::index::default_index_path(dir, &a.plan.source);
+    println!("\nBlind index from {}", a.plan.label());
+    index_cmd::run_build(&a.plan, dir, &out, threads, &a.est).map_err(|e| {
+        format!(
+            "{e}\n  The catalogues are installed; build the index later with `arcsec catalog index build`."
+        )
+    })?;
+    for r in a.replaces.iter().filter(|r| **r != out) {
+        match fs::remove_file(r) {
+            Ok(()) => println!("  removed {} (superseded)", r.display()),
+            Err(e) => eprintln!("  warning: could not remove {}: {e}", r.display()),
+        }
+    }
     Ok(())
 }
 
@@ -536,5 +848,157 @@ mod tests {
         assert_eq!(human(1_500_000), "1.5 MB");
         assert_eq!(human(901_300_000), "901.3 MB");
         assert_eq!(human(1_213_400_000), "1.2 GB");
+    }
+
+    use prompt::tests::Scripted;
+    use testutil::{TempDir, write_001_db};
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    /// `install` of a database that is already there (so nothing is downloaded)
+    /// builds the missing index: asked once, honouring --yes, --no-index and end
+    /// of input; then a second install has nothing to do.
+    #[test]
+    fn install_builds_a_missing_index_for_an_existing_database() {
+        let dir = TempDir::new("inst_ix");
+        let d = dir.path();
+        write_001_db(d, "w08", 2000, 3);
+        let ix = d.join("w08.arcsecix");
+        let none = IndexOpts::default();
+
+        // No terminal, no --yes: cancelled, as installs always were.
+        let mut p = Scripted::new(&[], false);
+        cmd_install(d, &ids(&["w08"]), false, false, &none, &mut p).unwrap();
+        assert_eq!(p.asked, ["Build the blind index now?"]);
+        assert!(!ix.exists());
+
+        // --no-index: nothing to do, nothing asked.
+        let mut p = Scripted::new(&[], true);
+        let skip = IndexOpts {
+            skip: true,
+            ..IndexOpts::default()
+        };
+        cmd_install(d, &ids(&["w08"]), false, false, &skip, &mut p).unwrap();
+        assert!(p.asked.is_empty() && !ix.exists());
+
+        // Answered yes: built.
+        let mut p = Scripted::new(&[true], true);
+        cmd_install(d, &ids(&["w08"]), false, false, &none, &mut p).unwrap();
+        assert!(ix.is_file());
+        let built = arcsec_core::index::BlindIndex::open(&ix).unwrap();
+        assert_eq!(built.source(), "w08");
+        assert!(built.source_stamp().is_recorded());
+
+        // Up to date: no question at all.
+        let mut p = Scripted::new(&[], true);
+        cmd_install(d, &ids(&["w08"]), false, false, &none, &mut p).unwrap();
+        assert!(p.asked.is_empty());
+        cmd_verify(d).unwrap();
+
+        // The database changes: verify reports the index stale, and the next
+        // install rebuilds it without asking under --yes.
+        write_001_db(d, "w08", 2001, 4);
+        assert!(cmd_verify(d).unwrap_err().contains("problem"));
+        let mut p = Scripted::new(&[], false);
+        cmd_install(d, &ids(&["w08"]), true, false, &none, &mut p).unwrap();
+        assert!(p.asked.is_empty());
+        cmd_verify(d).unwrap();
+    }
+
+    #[test]
+    fn a_deeper_database_supersedes_the_old_index() {
+        let dir = TempDir::new("inst_deeper");
+        let d = dir.path();
+        write_001_db(d, "w08", 2000, 5);
+        let mut p = Scripted::new(&[], false);
+        cmd_install(
+            d,
+            &ids(&["w08"]),
+            true,
+            false,
+            &IndexOpts::default(),
+            &mut p,
+        )
+        .unwrap();
+        assert!(d.join("w08.arcsecix").is_file());
+
+        // G05 appears (here as a tiny all-sky file: the layout does not matter).
+        write_001_db(d, "g05", 2500, 6);
+        let opts = IndexOpts::default();
+        let a = index_action(d, &["g05", "w08"], &opts, 2).unwrap();
+        assert_eq!(a.plan.source, "g05");
+        assert!(
+            matches!(a.reason, plan::Rebuild::Deeper { .. }),
+            "{}",
+            a.reason
+        );
+        // Covers both: G05's 3° up to W08's 80°.
+        assert_eq!((a.plan.min_fov, a.plan.max_fov), (3.0, 80.0));
+        cmd_install(d, &ids(&["g05"]), true, false, &opts, &mut p).unwrap();
+        assert!(d.join("g05.arcsecix").is_file());
+        assert!(!d.join("w08.arcsecix").exists(), "superseded index removed");
+        assert_eq!(Existing::preferred(d).unwrap().source, "g05");
+    }
+
+    #[test]
+    fn remove_takes_the_index_built_from_the_database_unless_told_not_to() {
+        let dir = TempDir::new("rm_ix");
+        let d = dir.path();
+        write_001_db(d, "w08", 2000, 9);
+        let mut p = Scripted::new(&[], false);
+        cmd_install(
+            d,
+            &ids(&["w08"]),
+            true,
+            false,
+            &IndexOpts::default(),
+            &mut p,
+        )
+        .unwrap();
+        let ix = d.join("w08.arcsecix");
+        assert!(ix.is_file());
+
+        // End of input: nothing removed.
+        let mut p = Scripted::new(&[], false);
+        cmd_remove(d, &ids(&["w08"]), false, false, &mut p).unwrap();
+        assert!(ix.is_file() && d.join("w08_0101.001").is_file());
+
+        // --keep-index keeps it.
+        cmd_remove(d, &ids(&["w08"]), true, true, &mut p).unwrap();
+        assert!(ix.is_file() && !d.join("w08_0101.001").exists());
+
+        // Otherwise it goes with the database.
+        write_001_db(d, "w08", 2000, 9);
+        cmd_remove(d, &ids(&["w08"]), true, false, &mut p).unwrap();
+        assert!(!ix.exists());
+    }
+
+    #[test]
+    fn install_index_options_shape_the_plan() {
+        let dir = TempDir::new("inst_opts");
+        let d = dir.path();
+        let opts = IndexOpts {
+            skip: false,
+            min_fov: Some(0.15),
+            max_fov: None,
+        };
+        let a = index_action(d, &["d80"], &opts, 8).unwrap();
+        assert_eq!(a.plan.tiers.last().unwrap().radius_deg, 0.06);
+        assert!(a.est.bytes > 600_000_000, "{:?}", a.est);
+        assert!(
+            index_action(d, &[], &opts, 8).is_none(),
+            "no solving database"
+        );
+        assert!(index_action(d, &["d80"], &IndexOpts { skip: true, ..opts }, 8).is_none());
+    }
+
+    #[test]
+    fn disk_needed_for_downloads_counts_archive_and_contents() {
+        let d80 = find("d80").unwrap();
+        assert_eq!(download_disk(d80), 2 * d80.bytes);
+        let anet = find("anet-4100").unwrap();
+        assert_eq!(download_disk(anet), anet.bytes);
     }
 }

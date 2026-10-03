@@ -245,6 +245,13 @@ fn main() {
     // The plan runs arcsec's own blind index when --index names one or the search
     // is wide enough to want one, the Astrometry.net blind solver when --index
     // names those files, and the catalogue spiral search; see arcsec_core::auto.
+    // A search wide enough to want an installed blind index, with none installed:
+    // say how to build one. The solve itself is unchanged.
+    if let Some(hint) =
+        catalog_cmd::index_cmd::missing_index_hint(request.index.as_ref(), &plan.params)
+    {
+        eprintln!("{hint}");
+    }
     let t0 = Instant::now();
     let solved = plan.solve_with(&img, |event| {
         if let Event::IndexEstimate(ra, dec) = event {

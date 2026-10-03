@@ -184,9 +184,50 @@ pub fn find_arcsec_index(path: &Path) -> Option<PathBuf> {
     if path.is_file() {
         return crate::index::is_blind_index(path).then(|| path.to_path_buf());
     }
-    super::index_files(path)
+    // Several indexes (say one left from G05 beside one from D80): the one built
+    // from the deepest database; failing a readable one, the first by magic, so
+    // that a damaged file is reported rather than silently ignored.
+    preferred_index(path).or_else(|| {
+        super::index_files(path)
+            .into_iter()
+            .find(|p| crate::index::is_blind_index(p))
+    })
+}
+
+/// Databases an index can be built from, deepest first: an index built from an
+/// earlier one is preferred when a directory holds several.
+pub const SOURCES: [&str; 6] = ["d80", "d50", "d20", "d05", "g05", "w08"];
+
+/// Position of `db` in [`SOURCES`] (deeper is smaller); unknown names sort last.
+#[must_use]
+pub fn depth_rank(db: &str) -> usize {
+    SOURCES
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case(db))
+        .unwrap_or(SOURCES.len())
+}
+
+/// The readable arcsec index in `dir` the solver uses: the one built from the
+/// deepest database (by [`SOURCES`]), then by file name. `None` if there is none.
+#[must_use]
+pub fn preferred_index(dir: &Path) -> Option<PathBuf> {
+    let mut v: Vec<(usize, PathBuf)> = super::index_files(dir)
         .into_iter()
-        .find(|p| crate::index::is_blind_index(p))
+        .filter_map(|p| {
+            let ix = crate::index::BlindIndex::open(&p).ok()?;
+            Some((depth_rank(ix.source()), p))
+        })
+        .collect();
+    v.sort();
+    v.into_iter().next().map(|(_, p)| p)
+}
+
+/// Whether a search with `template`'s radius and field is wide enough that an
+/// installed index is consulted automatically: more than five fields, and at
+/// least 10°.
+#[must_use]
+pub fn wants_installed_index(template: &crate::pipeline::SolveParams) -> bool {
+    template.search_radius > stage_one_radius(template) && template.search_radius >= AUTO_MIN_RADIUS
 }
 
 /// Search radius, in fields, that the spiral covers before an automatically found
@@ -227,10 +268,7 @@ pub(crate) fn arcsec_index_for(
             explicit: true,
         });
     }
-    if !automatic
-        || template.search_radius <= stage_one_radius(template)
-        || template.search_radius < AUTO_MIN_RADIUS
-    {
+    if !automatic || !wants_installed_index(template) {
         return None;
     }
     find_arcsec_index(&super::default_catalog_dir())

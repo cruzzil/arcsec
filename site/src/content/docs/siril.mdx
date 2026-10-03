@@ -121,9 +121,10 @@ options, output messages and files back. arcsec solves images, not star lists.
 ### The solve fails or is slow
 
 - With no position in the header and none on the command line, arcsec searches the
-  whole sky, which can take several minutes. Give the position with `--ra` and `--spd`,
-  or install Astrometry.net index files for
-  [blind solving](../reference/cli/#blind-solving).
+  whole sky. With the [blind index](../catalogues/#the-blind-index) installed (catalogue
+  installs build it) that takes a second or two; without it, several minutes. Run
+  `arcsec catalog list` to check, and `arcsec catalog index build` if there is none, or
+  give the position with `--ra` and `--spd`.
 - Check the field size: a wrong focal length or pixel size in the header is the most
   common cause of a failed solve. `--fov` overrides it.
 - Check the catalogue covers your field: see [Which catalogue do I need?](../which-catalogue/).

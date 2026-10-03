@@ -516,15 +516,24 @@ typedef struct arcsec_wcs {
      */
     double cd2_2;
     /**
-     * CDELT1, degrees per pixel: negative, as FITS has it for an unmirrored image.
+     * CDELT1, degrees per pixel, carrying the parity: negative for an image with
+     * the sky's usual orientation, positive for a mirrored one. With CDELT2 and
+     * CROTA1/2 these are the old-style keywords as `astap_cli` (and the `arcsec`
+     * command line) write them; the CD matrix is the authoritative WCS.
      */
     double cdelt1;
     /**
-     * CDELT2, degrees per pixel.
+     * CDELT2, degrees per pixel (positive).
      */
     double cdelt2;
     /**
-     * CROTA2, degrees.
+     * CROTA1, degrees: the rotation of the image's +X axis. It differs from
+     * `crota2` only when the plate is slightly skewed.
+     */
+    double crota1;
+    /**
+     * CROTA2, degrees: the rotation of the +Y axis, with the FITS sign (a frame
+     * rotated 90° east of north reads +90).
      */
     double crota2;
     /**

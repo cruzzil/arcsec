@@ -132,7 +132,7 @@ int solve(const float *pixels, uint32_t width, uint32_t height) {
 | Version | `arcsec_version()`, `arcsec_abi_version()`, `ARCSEC_ABI_VERSION` |
 | Solving | `arcsec_solver_new/free`, `arcsec_solve` (pixels), `arcsec_solve_file` (FITS, XISF, ASDF), `arcsec_solver_cancel` |
 | Input | `arcsec_image` (u8/u16/i16/u32/i32/float/double; planes or interleaved-by-plane; strides; `ARCSEC_IMAGE_TOP_DOWN`), `arcsec_solve_options` + `arcsec_solve_options_init` |
-| Result | `arcsec_result_wcs` (CRVAL, CRPIX, CD, CDELT, CROTA2, SIP A/B/AP/BP up to order 9, RMS, matched stars), `arcsec_result_info`, `arcsec_result_matched_stars`, `arcsec_result_fits_header` (80-character cards), `arcsec_result_pixel_to_sky` / `_sky_to_pixel`, `arcsec_result_database`, `arcsec_result_free` |
+| Result | `arcsec_result_wcs` (CRVAL, CRPIX, CD; CDELT1/2 and CROTA1/2 as `astap_cli` writes them; SIP A/B/AP/BP up to order 9, RMS, matched stars), `arcsec_result_info`, `arcsec_result_matched_stars`, `arcsec_result_fits_header` (80-character cards), `arcsec_result_pixel_to_sky` / `_sky_to_pixel`, `arcsec_result_database`, `arcsec_result_free` |
 | Analysis | `arcsec_analyse` (star count, median HFD, the stars), like `arcsec --analyse` |
 | Catalogues | `arcsec_default_catalog_dir`, `arcsec_default_database_dir`, `arcsec_has_star_database`, `arcsec_select_database`, `arcsec_has_blind_index` |
 | Diagnostics | `arcsec_last_error`, `arcsec_status_string`, `arcsec_set_log_callback`; per solve, `progress` and `cancel` callbacks in the options |
