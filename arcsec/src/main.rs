@@ -2,16 +2,10 @@
 // be declared before alloc:: paths can be written.
 extern crate alloc;
 
-mod asdf_io;
-mod blind;
 mod catalog_cmd;
 mod cli;
-mod db_select;
 mod extract;
-mod fits_io;
-mod image_io;
 mod logger;
-mod xisf_io;
 
 use core::f64::consts::PI;
 use std::ffi::OsString;
@@ -20,21 +14,15 @@ use std::process;
 use std::time::Instant;
 
 use arcsec_core::ArcsecError;
-use arcsec_core::pipeline::{
-    BlindSolveParams, SearchSpeed, SolveMethod, SolveParams, format_dec, format_ra, format_radec,
-    solve_image,
-};
+use arcsec_core::auto::{Event, MIN_SOLVE_DIM, Plan, SolveRequest};
+use arcsec_core::pipeline::{SearchSpeed, SolveMethod, format_dec, format_ra, format_radec};
 use arcsec_core::types::{ImageBuffer, WcsSolution};
-use arcsec_core::wcs::{TanWcs, fit_sip};
+use arcsec_core::wcs::TanWcs;
+use arcsec_io::{fits_io, image_io};
 use clap::ArgMatches;
 
-use crate::blind::BlindOutcome;
 use crate::cli::VERSION;
 use crate::extract::Extract2;
-
-/// Smallest image side, in (binned) pixels, that reaches the solver. Detection
-/// cannot run on a one-pixel-wide image, and would otherwise panic on it.
-const MIN_SOLVE_DIM: usize = 2;
 
 /// The unsolved `.ini` and command line, once known, for [`main`]'s panic handler.
 static UNSOLVED_INI: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::new(None);
@@ -128,7 +116,7 @@ fn run() {
     let db_path: PathBuf = matches
         .get_one::<PathBuf>("database")
         .cloned()
-        .unwrap_or_else(db_select::default_db_path);
+        .unwrap_or_else(arcsec_core::auto::default_db_path);
     let db_abbrev: Option<String> = matches.get_one::<String>("db-abbrev").cloned();
     log::info!("Creating grayscale image for solving");
 
@@ -187,71 +175,68 @@ fn run() {
         _ => SearchSpeed::Auto,
     };
 
-    let (ra_hint_rad, dec_hint_rad) = pointing_hint(&matches, file);
+    let hint = pointing_hint(&matches, file);
+    let (ra_hint_rad, dec_hint_rad) = hint.unwrap_or((0.0, 0.0));
 
-    // ── Pixel scale and FOV ──────────────────────────────────────────────────
+    // ── Plan: pixel scale, FOV, binning, database ────────────────────────────
     // Priority: explicit --fov flag > header FOCALLEN/XPIXSZ > 1"/px fallback.
     //
     // `--fov` is the image *height*, as ASTAP defines it and as N.I.N.A. sends it
-    // (`FoVH`). `fov_rad` below is the field along the longer side, which is what
-    // database selection and the search window use; for a square image the two are
-    // the same number.
-    let fov_hint = matches.get_one::<f64>("fov").copied().unwrap_or(0.0);
-    let naxis = img.width.max(img.height) as f64;
-    let height = img.height as f64;
-    let mut scale_known = true;
-    let (arcsec_per_px, fov_rad) = if fov_hint > 0.0 {
-        let fov_height = fov_hint * PI / 180.0;
-        let ps = fov_height.to_degrees() * 3600.0 / height;
-        (ps, fov_height * (naxis / height))
-    } else {
-        let ps = image_io::read_pixel_scale(file).unwrap_or_else(|| {
-            scale_known = false;
-            1.0
-        });
-        let fov = naxis * ps / 3600.0 * PI / 180.0;
-        (ps, fov)
+    // (`FoVH`). The plan's `params.fov` is the field along the longer side, which
+    // is what database selection and the search window use; for a square image the
+    // two are the same number. The database is resolved from that field size: the
+    // D-series covers 0.15°–6°, G05 3°–20° and W08 20°–80°.
+    let fov_hint = matches.get_one::<f64>("fov").copied().filter(|v| *v > 0.0);
+    let quad_tol = arg::<f64>(&matches, "tolerance");
+    let request = SolveRequest {
+        hint,
+        fov_height: fov_hint.map(f64::to_radians),
+        pixel_scale: if fov_hint.is_some() {
+            None
+        } else {
+            image_io::read_pixel_scale(file)
+        },
+        search_radius: arg::<f64>(&matches, "radius").to_radians(),
+        downsample: matches
+            .get_one::<u32>("downsample")
+            .map(|&z| usize::try_from(z).unwrap_or(usize::MAX)),
+        db_path: Some(db_path),
+        db_name: db_abbrev,
+        index: matches.get_one::<PathBuf>("index").cloned(),
+        index_first: true,
+        auto_index: true,
+        hfd_min_arcsec: arg::<f64>(&matches, "hfd-min"),
+        quad_tolerance: quad_tol,
+        max_stars,
+        method: match matches.get_one::<String>("method").map(String::as_str) {
+            Some("tetra") => SolveMethod::Tetra,
+            _ => SolveMethod::Quads,
+        },
+        speed,
+        threads,
+        sip: want_sip,
+        cancel: None,
     };
-
-    let (image_w, image_h) = (img.width, img.height);
-    let binning = choose_binning(
-        matches.get_one::<u32>("downsample").copied(),
-        arcsec_per_px,
-        img.width,
-        img.height,
-    );
-    let img = if binning > 1 {
-        log::info!("Creating grayscale x {binning} binning image for solving/star alignment.");
-        img.bin_image(binning)
-    } else {
-        img
+    let plan = match Plan::new(&request, img.width, img.height) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Solver error: {e}");
+            unsolved.exit(1);
+        }
     };
-
-    // ── Star database ────────────────────────────────────────────────────────
-    // Resolved here rather than earlier because the right database depends on the
-    // field size: the D-series covers 0.15°–6°, G05 3°–20° and W08 20°–80°.
-    let db_name: String = db_abbrev.unwrap_or_else(|| {
-        db_select::select_db_for_fov(&db_path, fov_rad.to_degrees())
-            .unwrap_or_else(|| "d80".to_string())
-    });
+    let binning = plan.binning;
+    let (binned_w, binned_h) = plan.binned_size();
     log::info!(
         "Using star database {} for a {:.2}° field",
-        db_name.to_uppercase(),
-        fov_rad.to_degrees()
+        plan.params.db_name.to_uppercase(),
+        plan.params.fov.to_degrees()
     );
-
-    let hfd_min_arcsec = arg::<f64>(&matches, "hfd-min");
-    let hfd_min = (hfd_min_arcsec / (binning as f64 * arcsec_per_px)).max(0.8);
-    // ASTAP treats a negative (or NaN) radius as zero and solves at the start
-    // position; the library rejects it, so clamp here. `max` maps NaN to 0.
-    let search_radius_rad = arg::<f64>(&matches, "radius").max(0.0) * PI / 180.0;
-    let quad_tol = arg::<f64>(&matches, "tolerance");
 
     // ── Solve header (always printed to stdout, like ASTAP) ──────────────────
     println!("arcsec astrometric solver version {VERSION}");
     println!(
         "Search radius: {:.0} degrees, ",
-        search_radius_rad.to_degrees()
+        plan.params.search_radius.to_degrees()
     );
     // ASTAP separates RA and Dec with a comma here, but not on "Solution found".
     println!(
@@ -259,18 +244,15 @@ fn run() {
         format_ra(ra_hint_rad),
         format_dec(dec_hint_rad)
     );
-    println!(
-        "Image height: {:.2} degrees",
-        (fov_rad * (height / naxis)).to_degrees()
-    );
+    println!("Image height: {:.2} degrees", plan.fov_height.to_degrees());
     println!("Binning: {binning}x{binning}");
     println!(
         "Image dimensions: {}x{}",
-        img.width * binning,
-        img.height * binning
+        binned_w * binning,
+        binned_h * binning
     );
     println!("Quad tolerance: {quad_tol:.3}");
-    println!("Minimum star size: {hfd_min_arcsec:.1}\"");
+    println!("Minimum star size: {:.1}\"", plan.hfd_min_arcsec);
     println!(
         "Speed: {}",
         if speed == SearchSpeed::Slow {
@@ -280,135 +262,38 @@ fn run() {
         }
     );
 
-    if img.width < MIN_SOLVE_DIM || img.height < MIN_SOLVE_DIM {
+    if binned_w < MIN_SOLVE_DIM || binned_h < MIN_SOLVE_DIM {
         eprintln!(
-            "Insufficient stars: the image is too small to solve ({}x{} pixels)",
-            img.width, img.height
+            "Insufficient stars: the image is too small to solve ({binned_w}x{binned_h} pixels)"
         );
         unsolved.exit(2);
     }
 
     // ── Solve ────────────────────────────────────────────────────────────────
-    let t0 = Instant::now();
-
-    let method = match matches.get_one::<String>("method").map(String::as_str) {
-        Some("tetra") => SolveMethod::Tetra,
-        _ => SolveMethod::Quads,
-    };
-
-    let template = SolveParams {
-        ra_hint: ra_hint_rad,
-        dec_hint: dec_hint_rad,
-        fov: fov_rad,
-        search_radius: search_radius_rad,
-        quad_tolerance: quad_tol,
-        hfd_min,
-        max_stars,
-        db_path,
-        db_name,
-        binning,
-        method,
-        speed,
-        threads,
-    };
-
-    // arcsec's own blind index, named by --index or, for a search wider than a
-    // few fields, found in the catalogue directory: it finds the field and the
-    // hinted solver accepts it (see blind::index_stage). With Astrometry.net
-    // files, the blind solver estimates the position first, and that estimate
-    // becomes the hint for the catalogue spiral solver.
-    let has_hint = matches.get_one::<f64>("ra").is_some()
-        || matches.get_one::<f64>("spd").is_some()
-        || image_io::read_ra_dec(file).is_some();
-    let own_index = blind::arcsec_index_for(matches.get_one::<PathBuf>("index"), &template);
-    let index_wcs = match own_index.as_ref().map(|ix| {
-        blind::index_stage(
-            &img,
-            ix,
-            &template,
-            has_hint,
-            arcsec_per_px * binning as f64,
-            scale_known,
-        )
-    }) {
-        Some(blind::IndexOutcome::Solved(w)) => Some(*w),
-        Some(blind::IndexOutcome::Elsewhere(sep_deg)) => {
-            eprintln!(
-                "The blind index places this field {sep_deg:.1}° from the start position, \
-                 outside the search radius."
-            );
-            println!("No solution found.");
-            unsolved.exit(1);
-        }
-        Some(blind::IndexOutcome::NotFound) | None => None,
-    };
-
-    let (ra, dec, search_radius) = match matches.get_one::<PathBuf>("index") {
-        None => (ra_hint_rad, dec_hint_rad, search_radius_rad),
-        _ if index_wcs.is_some() => (ra_hint_rad, dec_hint_rad, search_radius_rad),
-        Some(_) if own_index.is_some() => {
-            if index_wcs.is_none() {
-                eprintln!("Blind index found no verified position. Falling back to hint.");
-            }
-            (ra_hint_rad, dec_hint_rad, search_radius_rad)
-        }
-        Some(idx_root) => {
-            let index_files = blind::collect_index_files(idx_root, fov_rad.to_degrees());
-            if index_files.is_empty() {
-                eprintln!("No index files found at {}", idx_root.display());
-                unsolved.exit(32);
-            }
-            let params = BlindSolveParams {
-                quad_tolerance: quad_tol,
-                hfd_min,
-                max_stars,
-                binning,
-                // The blind scale filter maps this through the image height.
-                fov_deg: (fov_rad * (height / naxis)).to_degrees(),
-            };
-            match blind::estimate_position(&img, &index_files, &params) {
-                BlindOutcome::Found(ra, dec) => {
-                    println!(
-                        "Index position estimate: RA={:.3}°, Dec={:.3}°",
-                        ra.to_degrees(),
-                        dec.to_degrees()
-                    );
-                    // Narrow the catalog search so the spiral checks step 0 (the
-                    // blind position) and at most a few neighbours: the blind
-                    // position is off by at most one image width, so 2× fov is a
-                    // generous ceiling.
-                    (ra, dec, (fov_rad * 2.0).max(5.0_f64.to_radians()))
-                }
-                BlindOutcome::InsufficientStars { found, required } => {
-                    eprintln!("Insufficient stars: found {found}, required {required}");
-                    unsolved.exit(2);
-                }
-                BlindOutcome::NotFound => {
-                    eprintln!(
-                        "Blind position estimate failed for all index files. Falling back to hint."
-                    );
-                    (ra_hint_rad, dec_hint_rad, search_radius_rad)
-                }
-            }
-        }
-    };
-
-    let mut wcs = match index_wcs {
-        Some(w) => w,
-        None => run_catalog_solve(
-            &unsolved,
-            &img,
-            &SolveParams {
-                ra_hint: ra,
-                dec_hint: dec,
-                search_radius,
-                ..template
-            },
-        ),
-    };
-    if want_sip {
-        wcs.sip = fit_sip(&wcs, image_w, image_h);
+    // The plan runs arcsec's own blind index when --index names one or the search
+    // is wide enough to want one, the Astrometry.net blind solver when --index
+    // names those files, and the catalogue spiral search; see arcsec_core::auto.
+    // A search wide enough to want an installed blind index, with none installed:
+    // say how to build one. The solve itself is unchanged.
+    if let Some(hint) =
+        catalog_cmd::index_cmd::missing_index_hint(request.index.as_ref(), &plan.params)
+    {
+        eprintln!("{hint}");
     }
+    let t0 = Instant::now();
+    let solved = plan.solve_with(&img, |event| {
+        if let Event::IndexEstimate(ra, dec) = event {
+            println!(
+                "Index position estimate: RA={:.3}°, Dec={:.3}°",
+                ra.to_degrees(),
+                dec.to_degrees()
+            );
+        }
+    });
+    let wcs = match solved {
+        Ok(s) => s.wcs,
+        Err(e) => report_failure(&unsolved, e),
+    };
     let elapsed_s = t0.elapsed().as_secs_f64();
 
     print_solution(
@@ -507,68 +392,53 @@ fn with_extension(base: &Path, ext: &str) -> PathBuf {
 ///
 /// `--ra` is in hours (0–24) and `--spd` is south pole distance in degrees
 /// (0–180, SPD = 90 + Dec), both ASTAP conventions. If neither is given, the
-/// pointing comes from the image header; failing that, (0, 0).
-fn pointing_hint(matches: &ArgMatches, file: &Path) -> (f64, f64) {
+/// pointing comes from the image header; failing that, none (the search starts
+/// at (0, 0)).
+fn pointing_hint(matches: &ArgMatches, file: &Path) -> Option<(f64, f64)> {
     let cli_ra = matches.get_one::<f64>("ra").copied();
     let cli_spd = matches.get_one::<f64>("spd").copied();
     if cli_ra.is_some() || cli_spd.is_some() {
         let ra = cli_ra.map_or(0.0, |h| h * PI / 12.0);
         let dec = cli_spd.map_or(0.0, |spd| (spd - 90.0).clamp(-90.0, 90.0) * PI / 180.0);
-        (ra, dec)
-    } else if let Some((ra_deg, dec_deg)) = image_io::read_ra_dec(file) {
-        (ra_deg * PI / 180.0, dec_deg * PI / 180.0)
+        Some((ra, dec))
     } else {
-        (0.0, 0.0)
+        image_io::read_ra_dec(file)
+            .map(|(ra_deg, dec_deg)| (ra_deg * PI / 180.0, dec_deg * PI / 180.0))
     }
 }
 
-/// The binning factor: `-z` if given and non-zero, else automatic.
-///
-/// Automatic binning brings a sampling finer than 1"/px back to about 1"/px, up to
-/// 16×. Either way the factor is capped so the binned image keeps at least
-/// [`MIN_SOLVE_DIM`] pixels a side: binning past the image size leaves nothing to
-/// detect in, and used to crash.
-fn choose_binning(
-    requested: Option<u32>,
-    arcsec_per_px: f64,
-    width: usize,
-    height: usize,
-) -> usize {
-    let binning = match requested {
-        Some(0) | None => {
-            if arcsec_per_px < 1.0 {
-                (1.0 / arcsec_per_px).round().clamp(1.0, 16.0) as usize
-            } else {
-                1
-            }
-        }
-        Some(z) => usize::try_from(z).unwrap_or(usize::MAX),
-    };
-    binning.min((width.min(height) / MIN_SOLVE_DIM).max(1))
-}
-
-/// Run the catalog-based (spiral search) solver, exiting with the ASTAP exit code
-/// if it fails.
-fn run_catalog_solve(unsolved: &Unsolved, img: &ImageBuffer, params: &SolveParams) -> WcsSolution {
-    match solve_image(img, params) {
-        Ok(w) => w,
-        Err(ArcsecError::InsufficientStars { found, required }) => {
+/// Report a failed solve as ASTAP would and exit with its code.
+fn report_failure(unsolved: &Unsolved, err: ArcsecError) -> ! {
+    match err {
+        ArcsecError::InsufficientStars { found, required } => {
             eprintln!("Insufficient stars: found {found}, required {required}");
             unsolved.exit(2);
         }
-        Err(ArcsecError::InsufficientQuads { .. }) => {
+        ArcsecError::InsufficientQuads { .. } => {
             println!("No solution found.");
             unsolved.exit(1);
         }
-        Err(ArcsecError::CatalogNotFound(p)) => {
+        ArcsecError::OutsideSearchRadius { separation_deg } => {
+            eprintln!(
+                "The blind index places this field {separation_deg:.1}° from the start position, \
+                 outside the search radius."
+            );
+            println!("No solution found.");
+            unsolved.exit(1);
+        }
+        ArcsecError::IndexNotFound(p) => {
+            eprintln!("No index files found at {}", p.display());
+            unsolved.exit(32);
+        }
+        ArcsecError::CatalogNotFound(p) => {
             eprintln!("Star database not found: {}", p.display());
             unsolved.exit(32);
         }
-        Err(ArcsecError::CatalogIo(e)) => {
+        ArcsecError::CatalogIo(e) => {
             eprintln!("Star database read error: {e}");
             unsolved.exit(33);
         }
-        Err(e) => {
+        e => {
             eprintln!("Solver error: {e}");
             unsolved.exit(1);
         }
@@ -682,21 +552,5 @@ mod tests {
             with_extension(&base, "ini").as_os_str().as_bytes(),
             b"dir/caf\xe9.ini"
         );
-    }
-
-    #[test]
-    fn binning_is_automatic_below_one_arcsec_per_pixel() {
-        assert_eq!(choose_binning(None, 2.0, 4000, 3000), 1);
-        assert_eq!(choose_binning(Some(0), 0.5, 4000, 3000), 2);
-        assert_eq!(choose_binning(None, 0.01, 4000, 3000), 16);
-        assert_eq!(choose_binning(Some(3), 2.0, 4000, 3000), 3);
-    }
-
-    #[test]
-    fn binning_never_exceeds_the_image() {
-        assert_eq!(choose_binning(Some(100), 1.0, 4, 4), 2);
-        assert_eq!(choose_binning(Some(u32::MAX), 1.0, 4, 4), 2);
-        assert_eq!(choose_binning(None, 0.01, 10, 50), 5);
-        assert_eq!(choose_binning(Some(4), 1.0, 1, 1), 1);
     }
 }

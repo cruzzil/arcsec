@@ -23,7 +23,11 @@
 //!  56  source       [u8; 16] database the stars came from, NUL-padded ("d80")
 //!  72  sections     5 × { offset u64, length u64, crc32 u32, reserved u32 }
 //!                   tiers, stars, star directory, keys, quads
-//! 192  reserved     zero
+//! 192  source hash  u64      fingerprint of the source database's files (see
+//!                            [`SourceStamp`]); 0 if not recorded
+//! 200  source bytes u64      total size of those files
+//! 208  source files u32      how many there were; 0 = no stamp recorded
+//! 212  reserved     zero
 //! 252  header crc32 over bytes 0..252
 //!
 //! tiers        n_tiers × 40 bytes, widest first:
@@ -38,6 +42,10 @@
 //!
 //! A tier's patterns are the contiguous range `first_pattern .. +n_patterns` of
 //! both `keys` and `quads`.
+//!
+//! The source stamp (bytes 192–211) was added after the first release of version 1,
+//! in space that was reserved and written as zero, so files without it are still
+//! version 1 and read as "not recorded"; older readers ignore it.
 
 use core::ops::Range;
 use std::fs::File;
@@ -60,6 +68,7 @@ const BYTE_ORDER: u32 = 0x0A0B_0C0D;
 const N_SECTIONS: usize = 5;
 const SECTIONS_AT: usize = 72;
 const HEADER_CRC_AT: usize = 252;
+const STAMP_AT: usize = 192;
 const TIER_LEN: usize = 40;
 const STAR_LEN: usize = 12;
 const QUAD_LEN: usize = 16;
@@ -103,6 +112,95 @@ pub struct IndexStar {
     pub tier: u8,
 }
 
+/// Which copy of a star database an index was built from, so a later check can tell
+/// whether the database has changed since (a new ASTAP release, a re-download, a
+/// different directory's files).
+///
+/// The fingerprint covers each database file's name, size and first
+/// [`SourceStamp::HEAD_BYTES`] bytes, not its modification time: copying a database
+/// to another disk changes every mtime without changing a star. All zero when not
+/// recorded (indexes built before the stamp existed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceStamp {
+    /// Number of database files.
+    pub files: u32,
+    /// Their total size in bytes.
+    pub bytes: u64,
+    /// FNV-1a over every file's name, size and head, in name order.
+    pub hash: u64,
+}
+
+impl SourceStamp {
+    /// Bytes of each file's head folded into the hash.
+    pub const HEAD_BYTES: usize = 4096;
+
+    /// Whether the index recorded its source at all.
+    #[must_use]
+    pub fn is_recorded(&self) -> bool {
+        self.files > 0
+    }
+
+    /// Fingerprint the files of database `db_name` in `db_path`: every
+    /// `<db_name>_*.{1476,290,001}`. Reads a few kilobytes per file.
+    ///
+    /// # Errors
+    ///
+    /// [`ArcsecError::CatalogIo`] if the directory or a file cannot be read.
+    pub fn of_database(db_path: &Path, db_name: &str) -> Result<Self> {
+        use std::io::Read as _;
+        let prefix = format!("{db_name}_");
+        let mut names: Vec<String> = std::fs::read_dir(db_path)
+            .map_err(ArcsecError::CatalogIo)?
+            .filter_map(core::result::Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| {
+                n.starts_with(&prefix) && [".1476", ".290", ".001"].iter().any(|x| n.ends_with(x))
+            })
+            .collect();
+        names.sort();
+        let mut st = Self::default();
+        let mut h = Fnv::new();
+        let mut buf = vec![0u8; Self::HEAD_BYTES];
+        for n in &names {
+            let mut f = File::open(db_path.join(n)).map_err(ArcsecError::CatalogIo)?;
+            let len = f.metadata().map_err(ArcsecError::CatalogIo)?.len();
+            let mut got = 0;
+            while got < buf.len() {
+                match f.read(&mut buf[got..]) {
+                    Ok(0) => break,
+                    Ok(k) => got += k,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(ArcsecError::CatalogIo(e)),
+                }
+            }
+            h.update(n.as_bytes());
+            h.update(&[0]);
+            h.update(&len.to_le_bytes());
+            h.update(&buf[..got]);
+            st.files += 1;
+            st.bytes += len;
+        }
+        st.hash = h.0;
+        Ok(st)
+    }
+}
+
+/// 64-bit FNV-1a: small, dependency-free, and stable across platforms and releases,
+/// which is all a fingerprint stored in a file needs.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Self(0xCBF2_9CE4_8422_2325)
+    }
+    fn update(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= u64::from(b);
+            self.0 = self.0.wrapping_mul(0x0100_0000_01B3);
+        }
+    }
+}
+
 /// An index assembled in memory, ready to write (the builder's output).
 #[derive(Debug, Default)]
 pub struct BuiltIndex {
@@ -118,6 +216,8 @@ pub struct BuiltIndex {
     pub quads: Vec<[u32; 4]>,
     /// Source database name.
     pub source: String,
+    /// Fingerprint of the source database's files.
+    pub source_stamp: SourceStamp,
 }
 
 /// Declination bands in the star directory: quarter-degree strips.
@@ -304,6 +404,9 @@ impl BuiltIndex {
         let src = self.source.as_bytes();
         let n = src.len().min(16);
         h[56..56 + n].copy_from_slice(&src[..n]);
+        h[STAMP_AT..STAMP_AT + 8].copy_from_slice(&self.source_stamp.hash.to_le_bytes());
+        h[STAMP_AT + 8..STAMP_AT + 16].copy_from_slice(&self.source_stamp.bytes.to_le_bytes());
+        h[STAMP_AT + 16..STAMP_AT + 20].copy_from_slice(&self.source_stamp.files.to_le_bytes());
         for (i, (o, l, c)) in sections.iter().enumerate() {
             let at = SECTIONS_AT + i * 24;
             h[at..at + 8].copy_from_slice(&o.to_le_bytes());
@@ -356,6 +459,7 @@ pub struct BlindIndex {
     n_patterns: usize,
     star_bands: u32,
     source: String,
+    source_stamp: SourceStamp,
     built_unix: i64,
 }
 
@@ -428,6 +532,11 @@ impl BlindIndex {
         let source = String::from_utf8_lossy(&map[56..72])
             .trim_end_matches('\0')
             .to_string();
+        let source_stamp = SourceStamp {
+            hash: u64_at(&map, STAMP_AT),
+            bytes: u64_at(&map, STAMP_AT + 8),
+            files: u32_at(&map, STAMP_AT + 16),
+        };
 
         let mut sections = [(0usize, 0usize, 0u32); N_SECTIONS];
         let expected = [
@@ -480,6 +589,7 @@ impl BlindIndex {
             n_patterns,
             star_bands,
             source,
+            source_stamp,
             built_unix,
         })
     }
@@ -524,6 +634,13 @@ impl BlindIndex {
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Fingerprint of the database the index was built from; not recorded
+    /// ([`SourceStamp::is_recorded`] false) in indexes built before it existed.
+    #[must_use]
+    pub fn source_stamp(&self) -> SourceStamp {
+        self.source_stamp
     }
 
     /// Build time, seconds since the Unix epoch.
@@ -710,6 +827,7 @@ mod tests {
             keys: vec![5, 7, 7],
             quads: vec![[0, 1, 2, 3], [1, 2, 3, 4], [5, 6, 7, 8]],
             source: "d80".into(),
+            source_stamp: SourceStamp::default(),
         }
     }
 
@@ -771,6 +889,59 @@ mod tests {
         let ix = BlindIndex::open(&p).unwrap();
         assert!(ix.quad(0).is_none());
         assert!(ix.quad(99).is_none());
+    }
+
+    #[test]
+    fn the_source_stamp_round_trips_and_an_unstamped_file_reads_as_unrecorded() {
+        let dir = TempDir::new("arcsecix_stamp");
+        let p = dir.path().join("t.arcsecix");
+        sample().write(&p).unwrap();
+        let ix = BlindIndex::open(&p).unwrap();
+        assert!(!ix.source_stamp().is_recorded(), "zeros mean not recorded");
+
+        let mut s = sample();
+        s.source_stamp = SourceStamp {
+            files: 1476,
+            bytes: 1_300_000_000,
+            hash: 0x0123_4567_89AB_CDEF,
+        };
+        s.write(&p).unwrap();
+        let ix = BlindIndex::open(&p).unwrap();
+        ix.validate().unwrap();
+        assert_eq!(ix.source_stamp(), s.source_stamp);
+    }
+
+    #[test]
+    fn the_database_stamp_sees_size_and_content_but_not_other_files() {
+        let dir = TempDir::new("arcsecix_dbstamp");
+        let d = dir.path();
+        std::fs::write(d.join("t_0101.1476"), vec![1u8; 5000]).unwrap();
+        std::fs::write(d.join("t_0201.1476"), vec![2u8; 300]).unwrap();
+        std::fs::write(d.join("u_0101.1476"), b"another database").unwrap();
+        std::fs::write(d.join("t.arcsecix"), b"not a database file").unwrap();
+        let a = SourceStamp::of_database(d, "t").unwrap();
+        assert_eq!((a.files, a.bytes), (2, 5300));
+        assert!(a.is_recorded());
+        assert_eq!(
+            a,
+            SourceStamp::of_database(d, "t").unwrap(),
+            "deterministic"
+        );
+
+        // Unrelated files do not count.
+        std::fs::write(d.join("u_0201.1476"), b"more").unwrap();
+        assert_eq!(a, SourceStamp::of_database(d, "t").unwrap());
+
+        // Same size, different head: a different database.
+        let mut b = vec![1u8; 5000];
+        b[10] = 9;
+        std::fs::write(d.join("t_0101.1476"), &b).unwrap();
+        let c = SourceStamp::of_database(d, "t").unwrap();
+        assert_eq!(c.bytes, a.bytes);
+        assert_ne!(c.hash, a.hash);
+
+        // A missing database: an empty, unrecorded stamp.
+        assert!(!SourceStamp::of_database(d, "zz").unwrap().is_recorded());
     }
 
     #[test]

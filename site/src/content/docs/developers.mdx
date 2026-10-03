@@ -64,6 +64,12 @@ The solving code is published separately as
 [`arcsec-core`](https://crates.io/crates/arcsec-core), for use from other Rust programs.
 Its API documentation is on [docs.rs](https://docs.rs/arcsec-core).
 
+## The C library
+
+Programs written in C or C++ can solve in-process with **libarcsec**, a shared or static
+library with a C header: pass it pixels or a file, get back a WCS. See
+[the C library](../c-library/).
+
 ## How it works, and contributing
 
 - [How plate solving works, and precisely what arcsec does](https://github.com/cruzzil/arcsec/blob/main/docs/plate-solving.md)

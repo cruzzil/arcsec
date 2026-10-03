@@ -8,7 +8,9 @@ import CatalogueTable from '../../../components/CatalogueTable.astro';
 
 arcsec cannot solve anything without a star catalogue. Getting one is a single
 command, and everything is installed into one folder that the solver already reads,
-so afterwards you can run `arcsec -f image.fits` with no `-d` and no `-D`.
+so afterwards you can run `arcsec -f image.fits` with no `-d` and no `-D`. The same
+command builds a [blind index](#the-blind-index) from the catalogue, so arcsec can also
+solve with no position hint.
 
 ## Which catalogue do I need?
 
@@ -27,7 +29,8 @@ It suggests the **smallest** download that covers your field. The full set:
 <CatalogueTable />
 
 The solving catalogues are ASTAP's star databases, built from Gaia DR3; the blind
-index sets are Astrometry.net's. `arcsec catalog list` prints the same table, and
+index sets are Astrometry.net's, and optional, since arcsec builds its own blind index
+from the solving catalogue. `arcsec catalog list` prints the same table, and
 shows which are installed.
 
 Rules of thumb:
@@ -37,16 +40,16 @@ Rules of thumb:
 - **Photometry:** the V-series add Johnson-V magnitudes and colour, for photometry
   and colour calibration. `v05` unless you need the depth of `v50`. arcsec can solve
   with them too, but recommends a solving catalogue for that.
-- **Blind solving** (`-i`): only if you cannot supply an approximate position. With a
-  mount that reports where it is pointing, you do not need these at all. The index
-  only finds the rough position; the solve is then finished against a solving
-  catalogue, so you need one of those as well.
+- **Blind solving** (no position hint, or N.I.N.A.'s blind mode): nothing extra to
+  download. Installing a solving catalogue builds arcsec's own blind index from it.
+  The Astrometry.net sets still work with `-i`, but are slower and find fewer fields.
 
 ## Installing and removing
 
 ```sh
 arcsec catalog install d50                 # shows the size and asks first
 arcsec catalog install d50 v05 g05 --yes   # several at once, no prompt
+arcsec catalog install d50 --no-index      # download only, no blind index
 arcsec catalog list                        # every catalogue, and what is installed
 arcsec catalog verify                      # check for missing or truncated files
 arcsec catalog remove d80                  # free the space again
@@ -55,13 +58,84 @@ arcsec catalog path                        # print the catalogue folder
 
 `install` and `remove` both list what they will do and ask first; `--yes` (or `-y`)
 skips the question. `--keep-archive` keeps the downloaded `.zip` or `.deb` after
-unpacking.
+unpacking. Run from a script with no `--yes`, they cancel rather than guess.
+
+Installing a solving catalogue (`d05`, `d20`, `d50`, `d80`, `g05` or `w08`) also builds
+the blind index, and the question says what that costs next to the download:
+
+```text
+$ arcsec catalog install d50
+Installing into /home/me/.local/share/arcsec/catalogs
+
+  d50          901.3 MB  Gaia DR3 to 5000 stars/deg². The usual choice for solving.
+
+Total download: 901.3 MB
+Then build a blind index from D50, fields 0.3°–30° (no blind index is installed yet):
+  ~287.4 MB on disk, ~25 s, ~0.6 GB memory
+  (--no-index to skip it)
+
+Continue? [y/N]
+```
+
+arcsec checks there is room on the disk for the download, the unpacked files and the
+index before it starts.
 
 Installs are **resumable**: interrupt one and run the same command again, and the
 download continues from where it stopped, provided the server supports it. Files are
 written under a temporary name and only moved into place once complete, so a
 half-finished download never looks like an installed catalogue. Downloading and
 unpacking are built in; no other tools are needed.
+
+## The blind index
+
+The blind index lets arcsec find a field anywhere on the sky in a second or two,
+without a position hint and, if need be, without a pixel scale. It is built from the
+solving catalogue you already have, so there is nothing more to download, and
+`catalog install` builds it for you. arcsec uses it by itself when a search is wide
+(a search radius of 10° or more, as N.I.N.A.'s blind solve sends), and `-i` with the
+catalogue folder makes any solve blind:
+
+```sh
+arcsec -f image.fits -i "$(arcsec catalog path)"
+```
+
+One index serves the whole folder. It is built from the densest solving catalogue
+there, for the fields of every catalogue installed:
+
+| Catalogues | Fields served | Index | Build time* | Memory while building |
+|---|---|---|---|---|
+| `d20`, `d50`, `d80` | 0.3°–30° | 287 MB | about 30 s | 0.6 GB |
+| `d80` with `--index-min-fov 0.15` | 0.15°–30° | 698 MB | about 2 min | 1.3 GB |
+| `d05` | 0.6°–30° | 145 MB | about 10 s | 0.3 GB |
+| `g05` | 3°–30° | 12.5 MB | a second | 0.1 GB |
+| `w08` | 10°–80° | 0.8 MB | instant | small |
+
+\* On an 8–24 thread desktop. A four-core mini-PC takes about twice as long; the
+estimate in the question is worked out for your machine.
+
+For fields narrower than 0.3° (the D80 range), add `--index-min-fov 0.15` when you
+install; `arcsec catalog recommend` suggests it. The default stops at 0.3° because the
+extra layer more than doubles the index.
+
+**When you are asked separately.** If the index would be over 1 GB, take over 5
+minutes, or need more than half your free memory (a Raspberry Pi, a small mini-PC),
+arcsec prints a note and asks about the index on its own, so you can take the download
+and skip the index. `--yes` answers both.
+
+**Already have catalogues?** If you installed them with arcsec 0.4 or earlier, or use
+ASTAP's folder, there is no index yet: `arcsec catalog list` says so and shows what
+building one costs. Build it once with:
+
+```sh
+arcsec catalog index build
+```
+
+**Keeping it current.** `arcsec catalog verify` checks the index and tells you if the
+catalogue it was built from has changed since (say, a new ASTAP release); re-running
+`arcsec catalog install <name>` or `arcsec catalog index build` rebuilds it. Installing
+a denser or wider catalogue rebuilds it too. `arcsec catalog remove d80` removes the
+index built from D80 along with it, unless you add `--keep-index`. A build interrupted
+with Ctrl-C leaves nothing behind.
 
 ## Where they are stored
 
@@ -91,9 +165,10 @@ is only needed to point somewhere else for one run, and `-D` only to force a
 particular database. Otherwise arcsec picks the densest installed database whose field
 range covers the image.
 
-Astrometry.net index files install into the same folder, as `index-*.fits`. The
-solver only uses them when asked, so blind solving means passing that folder (or one
-index file) to `-i`:
+The blind index is in the same folder, as `<name>.arcsecix` (`d50.arcsecix`).
+Astrometry.net index files install there too, as `index-*.fits`. The solver only uses
+those when asked, so blind solving with them means passing that folder (or one index
+file) to `-i`:
 
 ```sh
 arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
@@ -106,13 +181,15 @@ Point arcsec at ASTAP's databases and skip the download:
 ```sh
 export ARCSEC_CATALOG_DIR=~/star_database    # or wherever ASTAP keeps them
 arcsec catalog list                          # confirms what it found
+arcsec catalog index build                   # once: the blind index
 ```
 
 On Windows, ASTAP's default folder is `C:\Program Files\astap`; the
 [N.I.N.A. guide](../nina/#reusing-astaps-star-databases) shows how to set the variable.
 
 arcsec reads ASTAP's files directly and the solver never modifies them, so the two
-programs can share a folder.
+programs can share a folder. The blind index is the one file arcsec adds to it
+(`d80.arcsecix`, for example); ASTAP ignores it.
 
 <Aside type="caution">
 The catalogue manager does act on a shared folder: `arcsec catalog remove d80` deletes
@@ -140,6 +217,7 @@ have the details.
 
 ## Building your own
 
-Not possible yet. Generating a catalogue from Gaia, or a pre-computed pattern index, is
-[designed](https://github.com/cruzzil/arcsec/blob/main/docs/offline-index.md) but not
-implemented. Until then, `arcsec catalog install` is the supported route.
+The blind index is built locally, as above. Generating a star catalogue itself from
+Gaia is not possible; `arcsec catalog install` is the supported route. The index's
+design and measurements are in
+[offline-index.md](https://github.com/cruzzil/arcsec/blob/main/docs/offline-index.md).

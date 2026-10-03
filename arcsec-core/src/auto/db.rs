@@ -4,26 +4,37 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::catalog_cmd;
+/// File extensions of the star database formats, with the number of sky cells
+/// each layout has: `.1476` and `.290` tile the sky, `.001` is one all-sky file.
+pub const ASTAP_EXTS: &[(&str, usize)] = &[(".1476", 1476), (".290", 290), (".001", 1)];
 
-/// The star database directory to use without `-d`.
+/// The star database directory to use when none is named.
 ///
-/// The directory `arcsec catalog install` writes to, so a user who installed a
-/// catalogue never has to say where it went — provided a star database is actually
-/// there. Otherwise the working directory, which is ASTAP's behaviour. Blind
-/// indexes do not count: a managed directory holding only `anet-4100` would
-/// otherwise hide the ASTAP databases the user keeps in the working directory.
+/// The directory `arcsec catalog install` writes to ([`super::default_catalog_dir`]),
+/// so a user who installed a catalogue never has to say where it went — provided a
+/// star database is actually there. Otherwise the working directory, which is
+/// ASTAP's behaviour. Blind indexes do not count: a managed directory holding only
+/// `anet-4100` would otherwise hide the ASTAP databases the user keeps in the
+/// working directory.
+#[must_use]
 pub fn default_db_path() -> PathBuf {
-    let managed = catalog_cmd::default_dir();
-    if catalog_cmd::REGISTRY
-        .iter()
-        .filter(|e| matches!(e.files, catalog_cmd::Files::AstapDb { .. }))
-        .any(|e| catalog_cmd::is_installed(&managed, e))
-    {
+    let managed = super::default_catalog_dir();
+    if has_star_database(&managed) {
         managed
     } else {
         PathBuf::from(".")
     }
+}
+
+/// Whether `dir` holds any of the star databases arcsec knows (D05 … W08), judged by
+/// the file each ships for its first cell (`d50_0101.1476`, `w08_0101.001`, …).
+#[must_use]
+pub fn has_star_database(dir: &Path) -> bool {
+    DB_FOV_RANGES.iter().any(|(prefix, ..)| {
+        ASTAP_EXTS
+            .iter()
+            .any(|(ext, _)| dir.join(format!("{prefix}_0101{ext}")).exists())
+    })
 }
 
 /// Field-of-view range each ASTAP database is built for, and how much we prefer it
@@ -32,7 +43,7 @@ pub fn default_db_path() -> PathBuf {
 /// Ranges are as published on the ASTAP download page. The D-series stops at 6°; G05
 /// and W08 exist precisely to cover wider fields, and before `.290`/`.001` support
 /// they could not be read at all, which is why fields beyond ~6° never solved.
-const DB_FOV_RANGES: &[(&str, f64, f64, u8)] = &[
+pub const DB_FOV_RANGES: &[(&str, f64, f64, u8)] = &[
     // prefix, min FOV (deg), max FOV (deg), preference
     ("d80", 0.15, 6.0, 8),
     ("v50", 0.20, 6.0, 6),
@@ -46,21 +57,18 @@ const DB_FOV_RANGES: &[(&str, f64, f64, u8)] = &[
 
 /// Database prefix of a star database file name, if it is one.
 ///
-/// Every supported format is `<prefix>_<cell>.<ext>`; see
-/// [`catalog_cmd::ASTAP_EXTS`].
+/// Every supported format is `<prefix>_<cell>.<ext>`; see [`ASTAP_EXTS`].
 fn db_prefix(file_name: &str) -> Option<&str> {
-    if catalog_cmd::ASTAP_EXTS
-        .iter()
-        .any(|(ext, _)| file_name.ends_with(ext))
-    {
+    if ASTAP_EXTS.iter().any(|(ext, _)| file_name.ends_with(ext)) {
         file_name.split('_').next()
     } else {
         None
     }
 }
 
-/// Every database prefix present in `db_path`, in any supported format.
-fn available_dbs(db_path: &Path) -> Vec<String> {
+/// Every database prefix present in `db_path`, in any supported format, sorted.
+#[must_use]
+pub fn available_dbs(db_path: &Path) -> Vec<String> {
     let mut out: Vec<String> = fs::read_dir(db_path)
         .into_iter()
         .flatten()
@@ -72,7 +80,10 @@ fn available_dbs(db_path: &Path) -> Vec<String> {
     out
 }
 
-/// Pick the installed database best suited to a `fov_deg` field.
+/// Pick the installed database best suited to a `fov_deg` field (the longer side,
+/// degrees): the densest whose published range contains it, else the nearest.
+/// `None` when `db_path` holds no star database at all.
+#[must_use]
 pub fn select_db_for_fov(db_path: &Path, fov_deg: f64) -> Option<String> {
     select_from(&available_dbs(db_path), fov_deg)
 }

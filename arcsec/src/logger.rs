@@ -1,8 +1,10 @@
 //! The solver's logger: `env_logger` for `--progress` on stderr, plus an optional
 //! file sink for `--log`.
 //!
-//! With neither flag the `log` crate is switched off entirely (`LevelFilter::Off`),
-//! so the `log::info!` calls throughout `arcsec-core` cost nothing by default.
+//! With neither flag only warnings get through (`LevelFilter::Warn`), printed bare
+//! on stderr: the few things `arcsec-core` has to say about a solve it is still
+//! running (a blind index that could not be read, a fallback to the hint). The
+//! `log::info!` calls throughout `arcsec-core` still cost nothing by default.
 
 use alloc::sync::Arc;
 use std::fs;
@@ -14,23 +16,20 @@ use env_logger::Logger as EnvLogger;
 use log::{LevelFilter, Log, Metadata, Record};
 
 struct ArcsecLogger {
-    /// `env_logger` backend: handles format and stderr (`Some` with `--progress`).
-    stderr: Option<EnvLogger>,
+    /// `env_logger` backend: handles format and stderr. Everything from `info`
+    /// with `--progress`, otherwise warnings only.
+    stderr: EnvLogger,
     /// Optional file sink for `--log`.
     file: Option<Arc<Mutex<fs::File>>>,
 }
 
 impl Log for ArcsecLogger {
     fn enabled(&self, m: &Metadata<'_>) -> bool {
-        self.stderr
-            .as_ref()
-            .map_or_else(|| self.file.is_some(), |l| l.enabled(m))
+        self.file.is_some() || self.stderr.enabled(m)
     }
 
     fn log(&self, r: &Record<'_>) {
-        if let Some(l) = &self.stderr {
-            l.log(r);
-        }
+        self.stderr.log(r);
         if let Some(f) = &self.file {
             let line = format!("{}  {}", hms_now(), r.args());
             if let Ok(mut g) = f.lock() {
@@ -40,9 +39,7 @@ impl Log for ArcsecLogger {
     }
 
     fn flush(&self) {
-        if let Some(l) = &self.stderr {
-            l.flush();
-        }
+        self.stderr.flush();
     }
 }
 
@@ -59,18 +56,21 @@ pub fn install(progress: bool, log_path: Option<&Path>) {
         }
     });
 
-    let stderr = progress.then(|| {
-        let mut b = env_logger::Builder::new();
+    let mut b = env_logger::Builder::new();
+    if progress {
         b.filter_level(LevelFilter::Info);
         b.format(|buf, r| writeln!(buf, "{}  {}", hms_now(), r.args()));
-        b.build()
-    });
+    } else {
+        b.filter_level(LevelFilter::Warn);
+        b.format(|buf, r| writeln!(buf, "{}", r.args()));
+    }
+    let stderr = b.build();
 
     log::set_boxed_logger(Box::new(ArcsecLogger { stderr, file })).ok();
     log::set_max_level(if progress || log_path.is_some() {
         LevelFilter::Info
     } else {
-        LevelFilter::Off
+        LevelFilter::Warn
     });
 }
 

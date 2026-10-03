@@ -1,0 +1,40 @@
+[package]
+name = "libarcsec"
+description = "C library interface to the arcsec plate solver (libarcsec)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://cruzzil.github.io/arcsec/c-library/"
+readme = "README.md"
+keywords = ["astronomy", "plate-solving", "ffi", "astrometry", "wcs"]
+categories = ["science", "external-ffi-bindings"]
+# The C library is distributed as built artefacts (release archives), not through
+# crates.io: a Rust program wants arcsec-core directly. See README.md.
+publish = false
+
+[lib]
+# libarcsec.so / libarcsec.dylib / arcsec.dll, and libarcsec.a / arcsec.lib.
+name = "arcsec"
+crate-type = ["cdylib", "staticlib", "rlib"]
+# The Rust docs of an extern "C" surface help nobody, and `arcsec` is also the
+# CLI binary's name, which would collide in target/doc.
+doc = false
+
+[lints]
+workspace = true
+
+[dependencies]
+arcsec-core = { workspace = true }
+arcsec-io = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+arcsec-core = { workspace = true, features = ["test-support"] }
+# Checks that include/arcsec.h is what the code generates (and regenerates it with
+# ARCSEC_BLESS=1), so the header cannot drift without a test failing.
+cbindgen = { version = "0.29.4", default-features = false }
+# Finds the platform's C compiler for the end-to-end C test.
+cc = "1.5.1"

@@ -84,6 +84,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Command line', slug: 'reference/cli' },
 						{ label: 'For developers', slug: 'developers' },
+						{ label: 'C library', slug: 'c-library' },
 					],
 				},
 				{

@@ -32,10 +32,12 @@ arcsec -f image.fits
 - **Fields from 0.15° to 80°**, choosing the right database for the field size
   automatically.
 - **Blind solving** with no position hint — and no pixel scale either — using an index
-  that `arcsec catalog index build` makes from the star database you already have, in
-  minutes, with nothing to download. Astrometry.net index files work too.
+  built from the star database you already have, in seconds to a couple of minutes,
+  with nothing to download. Installing a database builds it. Astrometry.net index
+  files work too.
 - **Catalogue management built in**: `arcsec catalog install d50` downloads and
-  unpacks a star database into a directory the solver already knows about.
+  unpacks a star database into a directory the solver already knows about, and builds
+  the blind index from it.
 
 ## Credit
 
@@ -91,12 +93,15 @@ The solver needs a star database. `arcsec` can fetch one for you:
 
 ```bash
 arcsec catalog recommend --fov 2.5    # which catalogue suits a 2.5° field?
-arcsec catalog install d05            # install what it suggested
+arcsec catalog install d05            # install what it suggested, and its blind index
 arcsec -f image.fits                  # solve
 ```
 
-Catalogues land in a per-platform directory that the solver searches by default, so
-after an install you need neither `-d` nor `-D`. Override it with `--dir` or the
+`install` shows the download size, and the size, build time and memory of the blind
+index it builds afterwards (about 145 MB and ten seconds from D05, 287 MB and half a
+minute from D50 or D80), and asks before starting; a larger build is asked about
+separately, and `--no-index` skips it. Catalogues land in a per-platform directory that
+the solver searches by default, so after an install you need neither `-d` nor `-D`. Override it with `--dir` or the
 `ARCSEC_CATALOG_DIR` environment variable. If you already have ASTAP databases, point
 `ARCSEC_CATALOG_DIR` (or `-d`) at them; both programs can share one directory. See
 [docs/catalogues.md](docs/catalogues.md) for which catalogue suits which field size.
@@ -107,10 +112,12 @@ N.I.N.A. runs ASTAP as a command-line program and reads the `.ini` file it write
 arcsec takes its place without any change on N.I.N.A.'s side:
 
 1. Install a star database for arcsec, e.g. `arcsec catalog install d50` (run
-   `arcsec catalog recommend --fov <your field height in degrees>` to choose). N.I.N.A.
-   does not pass `-d`, so arcsec uses its own catalogue directory. To reuse the
-   databases an existing ASTAP install already has instead, set `ARCSEC_CATALOG_DIR`
-   to ASTAP's folder (by default `C:\Program Files\astap`).
+   `arcsec catalog recommend --fov <your field height in degrees>` to choose). This
+   also builds the blind index that N.I.N.A.'s blind solves (`-r 180`) use, turning
+   minutes of searching into a second or two. N.I.N.A. does not pass `-d`, so arcsec
+   uses its own catalogue directory. To reuse the databases an existing ASTAP install
+   already has instead, set `ARCSEC_CATALOG_DIR` to ASTAP's folder (by default
+   `C:\Program Files\astap`) and run `arcsec catalog index build` once.
 2. In N.I.N.A., under **Options > Plate Solving**, choose **ASTAP** as the plate
    solver (and as the blind solver, if you like), and set **ASTAP location** to
    `arcsec.exe`. Type or paste the full path into the field, e.g.
@@ -160,15 +167,19 @@ otherwise arcsec assumes 1″ per pixel.
 Blind, with no position hint, using arcsec's own index:
 
 ```bash
-arcsec catalog index build                       # once: ~2 min, ~290 MB from D80
 arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
 
-The index is built from the installed star database (fields 0.3°–30° by default;
-`--min-fov 0.15` for D80's narrowest), so nothing is downloaded. Every position it finds
-is verified by the ordinary solver before it is reported. With an index installed,
-searches of `-r` 10° or more that reach past five fields round the hint — N.I.N.A.'s
-blind mode sends `-r 180` — use it automatically once the first five fields have failed. See
+`arcsec catalog install` builds the index from the star database it installs (fields
+0.3°–30° from the D-series; `--index-min-fov 0.15` for D80's narrowest), so nothing more
+is downloaded. For databases installed by arcsec 0.4 or earlier, or shared with ASTAP,
+run `arcsec catalog index build` once (about 287 MB and half a minute from D80);
+`arcsec catalog list` shows whether there is one. Every position the index finds is
+verified by the ordinary solver before it is reported. With an index installed, searches
+of `-r` 10° or more that reach past five fields round the hint — N.I.N.A.'s blind mode
+sends `-r 180` — use it automatically once the first five fields have failed; without
+one, such a search prints a hint on stderr. See
+[docs/catalogues.md §5](docs/catalogues.md#5-the-blind-index) and
 [docs/offline-index.md](docs/offline-index.md).
 
 `-i` also takes Astrometry.net index files (`arcsec catalog install anet-4100`, fields of
@@ -234,7 +245,7 @@ On a successful solve arcsec writes, next to the image (or at `-o <base>`):
 - `<base>.wcs` — the solution as a FITS header (`CRVAL`, `CRPIX`, `CD`, `CDELT`,
   `CROTA`, and SIP terms with `--sip`), as ASTAP and Astrometry.net write it. Always
   written; `--wcs` is accepted for compatibility.
-- `<base>.ini` — ASTAP's summary: `PLTSOLVD`, `CRVAL1/2`, `CDELT1/2`, `CROTA2` and the
+- `<base>.ini` — ASTAP's summary: `PLTSOLVD`, `CRVAL1/2`, `CDELT1/2`, `CROTA1/2` and the
   fit statistics.
 
 When a solve fails, `<base>.ini` is still written, holding `PLTSOLVD=F` and the command
@@ -271,7 +282,9 @@ As ASTAP's:
 
 The solving library is published separately as
 [`arcsec-core`](https://crates.io/crates/arcsec-core), for use from other Rust programs;
-see [its README](arcsec-core/README.md).
+see [its README](arcsec-core/README.md). C and C++ programs can use **libarcsec**, a
+shared or static library with a C header, released beside the program; see
+[libarcsec/README.md](libarcsec/README.md).
 
 ## License
 

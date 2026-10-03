@@ -43,6 +43,17 @@ pub enum ArcsecError {
     CatalogIo(std::io::Error),
     /// A caller-supplied parameter is out of range (e.g. a non-positive field of view).
     InvalidParameter(String),
+    /// The solve was stopped through a [`crate::cancel::CancelToken`].
+    Cancelled,
+    /// No blind index file was found at the given path.
+    IndexNotFound(std::path::PathBuf),
+    /// A blind index placed the field outside the search radius, where the
+    /// radius-limited search cannot reach it. The field is not reported, as the
+    /// radius requires; this is a "no solution" with a reason.
+    OutsideSearchRadius {
+        /// Distance from the hint to the field the index found, degrees.
+        separation_deg: f64,
+    },
 }
 
 impl fmt::Display for ArcsecError {
@@ -65,6 +76,13 @@ impl fmt::Display for ArcsecError {
             Self::CatalogNotFound(p) => write!(f, "catalog not found: {}", p.display()),
             Self::CatalogIo(e) => write!(f, "catalog I/O error: {e}"),
             Self::InvalidParameter(msg) => write!(f, "invalid parameter: {msg}"),
+            Self::Cancelled => write!(f, "cancelled"),
+            Self::IndexNotFound(p) => write!(f, "no index files found at {}", p.display()),
+            Self::OutsideSearchRadius { separation_deg } => write!(
+                f,
+                "the blind index places this field {separation_deg:.1}° from the start \
+                 position, outside the search radius"
+            ),
         }
     }
 }
@@ -122,6 +140,18 @@ mod tests {
             (
                 ArcsecError::InvalidParameter("fov".into()),
                 "invalid parameter: fov",
+            ),
+            (ArcsecError::Cancelled, "cancelled"),
+            (
+                ArcsecError::IndexNotFound(std::path::PathBuf::from("/ix")),
+                "no index files found at /ix",
+            ),
+            (
+                ArcsecError::OutsideSearchRadius {
+                    separation_deg: 42.04,
+                },
+                "the blind index places this field 42.0° from the start position, \
+                 outside the search radius",
             ),
         ];
         for (err, want) in cases {

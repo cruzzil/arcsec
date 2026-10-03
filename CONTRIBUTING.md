@@ -36,8 +36,10 @@ cargo test --workspace --locked
 cargo +1.96 test --workspace --locked      # MSRV; rustup toolchain install 1.96 first
 ```
 
-Unit tests live next to the code in `#[cfg(test)] mod tests` blocks; there is no
-`tests/` directory. To run a subset:
+Unit tests live next to the code in `#[cfg(test)] mod tests` blocks. The one exception
+is `libarcsec/tests/`, the C library's end-to-end test: it compiles a C program
+against the built library, which cargo builds as a C library only for integration
+tests. It needs a C compiler. To run a subset:
 
 ```bash
 cargo test -p arcsec-core lsq                              # one crate, name filter
@@ -45,7 +47,10 @@ cargo test -- --nocapture spiral_covers_origin_first       # one test, with outp
 ```
 
 CI also runs the CLI against inputs that need no catalogue, and checks its exit codes:
-see the "Check the CLI surface" step in `.github/workflows/ci.yml`.
+see the "Check the CLI surface" step in `.github/workflows/ci.yml`. For the C library,
+`libarcsec/tests/c/run-checks.sh` runs its C test statically linked, under
+AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer, and under valgrind, as
+CI's "C library" job does (Linux; valgrind optional locally).
 
 ## Fuzzing
 
@@ -110,6 +115,12 @@ scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db
 scripts/benchmark.py --db ~/.local/share/arcsec/catalogs --auto-db --offset-hint 0.3
 ```
 
+`catalog install` also builds the blind index into the catalogue directory, and the
+solver consults an installed index automatically at `-r` 10° and above. The benchmark's
+default `-r 5` never does; to measure the spiral alone at wider radii, install with
+`--no-index`, or make sure neither the catalogue directory nor the `--db` directory
+holds a `*.arcsecix` (the solver looks in both).
+
 For a change with wider reach — detection, the fit, anything that might behave
 differently on real cameras, wide fields or unusual formats — run the expanded corpus too
 (635 images from ten archives plus simulated camera artefacts, about 6.5 GB beyond v1;
@@ -165,13 +176,29 @@ matching or the WCS fit.
 - **Angles are radians inside `arcsec-core`.** Degrees, hours and arcseconds appear
   only at the CLI boundary and in output files. `--ra` is in hours and `--spd` is
   south-pole distance (90 + Dec) in degrees, both ASTAP conventions.
-- **The sign of CDELT1.** `WcsSolution.cdelt1` is negative, as FITS requires; the
-  `.wcs` file writes its absolute value, as ASTAP does. Neither is a bug.
+- **CDELT and CROTA follow astap_cli.** `CDELT1` carries the image's parity (negative
+  for the sky's usual handedness, positive when mirrored), `CDELT2` is positive, and
+  `CROTA1`/`CROTA2` are the rotations of the +X and +Y axes in the FITS (Calabretta &
+  Greisen) sense, exactly as `astap_cli` derives them from the CD matrix
+  (`wcs::output::old_style_wcs`). The CD matrix is what readers should use; these
+  old-style keywords are there for ASTAP compatibility.
 - **`core` and `alloc` before `std`.** Clippy denies `std_instead_of_core` and
   `std_instead_of_alloc` across the workspace, which keeps operating-system
   dependencies visible and out of the pure maths.
 - **Threads go through `arcsec_core::max_threads()`**, so `--threads 1` stays genuinely
-  single-threaded.
+  single-threaded. A thread a solver spawns inherits the caller's
+  `with_max_threads` limit and cancellation token (see `auto/blind.rs`).
+- **`unsafe` FFI lives only in `libarcsec/`.** The C library (crate `libarcsec`) is
+  the boundary between C and Rust and nothing else: solving stays in `arcsec-core`, the
+  decisions the CLI makes for a user in `arcsec_core::auto` (shared by the CLI and the
+  library, so they cannot drift), and image reading in `arcsec-io`. Every `extern "C"`
+  function runs its body under `error::guard` (no panic crosses into C), checks its
+  pointers, and reads caller structs through `util::read_versioned`. The header
+  `libarcsec/include/arcsec.h` is generated: after changing the API, run
+  `ARCSEC_BLESS=1 cargo test -p libarcsec header_is_current` and commit the result.
+  A change that would break a compiled C program raises `ARCSEC_ABI_VERSION` (and
+  `ABI` in `libarcsec/build.rs`); adding functions, or fields at the end of a struct,
+  does not. See [libarcsec/README.md](libarcsec/README.md).
 - Image data is row-major `f32`, indexed `data[y * width + x]`.
 
 ## Website
@@ -206,19 +233,23 @@ what to keep in step.
 
 ## Releasing
 
-The `arcsec` and `arcsec-core` crates share one version, set in `[workspace.package]`
-in the root `Cargo.toml`.
+The `arcsec`, `arcsec-core` and `arcsec-io` crates and the C library (`libarcsec`)
+share one version, set in `[workspace.package]` in the root `Cargo.toml`.
 
-1. Set the new version in `[workspace.package]` and in the `arcsec-core` entry of
-   `[workspace.dependencies]`, then run `cargo check` so `Cargo.lock` follows.
+1. Set the new version in `[workspace.package]` and in the `arcsec-core` and
+   `arcsec-io` entries of `[workspace.dependencies]`, then run `cargo check` so
+   `Cargo.lock` follows.
 2. In `CHANGELOG.md`, rename `[Unreleased]` to the new version with today's date, add
    a fresh empty `[Unreleased]` above it, and update the comparison links at the bottom.
 3. Commit, and let CI pass on `main`.
 4. Tag and push: `git tag -a v0.2.0 -m "arcsec 0.2.0" && git push origin v0.2.0`.
    The Release workflow checks that the tag matches the crate version, builds the
-   binaries for Linux (x86-64, arm64), macOS (arm64) and Windows (x86-64), and
-   publishes a GitHub Release with checksums and the changelog section as its notes.
-5. Publish to crates.io, `arcsec-core` first since the CLI depends on it. Either run the
+   binaries and the C library (`libarcsec/dist.sh`) for Linux (x86-64, arm64), macOS
+   (arm64) and Windows (x86-64), and publishes a GitHub Release with checksums and the
+   changelog section as its notes.
+5. Publish to crates.io, `arcsec-core` and `arcsec-io` first since the CLI depends on
+   them; the C library (`libarcsec`) is `publish = false` and ships only as release
+   archives. Either run the
    "Publish to crates.io" workflow from the Actions tab on the tag (dry run first), or
    locally from a clean checkout of the tag:
 

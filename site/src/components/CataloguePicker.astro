@@ -87,7 +87,7 @@
 				<div data-out="photometry"></div>
 			</div>
 			<div class="row">
-				<p class="kind">Blind <span>(optional)</span></p>
+				<p class="kind">Blind index <span>(built on install)</span></p>
 				<div data-out="blind"></div>
 			</div>
 		</div>
@@ -189,9 +189,10 @@
 			out('solving').innerHTML = describe(rec.solving, 'solving', fov) + alternatives(rec.solving, fov);
 			out('photometry-row').hidden = !photo;
 			out('photometry').innerHTML = photo ? describe(rec.photometry, 'photometry', fov) : '';
-			out('blind').innerHTML = rec.blind
-				? `${describe(rec.blind, 'blind', fov)}<p class="alt">Only needed to solve with no position hint, and used alongside a solving catalogue, not instead of one.</p>`
-				: describe(undefined, 'blind', fov);
+			const ix = rec.index;
+			out('blind').innerHTML = ix
+				? `<p>From <code class="id">${ix.from}</code> <span class="size">${human(ix.bytes)}</span> <span class="range">${ix.fields[0]}°–${ix.fields[1]}°</span></p><p class="desc">Built by the install from the catalogue, with nothing more to download, so arcsec can solve with no position hint (and N.I.N.A.'s blind solves take seconds). The install shows its size and build time first; <code>--no-index</code> skips it.${ix.narrow ? ' For a field this narrow the command adds <code>--index-min-fov 0.15</code>, as the default index stops at 0.3°.' : ''}</p>`
+				: `<p class="none">No blind index without a solving catalogue.</p>`;
 			out('rec').hidden = false;
 
 			out('command-box').hidden = !rec.install;

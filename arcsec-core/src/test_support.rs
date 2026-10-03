@@ -9,6 +9,17 @@
 //! than borrowed from [`crate::math::coords`], so a solve checked against it is
 //! checked against an independent implementation.
 
+// Test scaffolding, public only under the `test-support` feature: the library's
+// API-hygiene lints are for the real API.
+#![allow(
+    missing_docs,
+    clippy::must_use_candidate,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::doc_markdown,
+    clippy::return_self_not_must_use
+)]
+
 use core::f64::consts::PI;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
@@ -20,11 +31,11 @@ use crate::types::{ImageBuffer, WcsSolution};
 // ── Random numbers ─────────────────────────────────────────────────────────────
 
 /// Deterministic xorshift64* generator, so no test can flake on its inputs.
-pub(crate) struct Rng(u64);
+pub struct Rng(u64);
 
 impl Rng {
     /// A generator seeded with `seed` (zero is remapped; xorshift cannot leave it).
-    pub(crate) fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         Self(if seed == 0 {
             0x9E37_79B9_7F4A_7C15
         } else {
@@ -33,7 +44,7 @@ impl Rng {
     }
 
     /// Next raw 64-bit value.
-    pub(crate) fn next_u64(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x >> 12;
         x ^= x << 25;
@@ -43,17 +54,17 @@ impl Rng {
     }
 
     /// Uniform in `[0, 1)`.
-    pub(crate) fn uniform(&mut self) -> f64 {
+    pub fn uniform(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
     /// Uniform in `[lo, hi)`.
-    pub(crate) fn range(&mut self, lo: f64, hi: f64) -> f64 {
+    pub fn range(&mut self, lo: f64, hi: f64) -> f64 {
         lo + (hi - lo) * self.uniform()
     }
 
     /// Standard normal deviate (Box-Muller).
-    pub(crate) fn gauss(&mut self) -> f64 {
+    pub fn gauss(&mut self) -> f64 {
         let u1 = self.uniform().max(1e-300);
         let u2 = self.uniform();
         (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
@@ -66,11 +77,11 @@ impl Rng {
 ///
 /// Named by process id, a caller tag and a counter, so parallel tests (and
 /// parallel test binaries) never share one.
-pub(crate) struct TempDir(PathBuf);
+pub struct TempDir(PathBuf);
 
 impl TempDir {
     /// Create a new empty directory.
-    pub(crate) fn new(tag: &str) -> Self {
+    pub fn new(tag: &str) -> Self {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path =
@@ -81,7 +92,7 @@ impl TempDir {
     }
 
     /// The directory.
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -96,7 +107,7 @@ impl Drop for TempDir {
 
 /// Sky → standard coordinates (radians; xi east, eta north). `None` behind the
 /// tangent point.
-pub(crate) fn gnomonic(ra0: f64, dec0: f64, ra: f64, dec: f64) -> Option<(f64, f64)> {
+pub fn gnomonic(ra0: f64, dec0: f64, ra: f64, dec: f64) -> Option<(f64, f64)> {
     let dra = ra - ra0;
     let cos_c = dec0.sin() * dec.sin() + dec0.cos() * dec.cos() * dra.cos();
     if cos_c <= 1e-9 {
@@ -108,7 +119,7 @@ pub(crate) fn gnomonic(ra0: f64, dec0: f64, ra: f64, dec: f64) -> Option<(f64, f
 }
 
 /// Standard coordinates (radians; xi east, eta north) → sky, RA in `[0, 2π)`.
-pub(crate) fn inverse_gnomonic(ra0: f64, dec0: f64, xi: f64, eta: f64) -> (f64, f64) {
+pub fn inverse_gnomonic(ra0: f64, dec0: f64, xi: f64, eta: f64) -> (f64, f64) {
     let rho = xi.hypot(eta);
     if rho < 1e-300 {
         return (ra0.rem_euclid(2.0 * PI), dec0);
@@ -122,7 +133,7 @@ pub(crate) fn inverse_gnomonic(ra0: f64, dec0: f64, xi: f64, eta: f64) -> (f64, 
 
 /// Great-circle separation (radians), by the haversine formula (well conditioned
 /// for the tiny separations the accuracy checks deal in).
-pub(crate) fn separation(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
+pub fn separation(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
     let s_dec = ((dec2 - dec1) * 0.5).sin();
     let s_ra = ((ra2 - ra1) * 0.5).sin();
     let h = s_dec * s_dec + dec1.cos() * dec2.cos() * s_ra * s_ra;
@@ -134,30 +145,30 @@ pub(crate) fn separation(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
 /// A TAN WCS with its reference pixel at the image centre, in the solver's pixel
 /// convention: 0-based `(x, y)` with `data[y * width + x]`, FITS pixel = index + 1.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TruthWcs {
+pub struct TruthWcs {
     /// Reference RA (radians).
-    pub(crate) ra0: f64,
+    pub ra0: f64,
     /// Reference Dec (radians).
-    pub(crate) dec0: f64,
+    pub dec0: f64,
     /// CD matrix, degrees per pixel: `[cd1_1, cd1_2, cd2_1, cd2_2]`.
-    pub(crate) cd: [f64; 4],
+    pub cd: [f64; 4],
     /// Columns.
-    pub(crate) width: usize,
+    pub width: usize,
     /// Rows.
-    pub(crate) height: usize,
+    pub height: usize,
     /// Radial distortion about the frame centre, in the SIP sense (pixel → sky):
     /// the pixel `ρ` from the centre sees the sky the linear WCS puts at
     /// `ρ (1 + radial ρ²)`. Positive: the field's edges are squeezed (barrel);
     /// negative: stretched (pincushion); 0 is a pure TAN. A cubic in pixels, so
     /// SIP and arcsec's distortion model can represent it exactly.
-    pub(crate) radial: f64,
+    pub radial: f64,
 }
 
 impl TruthWcs {
     /// A WCS with `scale` arcsec/pixel rotated by `rot_deg`. `mirrored = false`
     /// gives the usual sky orientation (east left of north, det(CD) < 0);
     /// `true` flips the x axis, as a diagonal or mirror in the light path does.
-    pub(crate) fn new(
+    pub fn new(
         ra0: f64,
         dec0: f64,
         scale_arcsec: f64,
@@ -181,7 +192,7 @@ impl TruthWcs {
 
     /// The same WCS with radial distortion of `corner_px` pixels at the frame's
     /// corners (barrel if positive).
-    pub(crate) fn with_corner_distortion(mut self, corner_px: f64) -> Self {
+    pub fn with_corner_distortion(mut self, corner_px: f64) -> Self {
         let (cx, cy) = self.centre();
         let r = cx.hypot(cy);
         self.radial = corner_px / (r * r * r);
@@ -196,7 +207,7 @@ impl TruthWcs {
     }
 
     /// Sky position of 0-based pixel `(x, y)`.
-    pub(crate) fn pixel_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
+    pub fn pixel_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
         let (cx, cy) = self.centre();
         let (dx, dy) = (x - cx, y - cy);
         let f = 1.0 + self.radial * (dx * dx + dy * dy);
@@ -207,7 +218,7 @@ impl TruthWcs {
     }
 
     /// 0-based pixel of a sky position (may lie outside the frame).
-    pub(crate) fn sky_to_pixel(&self, ra: f64, dec: f64) -> Option<(f64, f64)> {
+    pub fn sky_to_pixel(&self, ra: f64, dec: f64) -> Option<(f64, f64)> {
         let (xi, eta) = gnomonic(self.ra0, self.dec0, ra, dec)?;
         let (xi, eta) = (xi.to_degrees(), eta.to_degrees());
         let det = self.cd[0] * self.cd[3] - self.cd[1] * self.cd[2];
@@ -244,7 +255,7 @@ impl TruthWcs {
     /// Worst corner error (arcsec) of the best linear WCS over the frame: the
     /// least-squares linear fit to the truth on a 9 × 9 grid, as
     /// `scripts/fitslite.py`'s `best_linear` computes the benchmark's floor.
-    pub(crate) fn linear_floor_arcsec(&self) -> f64 {
+    pub fn linear_floor_arcsec(&self) -> f64 {
         const N: usize = 9;
         let (w, h) = (self.width as f64 - 1.0, self.height as f64 - 1.0);
         let (cx, cy) = self.centre();
@@ -275,7 +286,7 @@ impl TruthWcs {
     /// Worst disagreement (arcsec) between this WCS and a solved one, over the
     /// centre and the four corners — a centre-only check hides scale and rotation
     /// error, which is what `scripts/benchmark.py` checks too.
-    pub(crate) fn max_error_arcsec(&self, sol: &WcsSolution) -> f64 {
+    pub fn max_error_arcsec(&self, sol: &WcsSolution) -> f64 {
         let (w, h) = (self.width as f64 - 1.0, self.height as f64 - 1.0);
         [(w * 0.5, h * 0.5), (0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
             .iter()
@@ -290,7 +301,7 @@ impl TruthWcs {
 
 /// Evaluate a solver [`WcsSolution`] at 0-based pixel `(x, y)` using the standard
 /// FITS TAN definition of its CRVAL/CRPIX/CD keywords.
-pub(crate) fn solution_pixel_to_sky(sol: &WcsSolution, x: f64, y: f64) -> (f64, f64) {
+pub fn solution_pixel_to_sky(sol: &WcsSolution, x: f64, y: f64) -> (f64, f64) {
     let dx = x + 1.0 - sol.crpix1;
     let dy = y + 1.0 - sol.crpix2;
     let xi = (sol.cd1_1 * dx + sol.cd1_2 * dy).to_radians();
@@ -302,36 +313,36 @@ pub(crate) fn solution_pixel_to_sky(sol: &WcsSolution, x: f64, y: f64) -> (f64, 
 
 /// A catalogue star: RA/Dec in radians, magnitude.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SkyStar {
-    pub(crate) ra: f64,
-    pub(crate) dec: f64,
-    pub(crate) mag: f64,
+pub struct SkyStar {
+    pub ra: f64,
+    pub dec: f64,
+    pub mag: f64,
 }
 
 /// The shape of a synthetic star field.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SkySpec {
+pub struct SkySpec {
     /// Centre of the field (radians).
-    pub(crate) ra0: f64,
+    pub ra0: f64,
     /// Centre of the field (radians).
-    pub(crate) dec0: f64,
+    pub dec0: f64,
     /// Side of the square (tangent-plane degrees) the stars are spread over.
-    pub(crate) side_deg: f64,
+    pub side_deg: f64,
     /// Number of stars wanted.
-    pub(crate) n: usize,
+    pub n: usize,
     /// No two stars closer than this (degrees). Blended pairs centroid badly, which
     /// would make the accuracy checks measure the fixture instead of the solver.
-    pub(crate) min_sep_deg: f64,
+    pub min_sep_deg: f64,
     /// Brightest magnitude.
-    pub(crate) mag_lo: f64,
+    pub mag_lo: f64,
     /// Faintest magnitude.
-    pub(crate) mag_hi: f64,
+    pub mag_hi: f64,
 }
 
 /// Stars spread uniformly (with a minimum separation) over a square around the
 /// centre, magnitudes weighted towards the faint end as real star counts are.
 /// Returns fewer than `n` only if the square cannot hold that many.
-pub(crate) fn random_sky(rng: &mut Rng, spec: &SkySpec) -> Vec<SkyStar> {
+pub fn random_sky(rng: &mut Rng, spec: &SkySpec) -> Vec<SkyStar> {
     let half = (spec.side_deg * 0.5).to_radians();
     let sep = spec.min_sep_deg.to_radians();
     // Dart throwing, bucketed on a grid of `sep`-sized cells.
@@ -365,7 +376,7 @@ pub(crate) fn random_sky(rng: &mut Rng, spec: &SkySpec) -> Vec<SkyStar> {
 /// Draw `stars` through `wcs`: Gaussian PSFs of width `sigma_px` on a flat
 /// `background` with Gaussian read noise `noise`. A magnitude-10 star peaks at
 /// `peak10` counts above the background.
-pub(crate) fn render(
+pub fn render(
     wcs: &TruthWcs,
     stars: &[SkyStar],
     sigma_px: f64,
@@ -434,7 +445,7 @@ fn encode_record(s: &SkyStar, record_size: usize) -> ((u8, u8), Vec<u8>) {
 /// The bytes of one `.1476`/`.290` area file: the 110-byte header, then the stars
 /// brightest first, with a header record wherever the magnitude or the high
 /// declination byte changes — the layout ASTAP writes.
-pub(crate) fn area_file_bytes(stars: &[SkyStar], record_size: usize) -> Vec<u8> {
+pub fn area_file_bytes(stars: &[SkyStar], record_size: usize) -> Vec<u8> {
     let mut sorted = stars.to_vec();
     sorted.sort_by(|a, b| a.mag.total_cmp(&b.mag));
     let mut out = vec![b' '; 110];
@@ -455,7 +466,7 @@ pub(crate) fn area_file_bytes(stars: &[SkyStar], record_size: usize) -> Vec<u8> 
 
 /// Write `stars` as a `.1476` database called `name` in `dir`: one file per
 /// occupied area, plus the south-pole `0101` tile that layout detection probes.
-pub(crate) fn write_1476_db(dir: &Path, name: &str, stars: &[SkyStar]) {
+pub fn write_1476_db(dir: &Path, name: &str, stars: &[SkyStar]) {
     let mut by_area: alloc::collections::BTreeMap<usize, Vec<SkyStar>> =
         alloc::collections::BTreeMap::new();
     by_area.entry(1).or_default();
@@ -470,7 +481,7 @@ pub(crate) fn write_1476_db(dir: &Path, name: &str, stars: &[SkyStar]) {
 }
 
 /// Write `stars` as a `.290` database called `name` in `dir`.
-pub(crate) fn write_290_db(dir: &Path, name: &str, stars: &[SkyStar]) {
+pub fn write_290_db(dir: &Path, name: &str, stars: &[SkyStar]) {
     let mut by_area: alloc::collections::BTreeMap<usize, Vec<SkyStar>> =
         alloc::collections::BTreeMap::new();
     by_area.entry(1).or_default();
@@ -487,7 +498,7 @@ pub(crate) fn write_290_db(dir: &Path, name: &str, stars: &[SkyStar]) {
 }
 
 /// The bytes of a `.001` all-sky file: a u32 count, then f32 triples brightest first.
-pub(crate) fn file_001_bytes(stars: &[SkyStar]) -> Vec<u8> {
+pub fn file_001_bytes(stars: &[SkyStar]) -> Vec<u8> {
     let mut sorted = stars.to_vec();
     sorted.sort_by(|a, b| a.mag.total_cmp(&b.mag));
     let mut out = (sorted.len() as u32).to_le_bytes().to_vec();
@@ -500,7 +511,7 @@ pub(crate) fn file_001_bytes(stars: &[SkyStar]) -> Vec<u8> {
 }
 
 /// Write `stars` as a `.001` database called `name` in `dir`.
-pub(crate) fn write_001_db(dir: &Path, name: &str, stars: &[SkyStar]) {
+pub fn write_001_db(dir: &Path, name: &str, stars: &[SkyStar]) {
     std::fs::write(dir.join(format!("{name}_0101.001")), file_001_bytes(stars))
         .expect("write .001 file");
 }
@@ -508,25 +519,25 @@ pub(crate) fn write_001_db(dir: &Path, name: &str, stars: &[SkyStar]) {
 // ── Astrometry.net index fixtures ──────────────────────────────────────────────
 
 /// Lower end of the astrometry.net code range, `0.5 - √2/2`.
-pub(crate) const ANET_CODE_LO: f64 = 0.5 - core::f64::consts::FRAC_1_SQRT_2;
+pub const ANET_CODE_LO: f64 = 0.5 - core::f64::consts::FRAC_1_SQRT_2;
 /// Upper end of the astrometry.net code range, `0.5 + √2/2`.
-pub(crate) const ANET_CODE_HI: f64 = 0.5 + core::f64::consts::FRAC_1_SQRT_2;
+pub const ANET_CODE_HI: f64 = 0.5 + core::f64::consts::FRAC_1_SQRT_2;
 
 /// An index as astrometry.net's builder would lay it out, before FITS encoding.
 #[derive(Debug, Clone)]
-pub(crate) struct RawIndex {
+pub struct RawIndex {
     /// Stars per quad: 3 or 4.
-    pub(crate) dim_quads: usize,
+    pub dim_quads: usize,
     /// Every index star, `(ra, dec)` radians.
-    pub(crate) stars: Vec<(f64, f64)>,
+    pub stars: Vec<(f64, f64)>,
     /// Per quad, `dim_quads` star indices in canonical order (A, B, C[, D]).
-    pub(crate) quads: Vec<Vec<u32>>,
+    pub quads: Vec<Vec<u32>>,
     /// Per quad, its code (`2 * (dim_quads - 2)` used slots).
-    pub(crate) codes: Vec<[f64; 4]>,
+    pub codes: Vec<[f64; 4]>,
     /// Smallest A-B separation (radians).
-    pub(crate) scale_lo: f64,
+    pub scale_lo: f64,
     /// Largest A-B separation (radians).
-    pub(crate) scale_hi: f64,
+    pub scale_hi: f64,
 }
 
 fn unit(ra: f64, dec: f64) -> [f64; 3] {
@@ -544,7 +555,7 @@ fn unit(ra: f64, dec: f64) -> [f64; 3] {
 /// Returns the star indices in canonical order and the code, or `None` for a
 /// degenerate group or one whose other stars fall outside the circle on A-B as
 /// diameter, which astrometry.net does not build.
-pub(crate) fn anet_code(sky: &[(f64, f64)], group: &[u32]) -> Option<(Vec<u32>, [f64; 4])> {
+pub fn anet_code(sky: &[(f64, f64)], group: &[u32]) -> Option<(Vec<u32>, [f64; 4])> {
     let n = group.len();
     let pos = |i: u32| sky[i as usize];
     // Most separated pair becomes A-B.
@@ -622,7 +633,7 @@ pub(crate) fn anet_code(sky: &[(f64, f64)], group: &[u32]) -> Option<(Vec<u32>, 
 
 impl RawIndex {
     /// An index over `sky`, with one entry per star group in `groups`.
-    pub(crate) fn build(dim_quads: usize, sky: &[(f64, f64)], groups: &[Vec<u32>]) -> Self {
+    pub fn build(dim_quads: usize, sky: &[(f64, f64)], groups: &[Vec<u32>]) -> Self {
         let mut quads = Vec::new();
         let mut codes = Vec::new();
         let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
@@ -650,7 +661,7 @@ impl RawIndex {
 
     /// The in-memory [`crate::catalog::AnetIndex`] that loading this file would give,
     /// built without going through FITS.
-    pub(crate) fn to_index(&self) -> crate::catalog::AnetIndex {
+    pub fn to_index(&self) -> crate::catalog::AnetIndex {
         use crate::catalog::anet::{AnetIndex, AnetIndexEntry, AnetStar};
         let stars: Vec<AnetStar> = self
             .stars
@@ -695,7 +706,7 @@ impl RawIndex {
     }
 
     /// Encode as an astrometry.net index FITS file.
-    pub(crate) fn fits_bytes(&self) -> Vec<u8> {
+    pub fn fits_bytes(&self) -> Vec<u8> {
         let n_dims = 2 * (self.dim_quads - 2);
         let code_scale = 65535.0 / (ANET_CODE_HI - ANET_CODE_LO);
         let mut fits = FitsWriter::default();
@@ -762,9 +773,9 @@ impl RawIndex {
 /// Minimal FITS writer: a primary header and single-column `nA` binary tables,
 /// which is all an astrometry.net index uses.
 #[derive(Default)]
-pub(crate) struct FitsWriter {
+pub struct FitsWriter {
     /// The file so far.
-    pub(crate) bytes: Vec<u8>,
+    pub bytes: Vec<u8>,
 }
 
 impl FitsWriter {
@@ -785,7 +796,7 @@ impl FitsWriter {
     }
 
     /// Primary HDU with no data and the given integer/float keywords.
-    pub(crate) fn primary(&mut self, keys: &[(&str, String)]) {
+    pub fn primary(&mut self, keys: &[(&str, String)]) {
         self.value("SIMPLE", "T");
         self.value("BITPIX", "8");
         self.value("NAXIS", "0");
@@ -797,7 +808,7 @@ impl FitsWriter {
     }
 
     /// A binary table with one `row_bytes`-wide raw-byte column named `name`.
-    pub(crate) fn table(&mut self, name: &str, row_bytes: usize, data: &[u8]) {
+    pub fn table(&mut self, name: &str, row_bytes: usize, data: &[u8]) {
         assert_eq!(data.len() % row_bytes, 0);
         self.card("XTENSION= 'BINTABLE'");
         self.value("BITPIX", "8");
@@ -814,4 +825,65 @@ impl FitsWriter {
         let pad = self.bytes.len().next_multiple_of(2880);
         self.bytes.resize(pad, 0);
     }
+}
+
+// ── A ready-made field, for other crates' end-to-end tests ─────────────────────
+
+/// A synthetic field: an image of a random sky through `truth`, with that sky
+/// (six fields wide, so offset hints still find their stars) written to `dir` as
+/// a `.1476` database called `db_name`. About `n_in_frame` stars fall in the frame.
+pub fn synthetic_field(
+    dir: &Path,
+    db_name: &str,
+    truth: &TruthWcs,
+    n_in_frame: usize,
+    seed: u64,
+) -> ImageBuffer {
+    let mut rng = Rng::new(seed);
+    let scale_deg = truth.cd[1].hypot(truth.cd[3]);
+    let (w_deg, h_deg) = (
+        truth.width as f64 * scale_deg,
+        truth.height as f64 * scale_deg,
+    );
+    let side = 6.0 * w_deg.max(h_deg);
+    let sky = random_sky(
+        &mut rng,
+        &SkySpec {
+            ra0: truth.ra0,
+            dec0: truth.dec0,
+            side_deg: side,
+            n: (n_in_frame as f64 * side * side / (w_deg * h_deg)) as usize,
+            min_sep_deg: 12.0 * scale_deg,
+            mag_lo: 10.0,
+            mag_hi: 14.5,
+        },
+    );
+    let sigma = (1.3 * 5.0 / (scale_deg * 3600.0)).max(1.3);
+    let img = render(truth, &sky, sigma, 1000.0, 8.0, 30_000.0, &mut rng);
+    write_1476_db(dir, db_name, &sky);
+    img
+}
+
+/// The bytes of a FITS file holding `img` as 32-bit floats (BITPIX -32), with
+/// extra header `cards` (`("FOCALLEN", "206.265")`, ...). Row 0 of `img` is the
+/// first row of the file.
+pub fn fits_f32_bytes(img: &ImageBuffer, cards: &[(&str, &str)]) -> Vec<u8> {
+    let mut hdr = String::new();
+    let mut card = |s: String| hdr.push_str(&format!("{s:<80}"));
+    card(format!("{:<8}= {:>20}", "SIMPLE", "T"));
+    card(format!("{:<8}= {:>20}", "BITPIX", "-32"));
+    card(format!("{:<8}= {:>20}", "NAXIS", "2"));
+    card(format!("{:<8}= {:>20}", "NAXIS1", img.width));
+    card(format!("{:<8}= {:>20}", "NAXIS2", img.height));
+    for (k, v) in cards {
+        card(format!("{k:<8}= {v:>20}"));
+    }
+    card("END".to_string());
+    let mut out = hdr.into_bytes();
+    out.resize(out.len().next_multiple_of(2880), b' ');
+    for v in &img.data {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out.resize(out.len().next_multiple_of(2880), 0);
+    out
 }

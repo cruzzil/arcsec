@@ -1,0 +1,137 @@
+---
+title: The C library
+description: libarcsec lets C and C++ programs plate-solve in-process with arcsec. Building, linking, a first program, and the rules for memory, threads, errors and versions.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**libarcsec** is arcsec as a library for C and C++ programs. Hand it the pixels of an
+image (or the path of a FITS, XISF or ASDF file) and a rough idea of the field, and it
+returns a FITS WCS: CRVAL, CRPIX, the CD matrix and, if you ask, SIP distortion terms.
+It makes the same choices the command line does, and reads the same catalogues from the
+same place, so a user who has run `arcsec catalog install` needs to configure nothing.
+
+The full reference is the header,
+[`arcsec.h`](https://github.com/cruzzil/arcsec/blob/main/libarcsec/include/arcsec.h),
+where every function and field is documented, and the library's
+[README](https://github.com/cruzzil/arcsec/blob/main/libarcsec/README.md).
+
+## Get it
+
+Each [release](https://github.com/cruzzil/arcsec/releases/latest) has a library archive
+per platform beside the program's, named `arcsec-lib-v<version>-<platform>`:
+
+| Platform | Archive | Holds |
+|---|---|---|
+| Linux (x86-64, arm64), glibc 2.35+ | `.tar.gz` | `libarcsec.so.1`, `libarcsec.a` |
+| macOS (Apple silicon) | `.tar.gz` | `libarcsec.dylib`, `libarcsec.a` |
+| Windows (x86-64) | `.zip` | `bin/arcsec.dll`, `lib/arcsec.lib`, `lib/arcsec_static.lib` |
+
+Every archive also has `include/arcsec.h`, a pkg-config file (`lib/pkgconfig/arcsec.pc`)
+and a CMake package (`lib/cmake/arcsec/`), all of which find the files relative to
+themselves, so the tree can be unpacked anywhere.
+
+To build it yourself you need [Rust](https://rustup.rs/) 1.96 or newer and a C
+compiler:
+
+```sh
+git clone https://github.com/cruzzil/arcsec && cd arcsec
+libarcsec/dist.sh /tmp/arcsec           # the same tree, in /tmp/arcsec
+sudo cp -a /tmp/arcsec/. /usr/local/    # to install it (then sudo ldconfig on Linux)
+```
+
+## Link it
+
+```sh
+# pkg-config (also Meson's dependency('arcsec'))
+cc app.c $(pkg-config --cflags --libs arcsec)
+```
+
+```cmake
+# CMake, with CMAKE_PREFIX_PATH pointing at the tree
+find_package(arcsec 0.4 REQUIRED)
+target_link_libraries(app PRIVATE arcsec::arcsec)   # or arcsec::arcsec_static
+```
+
+<Aside type="caution" title="Use the shared library alongside CFITSIO">
+arcsec reads FITS with a Rust port of CFITSIO, which defines CFITSIO's C functions
+under their usual names. The Linux shared library hides them, so a program that also
+links the real CFITSIO (Siril, for one) is unaffected. The static library cannot hide
+them; don't link it next to CFITSIO. On macOS and Windows, put CFITSIO before arcsec on
+the link line.
+</Aside>
+
+## A first program
+
+```c
+#include <arcsec.h>
+#include <stdio.h>
+
+int solve(const float *pixels, uint32_t width, uint32_t height) {
+    arcsec_image image = {0};
+    image.struct_size = sizeof image;
+    image.data = pixels;                /* row 0 is FITS row 1 */
+    image.pixel_type = ARCSEC_PIXEL_F32;
+    image.width = width;
+    image.height = height;
+
+    arcsec_solve_options opts;
+    arcsec_solve_options_init(&opts);   /* the command line's defaults */
+    opts.has_hint = 1;
+    opts.ra_deg = 83.82;
+    opts.dec_deg = -5.39;
+    opts.search_radius_deg = 10.0;
+    opts.pixel_scale_arcsec = 1.2;
+
+    arcsec_solver *solver = arcsec_solver_new();
+    arcsec_result *result = NULL;
+    arcsec_status st = arcsec_solve(solver, &image, &opts, &result);
+    if (st == ARCSEC_OK) {
+        arcsec_wcs wcs = {0};
+        wcs.struct_size = sizeof wcs;
+        arcsec_result_wcs(result, &wcs);
+        printf("RA %.5f, Dec %.5f, %.3f\"/px\n", wcs.crval1, wcs.crval2,
+               wcs.pixel_scale_arcsec);
+    } else {
+        fprintf(stderr, "%s: %s\n", arcsec_status_string(st), arcsec_last_error());
+    }
+    arcsec_result_free(result);
+    arcsec_solver_free(solver);
+    return st;
+}
+```
+
+## What it offers
+
+- **Solving** from pixels in memory (8-, 16- and 32-bit integers, `float`, `double`;
+  one or several planes, which are averaged; any row stride) or from a file, with a
+  position hint or blind with an index. Options cover everything the command line
+  has: search radius, field size or pixel scale, star database, blind index, star
+  count, binning, threads, SIP.
+- **Results**: the WCS as numbers or as 80-character FITS header cards, the matched
+  star pairs, pixel↔sky conversion through the solution, and how the solve went.
+- **Star analysis** without solving (`arcsec --analyse`): star count, median HFD, and
+  the stars.
+- **Catalogue queries**: where catalogues are installed, which database suits a field,
+  whether a blind index is available.
+- **Callbacks**: log messages, progress (stage and fraction of the search), and
+  cancellation, from any thread.
+
+## Rules
+
+- **Memory.** The library frees only what it allocated, through `arcsec_solver_free`
+  and `arcsec_result_free`; everything you pass in or have it fill is yours. Images and
+  strings are read during the call and not kept.
+- **Threads.** Separate solver handles may solve at the same time on separate threads,
+  each with its own thread budget. One handle runs one solve at a time
+  (`ARCSEC_BUSY` otherwise). `arcsec_solver_cancel` works from any thread. Callbacks run
+  on arcsec's worker threads and must be thread-safe.
+- **Errors.** Calls return an `arcsec_status` whose solve codes match the command
+  line's exit codes (0 solved, 1 no solution, 2 too few stars, 16 file, 32 and 33
+  database), plus invalid argument, cancelled, busy and internal error; the message is
+  in `arcsec_last_error()`. A crash inside arcsec is caught and reported as
+  `ARCSEC_INTERNAL_ERROR`, never propagated into your program.
+- **Versions.** Structs start with `struct_size`, so fields can be added without
+  breaking programs built against an older header. A breaking change raises
+  `ARCSEC_ABI_VERSION`, which is also the number in the Linux soname
+  (`libarcsec.so.1`).

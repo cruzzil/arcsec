@@ -387,7 +387,19 @@ fn log_card(keyword: &str, value: bool, comment: &str) -> String {
 pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
+    for card in &wcs_header_cards(wcs) {
+        writeln!(f, "{card}")?;
+    }
+    writeln!(f, "{:<80}", "END")?;
+    Ok(())
+}
 
+/// The solution as 80-character FITS header cards, without `END`: what the `.wcs`
+/// file holds. CTYPE, CUNIT1, CRPIX, CRVAL, CDELT (unsigned, as ASTAP writes it),
+/// CROTA, the CD matrix, the SIP keywords when there is a SIP fit (and then
+/// `-SIP` CTYPEs), and `PLTSOLVD = T`.
+#[must_use]
+pub fn wcs_header_cards(wcs: &WcsSolution) -> Vec<String> {
     let ra_deg = wcs.ra0.to_degrees();
     let dec_deg = wcs.dec0.to_degrees();
 
@@ -401,9 +413,9 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
         dbl_card("CRVAL1", ra_deg, "RA of reference pixel (deg)"),
         dbl_card("CRVAL2", dec_deg, "DEC of reference pixel (deg)"),
         // Use abs CDELT (unsigned pixel scale, matching ASTAP convention)
-        dbl_card("CDELT1", wcs.cdelt1.abs(), "X pixel size (deg)"),
+        dbl_card("CDELT1", wcs.cdelt1, "X pixel size (deg)"),
         dbl_card("CDELT2", wcs.cdelt2.abs(), "Y pixel size (deg)"),
-        dbl_card("CROTA1", wcs.crota2, "Image twist of X axis        (deg)"),
+        dbl_card("CROTA1", wcs.crota1(), "Image twist of X axis        (deg)"),
         dbl_card("CROTA2", wcs.crota2, "Image twist of Y axis        (deg)"),
         dbl_card(
             "CD1_1",
@@ -435,13 +447,7 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
         }
     }
     cards.push(log_card("PLTSOLVD", true, SOLVED_BY));
-
-    for card in &cards {
-        writeln!(f, "{card}")?;
-    }
-    writeln!(f, "{:<80}", "END")?;
-
-    Ok(())
+    cards
 }
 
 /// Write an `.ini` summary file with key=value pairs (ASTAP-compatible layout).
@@ -465,8 +471,8 @@ pub fn write_ini_file(
     writeln!(f, "CRVAL2={:.9}", wcs.dec0.to_degrees())?;
     writeln!(f, "CDELT1={:.13E}", wcs.cdelt1)?;
     writeln!(f, "CDELT2={:.13E}", wcs.cdelt2)?;
-    // One rotation, as in the .wcs file, which also writes it as both.
-    writeln!(f, "CROTA1={:.4}", wcs.crota2)?;
+    // CROTA1 and CROTA2 are the +X and +Y axes' rotations, as astap_cli writes them.
+    writeln!(f, "CROTA1={:.4}", wcs.crota1())?;
     writeln!(f, "CROTA2={:.4}", wcs.crota2)?;
     writeln!(f, "CD1_1={:.13E}", wcs.cd1_1)?;
     writeln!(f, "CD1_2={:.13E}", wcs.cd1_2)?;
@@ -569,9 +575,9 @@ pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
             wcs.dec0.to_degrees(),
             "DEC of reference pixel (deg)",
         ),
-        ("CDELT1", wcs.cdelt1.abs(), "X pixel size (deg)"),
+        ("CDELT1", wcs.cdelt1, "X pixel size (deg)"),
         ("CDELT2", wcs.cdelt2.abs(), "Y pixel size (deg)"),
-        ("CROTA1", wcs.crota2, "Image twist of X axis (deg)"),
+        ("CROTA1", wcs.crota1(), "Image twist of X axis (deg)"),
         ("CROTA2", wcs.crota2, "Image twist of Y axis (deg)"),
         ("CD1_1", wcs.cd1_1, "CD matrix element"),
         ("CD1_2", wcs.cd1_2, "CD matrix element"),

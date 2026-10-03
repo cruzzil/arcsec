@@ -24,8 +24,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 [dependencies]
 libfuzzer-sys = "0.4.13"
 arcsec-core = { path = "../arcsec-core" }
-# The CLI's readers are compiled into this crate from their source files (see
-# src/lib.rs), so it needs their dependencies, at the CLI's versions.
+arcsec-io = { path = "../arcsec-io" }
+# The CLI's archive extraction is compiled into this crate from its source file
+# (see src/lib.rs), so it needs its dependencies, at the CLI's versions.
 rsfitsio = "0.470.3"
 libc = "0.2"
 log = "0.4.34"

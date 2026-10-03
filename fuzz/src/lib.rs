@@ -1,21 +1,13 @@
 //! Shared support for the fuzz targets.
 //!
-//! The image readers and the archive extraction live in the `arcsec` binary crate,
-//! which has no library target to depend on, so their source files are compiled
-//! into this crate directly. They refer to each other as `crate::image_io` and so
-//! on, which is why they sit at the root here exactly as they do in `main.rs`.
+//! The image readers come from the `arcsec-io` crate. The archive extraction lives
+//! in the `arcsec` binary crate, which has no library target to depend on, so its
+//! source file is compiled into this crate directly.
 
 // As in arcsec's main.rs: `alloc` must be declared before `alloc::` paths resolve.
 extern crate alloc;
 
-#[path = "../../arcsec/src/asdf_io.rs"]
-pub mod asdf_io;
-#[path = "../../arcsec/src/fits_io.rs"]
-pub mod fits_io;
-#[path = "../../arcsec/src/image_io.rs"]
-pub mod image_io;
-#[path = "../../arcsec/src/xisf_io.rs"]
-pub mod xisf_io;
+pub use arcsec_io::{asdf_io, fits_io, image_io, xisf_io};
 
 /// The CLI's `catalog_cmd/fetch.rs`, which refers to its parent as `super`; this
 /// crate's root stands in for that parent.
