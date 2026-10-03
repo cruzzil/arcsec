@@ -19,6 +19,7 @@ on:
       - "fuzz/**"
       - "arcsec/src/**"
       - "arcsec-core/src/**"
+      - "arcsec-io/src/**"
       - ".github/workflows/fuzz.yml"
 
 permissions:
@@ -71,7 +72,9 @@ jobs:
           SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '20' || inputs.seconds || '300' }}
         run: |
           mkdir -p fuzz/corpus/${{ matrix.target }}
-          cargo +nightly fuzz run ${{ matrix.target }} \
+          # install-action falls back to a musl build of cargo-fuzz, which defaults to
+          # its own target; ASan needs the glibc one.
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
             fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} -- \
             -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -malloc_limit_mb=1024 \
             -timeout=60 -max_len=400000

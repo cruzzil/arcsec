@@ -98,6 +98,11 @@ one is called out as such.
 
 ### Fixed
 
+- A gzip-wrapped FITS file whose trailer claimed an impossible uncompressed size
+  (a 22-byte file claiming 3.9 GB) made CFITSIO allocate that much before failing,
+  taking seconds and gigabytes. Claims beyond deflate's 1032:1 limit are now refused
+  before the file is opened.
+
 - The Astrometry.net index loader read each table at a fixed row width, so a table
   declaring narrower rows could make it allocate up to 16 times the file's size before
   the read failed. Row counts are now checked against the file (with overflow checks)

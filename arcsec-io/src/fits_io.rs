@@ -33,6 +33,7 @@ impl FitsFile {
     /// the file exists and is FITS: `rsfitsio` panics rather than reporting a
     /// status for a file it cannot open (cruzzil/rsfitsio#136).
     fn open(path: &Path, mode: c_int) -> Result<Self, String> {
+        check_gzip_size(path)?;
         let path_str = path.to_str().ok_or("non-UTF-8 path")?;
         let cpath = CString::new(path_str).map_err(|e| e.to_string())?;
         let mut fptr: Option<Box<fitsfile>> = None;
@@ -158,6 +159,43 @@ pub fn read_fits_pixel_scale(path: &Path) -> Option<f64> {
         f.key_f64(b"XPIXSZ\0"),
         f.key_f64(b"XBINNING\0"),
     )
+}
+
+/// Deflate's largest possible expansion: one 258-byte match per ~2 bits.
+const DEFLATE_MAX_RATIO: u64 = 1032;
+
+/// Refuse a gzip file whose trailer claims more data than it could hold.
+///
+/// CFITSIO opens a `.gz` by allocating the uncompressed size from the gzip ISIZE
+/// trailer before inflating anything, so a 22-byte file claiming 3.9 GB costs
+/// 3.9 GB of memory and seconds of page-faulting before the inflate fails. No
+/// deflate stream expands by more than 1032:1, so a larger claim is a lie and the
+/// file is corrupt either way. ISIZE is the size modulo 2³² of the last member,
+/// so for multi-member or > 4 GiB files it understates; this never rejects a
+/// valid file.
+fn check_gzip_size(path: &Path) -> Result<(), String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Ok(()); // extended filename syntax, or CFITSIO reports it
+    };
+    let mut magic = [0u8; 2];
+    if f.read_exact(&mut magic).is_err() || magic != [0x1f, 0x8b] {
+        return Ok(());
+    }
+    let mut isize = [0u8; 4];
+    let Ok(len) = f.seek(SeekFrom::End(-4)).map(|p| p + 4) else {
+        return Ok(());
+    };
+    if f.read_exact(&mut isize).is_err() {
+        return Ok(());
+    }
+    let claimed = u64::from(u32::from_le_bytes(isize));
+    if claimed > len.saturating_mul(DEFLATE_MAX_RATIO) + 65_536 {
+        return Err(format!(
+            "corrupt gzip: trailer claims {claimed} bytes from a {len}-byte file"
+        ));
+    }
+    Ok(())
 }
 
 /// Whether `path` is an uncompressed FITS file on disk (not gzip, bzip2 or
@@ -639,6 +677,28 @@ pub fn update_fits_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
 mod tests {
     use super::*;
     use arcsec_core::types::PlateConstants;
+
+    /// An empty gzip member; `isize` overrides its trailer.
+    fn gzip_file(name: &str, isize: u32) -> std::path::PathBuf {
+        let mut bytes = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 3, 0, 0, 0, 0, 0];
+        bytes.extend_from_slice(&isize.to_le_bytes());
+        let path = std::env::temp_dir().join(format!("arcsec-{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn gzip_size_claims_are_bounded_by_the_deflate_ratio() {
+        let honest = gzip_file("honest.fits.gz", 0);
+        assert_eq!(check_gzip_size(&honest), Ok(()));
+        // 20 bytes can expand to at most 20 × 1032 (+ slack), not 3.9 GB.
+        let lying = gzip_file("lying.fits.gz", 3_897_424_373);
+        let err = check_gzip_size(&lying).unwrap_err();
+        assert!(err.contains("corrupt gzip"), "{err}");
+        assert!(read_fits_image(&lying).is_err());
+        std::fs::remove_file(honest).unwrap();
+        std::fs::remove_file(lying).unwrap();
+    }
 
     fn solution() -> WcsSolution {
         WcsSolution {
