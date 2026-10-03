@@ -471,19 +471,7 @@ mod interrupt {
 
 /// Index files in `dir`: every `*.arcsecix`, in name order.
 pub fn index_files(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .is_some_and(|e| e == arcsec_core::index::format::EXTENSION)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    v.sort();
-    v
+    arcsec_core::auto::index_files(dir)
 }
 
 /// Leftovers of interrupted index writes in `dir` (`*.arcsecix.part`).
@@ -567,6 +555,36 @@ pub fn build_suggestion(db_dir: &Path, flags: &str) -> Option<String> {
         "build one with `arcsec catalog index build{flags}` (from {}: {})",
         plan.label(),
         est.summary()
+    ))
+}
+
+/// A one-line stderr hint when a search is wide enough that an installed index
+/// would be used, but there is none: say how to build one and what it costs. The
+/// solve itself is unchanged; nothing is built during a solve.
+pub fn missing_index_hint(
+    explicit: Option<&PathBuf>,
+    template: &arcsec_core::pipeline::SolveParams,
+) -> Option<String> {
+    use arcsec_core::auto::{find_arcsec_index, wants_installed_index};
+    if explicit.is_some() || !wants_installed_index(template) {
+        return None;
+    }
+    let cat_dir = super::default_dir();
+    if find_arcsec_index(&cat_dir).is_some() || find_arcsec_index(&template.db_path).is_some() {
+        return None;
+    }
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    };
+    let db_flag = if same(&template.db_path, &cat_dir) {
+        String::new()
+    } else {
+        format!(" --db {}", template.db_path.display())
+    };
+    let s = build_suggestion(&template.db_path, &db_flag)?;
+    Some(format!(
+        "Hint: no blind index is installed, so a search this wide can take minutes; {s}."
     ))
 }
 

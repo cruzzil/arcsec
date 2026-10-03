@@ -94,8 +94,13 @@ async function fetchLatest(): Promise<Release> {
 		const byName = new Map(json.assets.map((a) => [a.name, a]));
 		const assets: Asset[] = [];
 		for (const p of PLATFORMS) {
+			// The CLI's archives are arcsec-v<version>-<target>; the C library's,
+			// arcsec-lib-v<version>-<target>, are not offered here.
 			const a = json.assets.find(
-				(a) => a.name.includes(`-${p.target}.`) && /\.(tar\.gz|zip)$/.test(a.name),
+				(a) =>
+					a.name.startsWith('arcsec-v') &&
+					a.name.includes(`-${p.target}.`) &&
+					/\.(tar\.gz|zip)$/.test(a.name),
 			);
 			if (!a) continue;
 			assets.push({

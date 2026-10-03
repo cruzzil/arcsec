@@ -22,8 +22,8 @@ clap = "4.6.7"
 env_logger = { workspace = true }
 log = { workspace = true }
 arcsec-core = { workspace = true }
-rsfitsio = "0.470.3"
-bytemuck = "1.25"
+arcsec-io = { workspace = true }
+# Signal handling while an index is written (catalog_cmd/index_cmd.rs).
 libc = "0.2"
 ureq = "3.4.2"
 # ASTAP's catalogue zips are all deflate (checked 2026-09-26), so only that
@@ -32,8 +32,6 @@ ureq = "3.4.2"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4.46"
 lzma-rs = "0.3.0"
-xisf = "0.5.1"
-asdf-rs = "0.2.1"
 
 # Free disk space and memory before building a blind index (catalog_cmd/sys.rs).
 # Already in the dependency tree through other crates.

@@ -494,7 +494,11 @@ fn run_blind_pass(
     let mut n_hyp = 0usize;
 
     let mut hits_scratch: Vec<usize> = Vec::with_capacity(32);
-    for ie in &img_entries {
+    for (k, ie) in img_entries.iter().enumerate() {
+        // The caller reports the cancellation; an empty pass is all it needs.
+        if k % 64 == 0 && crate::cancel::is_cancelled() {
+            return (0.0, 0.0, 0);
+        }
         index.find_code_matches_into(&ie.code, tol, &mut hits_scratch);
         n_matches += hits_scratch.len();
 
@@ -539,6 +543,9 @@ fn run_blind_pass(
     let mut best_dec = 0.0f64;
 
     'outer: for region in &regions {
+        if crate::cancel::is_cancelled() {
+            return (0.0, 0.0, 0);
+        }
         let h = &region.members[medoid(region.members, |h| (h.est_ra, h.est_dec))];
         let sc = verify_score(
             h,
@@ -596,6 +603,7 @@ pub fn blind_solve(
     params: &BlindSolveParams,
 ) -> Result<(f64, f64, usize)> {
     // ── Phase A: detect stars ─────────────────────────────────────────────────
+    crate::cancel::progress(crate::cancel::stage::BLIND_INDEX, -1.0);
     let bg = get_background(img, params.max_stars);
     let (stars, stars_raw) = find_stars_with_background(
         img,
@@ -646,6 +654,9 @@ pub fn blind_solve(
     let mut best_score = 0usize;
 
     for parity_flip in [false, true] {
+        if crate::cancel::is_cancelled() {
+            return Err(ArcsecError::Cancelled);
+        }
         let (ra, dec, score) = run_blind_pass(
             img,
             index,
@@ -663,6 +674,9 @@ pub fn blind_solve(
         if best_score >= EARLY_STOP_SCORE {
             break;
         }
+    }
+    if crate::cancel::is_cancelled() {
+        return Err(ArcsecError::Cancelled);
     }
 
     if best_score >= MIN_VERIFY_SCORE {

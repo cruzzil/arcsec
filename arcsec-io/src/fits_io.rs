@@ -347,7 +347,19 @@ fn log_card(keyword: &str, value: bool, comment: &str) -> String {
 pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
+    for card in &wcs_header_cards(wcs) {
+        writeln!(f, "{card}")?;
+    }
+    writeln!(f, "{:<80}", "END")?;
+    Ok(())
+}
 
+/// The solution as 80-character FITS header cards, without `END`: what the `.wcs`
+/// file holds. CTYPE, CUNIT1, CRPIX, CRVAL, CDELT (unsigned, as ASTAP writes it),
+/// CROTA, the CD matrix, the SIP keywords when there is a SIP fit (and then
+/// `-SIP` CTYPEs), and `PLTSOLVD = T`.
+#[must_use]
+pub fn wcs_header_cards(wcs: &WcsSolution) -> Vec<String> {
     let ra_deg = wcs.ra0.to_degrees();
     let dec_deg = wcs.dec0.to_degrees();
 
@@ -395,13 +407,7 @@ pub fn write_wcs_file(path: &Path, wcs: &WcsSolution) -> std::io::Result<()> {
         }
     }
     cards.push(log_card("PLTSOLVD", true, SOLVED_BY));
-
-    for card in &cards {
-        writeln!(f, "{card}")?;
-    }
-    writeln!(f, "{:<80}", "END")?;
-
-    Ok(())
+    cards
 }
 
 /// Write an `.ini` summary file with key=value pairs (ASTAP-compatible layout).

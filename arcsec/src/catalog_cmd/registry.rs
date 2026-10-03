@@ -109,7 +109,7 @@ impl AnetSet {
 }
 
 /// Extensions an ASTAP star database can use, and the file count each implies.
-pub const ASTAP_EXTS: &[(&str, usize)] = &[(".1476", 1476), (".290", 290), (".001", 1)];
+pub use arcsec_core::auto::ASTAP_EXTS;
 
 impl Files {
     /// Does `name` belong to this catalogue?

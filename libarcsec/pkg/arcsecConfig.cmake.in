@@ -1,0 +1,37 @@
+# CMake package configuration for libarcsec, the arcsec plate solver's C library.
+#
+#   find_package(arcsec 0.4 REQUIRED)
+#   target_link_libraries(myapp PRIVATE arcsec::arcsec)          # shared library
+#   target_link_libraries(myapp PRIVATE arcsec::arcsec_static)   # static library
+#
+# Relocatable: everything is found relative to this file, <prefix>/lib/cmake/arcsec.
+
+get_filename_component(_arcsec_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+if(NOT TARGET arcsec::arcsec)
+  add_library(arcsec::arcsec SHARED IMPORTED)
+  set_target_properties(arcsec::arcsec PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_arcsec_prefix}/include")
+  if(WIN32)
+    set_target_properties(arcsec::arcsec PROPERTIES
+      IMPORTED_LOCATION "${_arcsec_prefix}/bin/@SHARED_NAME@"
+      IMPORTED_IMPLIB "${_arcsec_prefix}/lib/@IMPLIB_NAME@")
+  else()
+    set_target_properties(arcsec::arcsec PROPERTIES
+      IMPORTED_LOCATION "${_arcsec_prefix}/lib/@SHARED_NAME@"
+      IMPORTED_SONAME "@SONAME@")
+  endif()
+endif()
+
+if(NOT TARGET arcsec::arcsec_static AND EXISTS "${_arcsec_prefix}/lib/@STATIC_NAME@")
+  add_library(arcsec::arcsec_static STATIC IMPORTED)
+  set_target_properties(arcsec::arcsec_static PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_arcsec_prefix}/include"
+    IMPORTED_LOCATION "${_arcsec_prefix}/lib/@STATIC_NAME@"
+    INTERFACE_LINK_LIBRARIES "@NATIVE_STATIC_LIBS_CMAKE@")
+endif()
+
+set(arcsec_INCLUDE_DIRS "${_arcsec_prefix}/include")
+set(arcsec_LIBRARIES arcsec::arcsec)
+set(arcsec_ABI_VERSION @ABI@)
+unset(_arcsec_prefix)

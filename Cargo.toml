@@ -3,6 +3,8 @@ resolver = "3"
 members = [
     "arcsec",
     "arcsec-core",
+    "arcsec-io",
+    "libarcsec",
 ]
 
 # Shared by both crates; each opts in with `field.workspace = true`. Bump `version`
@@ -68,5 +70,6 @@ strip = "debuginfo"
 # `version` alongside `path` so the CLI can be published: crates.io ignores `path` and
 # resolves this from the registry, so arcsec-core must be published first.
 arcsec-core = { version = "0.4.0", path = "arcsec-core" }
+arcsec-io = { version = "0.4.0", path = "arcsec-io" }
 log = { version = "0.4.34", features = ["std"] }
 env_logger = "0.11.11"

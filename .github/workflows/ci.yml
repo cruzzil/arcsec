@@ -133,6 +133,52 @@ jobs:
           grep -q '^x,y,hfd,snr,flux' tiny.csv
           rm -f tiny.fits tiny.csv tiny.ini not-an-image.dat
 
+  # libarcsec, the C library. `cargo test` above already builds it on every OS,
+  # checks include/arcsec.h is what cbindgen generates, and compiles and runs the C
+  # test (tests/c/smoke.c) against the shared library with the platform's compiler.
+  # Here, on Linux: the same C test statically linked, under AddressSanitizer +
+  # UndefinedBehaviorSanitizer + LeakSanitizer and under valgrind, then the install
+  # tree dist.sh makes, consumed through pkg-config and CMake as a user would.
+  c-library:
+    name: C library (sanitizers, valgrind, packaging)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind
+      - name: C test, static library
+        run: libarcsec/tests/c/run-checks.sh static
+      - name: C test under ASan, UBSan and LSan
+        run: libarcsec/tests/c/run-checks.sh asan
+      - name: C test under valgrind
+        run: libarcsec/tests/c/run-checks.sh valgrind
+
+      - name: Build the install tree
+        run: libarcsec/dist.sh --profile release "$RUNNER_TEMP/arcsec"
+      - name: Build against it with pkg-config and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/arcsec"
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+          readelf -d "$prefix/lib/libarcsec.so.1" | grep -q 'SONAME.*libarcsec.so.1'
+          cc -std=c99 -Wall -Werror -c libarcsec/tests/c/smoke.c $(pkg-config --cflags arcsec) -o smoke.o
+          cc smoke.o $(pkg-config --libs arcsec) -lm -o smoke-shared
+          cc smoke.o "$prefix/lib/libarcsec.a" $(pkg-config --static --libs-only-l arcsec | sed 's/-larcsec//') -lm -o smoke-static
+          mkdir cmake-consumer
+          cp libarcsec/tests/c/smoke.c cmake-consumer/
+          cat > cmake-consumer/CMakeLists.txt <<'CMAKE'
+          cmake_minimum_required(VERSION 3.16)
+          project(consumer C)
+          find_package(arcsec REQUIRED)
+          add_executable(smoke smoke.c)
+          target_link_libraries(smoke PRIVATE arcsec::arcsec m)
+          CMAKE
+          cmake -S cmake-consumer -B cmake-consumer/build -DCMAKE_PREFIX_PATH="$prefix"
+          cmake --build cmake-consumer/build
+
   # Nightly clippy, for lints that have not reached stable yet. Advisory: a failure
   # here shows up on the run but does not block a merge. Fix what it finds, or wait for
   # the lint to reach stable, where the lint job will enforce it.

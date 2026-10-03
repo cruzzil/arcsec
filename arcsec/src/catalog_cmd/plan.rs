@@ -21,16 +21,9 @@ use super::human;
 use super::index_cmd::tiers_for;
 
 /// Databases an index can be built from, deepest first: the first installed one is
-/// the default source, and an index built from an earlier one is preferred.
-pub const SOURCES: [&str; 6] = ["d80", "d50", "d20", "d05", "g05", "w08"];
-
-/// Position of `db` in [`SOURCES`] (deeper is smaller); unknown names sort last.
-pub fn depth_rank(db: &str) -> usize {
-    SOURCES
-        .iter()
-        .position(|s| s.eq_ignore_ascii_case(db))
-        .unwrap_or(SOURCES.len())
-}
+/// the default source, and an index built from an earlier one is preferred. Shared
+/// with the solver's choice of index ([`arcsec_core::auto::preferred_index`]).
+pub use arcsec_core::auto::{SOURCES, depth_rank};
 
 /// Fields (short side, degrees) an index built for database `db` covers by default.
 ///
@@ -410,16 +403,7 @@ impl Existing {
     /// The index the solver uses in `dir`: the one built from the deepest database
     /// (by [`SOURCES`]), then by file name.
     pub fn preferred(dir: &Path) -> Option<Self> {
-        let mut v: Vec<Self> = super::index_cmd::index_files(dir)
-            .iter()
-            .filter_map(|p| Self::open(p))
-            .collect();
-        v.sort_by(|a, b| {
-            depth_rank(&a.source)
-                .cmp(&depth_rank(&b.source))
-                .then_with(|| a.path.cmp(&b.path))
-        });
-        v.into_iter().next()
+        arcsec_core::auto::preferred_index(dir).and_then(|p| Self::open(&p))
     }
 
     /// Whether its tiers serve every field of `plan` (with 1 % slack).

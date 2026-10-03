@@ -1,0 +1,25 @@
+[package]
+name = "arcsec-io"
+description = "Image readers for the arcsec plate solver: FITS, XISF and ASDF pixels and pointing metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcsec-io"
+readme = "README.md"
+keywords = ["astronomy", "fits", "xisf", "asdf", "plate-solving"]
+categories = ["science", "multimedia::images", "parser-implementations"]
+# Only what a build needs. The README is added automatically via `readme`.
+include = ["src/**/*.rs", "LICENSE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+arcsec-core = { workspace = true }
+libc = "0.2"
+rsfitsio = "0.470.3"
+xisf = "0.5.1"
+asdf-rs = "0.2.1"

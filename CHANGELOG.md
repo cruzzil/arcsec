@@ -2,8 +2,8 @@
 
 All notable changes to arcsec are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The `arcsec` and
-`arcsec-core` crates share one version number.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The `arcsec`, `arcsec-core`
+and `arcsec-io` crates and the C library (libarcsec) share one version number.
 
 The ASTAP-compatible command line - flags, stdout format, output files and exit codes -
 is part of the public interface: a change to any of them is listed here, and a breaking
@@ -13,6 +13,24 @@ one is called out as such.
 
 ### Added
 
+- **libarcsec, a C library** for solving in-process from C and C++ (Siril first):
+  `include/arcsec.h`, a shared library (`libarcsec.so.1`, `libarcsec.dylib`,
+  `arcsec.dll`) and a static one, with pkg-config and CMake files. It solves pixels in
+  memory (eight-to-64-bit samples, planes, strides, either row order) or a FITS, XISF
+  or ASDF file, making the command line's choices of database, binning and blind index;
+  returns the WCS with SIP terms (and CDELT/CROTA as `astap_cli` writes them), matched
+  stars and FITS header cards; analyses stars; and reports through log, progress and
+  cancel callbacks. Separate solver handles may
+  solve concurrently, each with its own thread budget. Release archives
+  `arcsec-lib-v<version>-<platform>` carry it for every platform the program is built
+  for. See [libarcsec/README.md](libarcsec/README.md) and the website's C library page.
+- `arcsec-core`: `auto` (the command line's decisions as a library: `SolveRequest`,
+  `Plan`, catalogue directory, database selection, binning, index discovery and the
+  deepest-index preference),
+  `cancel` (cooperative cancellation and progress for a running solve), and
+  `with_max_threads` (a per-call thread limit).
+- `arcsec-io`, a new crate holding the FITS, XISF and ASDF readers the command line and
+  the C library share, and `HeaderCards` for FITS header text held in memory.
 - **The blind index is built when a solving database is installed.**
   `arcsec catalog install d50` (or `d05`, `d20`, `d80`, `g05`, `w08`) downloads the
   database and then builds arcsec's blind index from it, so blind solving and
@@ -66,6 +84,10 @@ one is called out as such.
   from D80 (24 threads; about 75 s on one), 1.5–2 minutes for the 698 MB index down to
   0.15°. The "about 2 minutes" and "13 minutes" quoted before were measured under a load
   average of 50–80.
+
+- Warnings the solver raises mid-solve (an unreadable blind index, a fallback to the
+  hint) are printed to stderr without `--progress` too, as before; they now come
+  through the log at warning level.
 
 ## [0.4.0] - 2026-10-02
 
