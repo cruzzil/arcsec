@@ -12,6 +12,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-04
+
 ### Added
 
 - `arcsec-catalogue`, a new crate holding what `arcsec catalog` does, for other
@@ -32,6 +34,8 @@ one is called out as such.
   compressed tiles and tables) are now reported as unreadable (exit 16), and a
   GZIP-compressed tile stored wider than its `ZBITPIX` decodes as CFITSIO decodes it
   instead of crashing (rsfitsio 0.470.4).
+- Building the whole workspace on Windows (MSVC) could fail with `LNK1201` when the
+  command line and the C library, both named `arcsec`, wrote the same `.pdb` at once.
 
 ## [0.5.0] - 2026-10-04
 
@@ -469,7 +473,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/cruzzil/arcsec/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cruzzil/arcsec/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cruzzil/arcsec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cruzzil/arcsec/compare/v0.2.0...v0.3.0
