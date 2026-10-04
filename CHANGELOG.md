@@ -26,6 +26,13 @@ one is called out as such.
 - `arcsec-core`: `index::build_index` stops with `ArcsecError::Cancelled` when the
   thread's cancellation token is cancelled.
 
+### Fixed
+
+- Malformed FITS files that crashed the reader (unparseable header values, corrupt
+  compressed tiles and tables) are now reported as unreadable (exit 16), and a
+  GZIP-compressed tile stored wider than its `ZBITPIX` decodes as CFITSIO decodes it
+  instead of crashing (rsfitsio 0.470.4).
+
 ## [0.5.0] - 2026-10-04
 
 ### Added

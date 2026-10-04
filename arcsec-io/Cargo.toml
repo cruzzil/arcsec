@@ -21,6 +21,6 @@ workspace = true
 arcsec-core = { workspace = true }
 log = { workspace = true }
 libc = "0.2"
-rsfitsio = "0.470.3"
+rsfitsio = "0.470.4"
 xisf = "0.5.1"
 asdf-rs = "0.2.1"
