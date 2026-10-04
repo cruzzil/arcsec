@@ -10,6 +10,8 @@
 //! - where catalogues live ([`default_catalog_dir`], [`default_db_path`]);
 //! - which star database suits a field ([`select_db_for_fov`]);
 //! - how far to bin ([`choose_binning`]);
+//! - which pixel scales to try when the scale is not known ([`ScaleSearch`],
+//!   [`ladder`]);
 //! - when to use a blind index, and how ([`find_arcsec_index`],
 //!   [`collect_index_files`]);
 //! - and the whole solve built from those decisions: a [`SolveRequest`] becomes a
@@ -34,6 +36,7 @@
 
 mod blind;
 mod db;
+mod scale;
 
 use alloc::borrow::Cow;
 use core::f64::consts::PI;
@@ -46,9 +49,16 @@ pub use blind::{
 pub use db::{
     ASTAP_EXTS, DB_FOV_RANGES, available_dbs, default_db_path, has_star_database, select_db_for_fov,
 };
+pub use scale::{
+    Hypothesis, INACCURATE_SCALE, LADDER_FIELDS, SCALE_STEP, ScaleSearch, UNKNOWN_STEPS,
+    WRONG_STEPS, inaccurate_scale_warning, ladder,
+};
 
 use crate::cancel::CancelToken;
 use crate::error::{ArcsecError, Result};
+use crate::pipeline::solver::{
+    Detected, ScaleTrust, detect, search_in_order, solve_detected, solve_image_with,
+};
 use crate::pipeline::{BlindSolveParams, SearchSpeed, SolveMethod, SolveParams, solve_image};
 use crate::types::{ImageBuffer, WcsSolution};
 
@@ -174,8 +184,11 @@ pub struct SolveRequest {
     pub fov_height: Option<f64>,
     /// Pixel scale of the unbinned image, arcseconds per pixel (for instance from
     /// the FOCALLEN and XPIXSZ header keywords). Without it or a field of view, 1″/px
-    /// is assumed.
+    /// is assumed, and [`Self::scale_search`] says whether other scales are tried.
     pub pixel_scale: Option<f64>,
+    /// When the catalogue search tries other pixel scales: by default only when
+    /// neither [`Self::fov_height`] nor [`Self::pixel_scale`] gives one.
+    pub scale_search: ScaleSearch,
     /// Search radius around the hint, radians. Negative or NaN means 0.
     pub search_radius: f64,
     /// Binning factor; `None` or `Some(0)` chooses one ([`choose_binning`]).
@@ -226,6 +239,7 @@ impl Default for SolveRequest {
             hint: None,
             fov_height: None,
             pixel_scale: None,
+            scale_search: ScaleSearch::default(),
             search_radius: PI,
             downsample: None,
             db_path: None,
@@ -275,6 +289,8 @@ pub struct Plan {
     auto_index: bool,
     sip: bool,
     cancel: Option<CancelToken>,
+    /// The request, for the plans of other scales ([`ScaleSearch`]).
+    request: SolveRequest,
 }
 
 /// Something [`Plan::solve_with`] reports while it runs.
@@ -370,7 +386,30 @@ impl Plan {
             auto_index: req.auto_index,
             sip: req.sip,
             cancel: req.cancel.clone(),
+            request: req.clone(),
         })
+    }
+
+    /// `astap_cli`'s warning for a solution whose scale is not the one the solve
+    /// started from ([`inaccurate_scale_warning`]): the scale given, read from the
+    /// header, or assumed.
+    #[must_use]
+    pub fn scale_warning(&self, wcs: &WcsSolution) -> Option<String> {
+        let solved = (wcs.cd1_1 * wcs.cd2_2 - wcs.cd1_2 * wcs.cd2_1).abs().sqrt() * 3600.0;
+        inaccurate_scale_warning(self.arcsec_per_px, solved, self.image_size.1)
+    }
+
+    /// Whether the catalogue search will try other scales should this one not
+    /// solve at once: always when the scale is unknown (unless
+    /// [`ScaleSearch::Never`]), and after a failure with
+    /// [`ScaleSearch::AlsoIfWrong`].
+    #[must_use]
+    pub fn searches_scales(&self) -> bool {
+        match self.request.scale_search {
+            ScaleSearch::Never => false,
+            ScaleSearch::IfUnknown => !self.scale_known,
+            ScaleSearch::AlsoIfWrong => true,
+        }
     }
 
     /// Size of the image as solved, after binning.
@@ -408,12 +447,23 @@ impl Plan {
                 img.width, img.height, self.image_size.0, self.image_size.1
             )));
         }
+        if !self.scale_known {
+            log::warn!(
+                "No pixel scale given (a field of view, or FOCALLEN and XPIXSZ in the header): {}",
+                if self.searches_scales() {
+                    "searching scales from 0.25 to 64\"/px round the hint, then 1\"/px"
+                } else {
+                    "assuming 1\"/px, which will not solve unless it is roughly right"
+                }
+            );
+        }
         crate::cancel::with_optional(self.cancel.as_ref(), || {
             crate::with_max_threads(self.params.threads, || self.run(img, on_event))
         })
     }
 
-    fn run(&self, img: &ImageBuffer, mut on_event: impl FnMut(Event)) -> Result<Solved> {
+    fn run(&self, unbinned: &ImageBuffer, mut on_event: impl FnMut(Event)) -> Result<Solved> {
+        let img = unbinned;
         let (bw, bh) = self.binned_size();
         if bw < MIN_SOLVE_DIM || bh < MIN_SOLVE_DIM {
             return Err(ArcsecError::InsufficientStars {
@@ -544,15 +594,7 @@ impl Plan {
 
         let mut wcs = match index_wcs {
             Some(w) => w,
-            None => solve_image(
-                &img,
-                &SolveParams {
-                    ra_hint: ra,
-                    dec_hint: dec,
-                    search_radius,
-                    ..template.clone()
-                },
-            )?,
+            None => self.catalogue_solve(unbinned, &img, (ra, dec), search_radius)?,
         };
         if self.sip {
             wcs.sip = crate::wcs::fit_sip(&wcs, self.image_size.0, self.image_size.1);
@@ -561,6 +603,302 @@ impl Plan {
             wcs,
             index_estimate,
         })
+    }
+}
+
+impl Plan {
+    /// The catalogue search from `start` out to `radius`
+    /// ([`Self::catalogue_search`]), then, if the solution's scale is more than
+    /// [`INACCURATE_SCALE`] from the one the search used, the same field again at
+    /// the solved scale ([`Self::refine`]).
+    fn catalogue_solve(
+        &self,
+        unbinned: &ImageBuffer,
+        img: &ImageBuffer,
+        start: (f64, f64),
+        radius: f64,
+    ) -> Result<WcsSolution> {
+        let wcs = self.catalogue_search(unbinned, img, start, radius)?;
+        Ok(self.refine(unbinned, &wcs).unwrap_or(wcs))
+    }
+
+    /// `wcs` solved again at its own pixel scale, at its own centre, when that
+    /// scale is more than [`INACCURATE_SCALE`] from the scale this plan searched
+    /// with; `None` when it is not, or when the second solve does not verify, or
+    /// lands elsewhere (more than a tenth of a field away).
+    ///
+    /// The scale sets the catalogue window, its depth and the density the star
+    /// list is trimmed to, and the verification and distortion model work within
+    /// that window: a solution found at half the true scale has been checked
+    /// against the catalogue of the middle quarter of the frame. Solved again at
+    /// the right scale it is the solution a correct scale would have given (on the
+    /// benchmark, identical to it in 93 of 95 images, and never more than 0.002″
+    /// apart at the corners; without this, up to 1.7″ worse, and three near-misses
+    /// past the 5″ limit). The cost is one detection and one catalogue position,
+    /// and only when the scale was off.
+    fn refine(&self, unbinned: &ImageBuffer, wcs: &WcsSolution) -> Option<WcsSolution> {
+        let solved = (wcs.cd1_1 * wcs.cd2_2 - wcs.cd1_2 * wcs.cd2_1).abs().sqrt() * 3600.0;
+        let off = (solved / self.arcsec_per_px - 1.0).abs();
+        if off.is_nan() || off <= INACCURATE_SCALE {
+            return None;
+        }
+        let (w, h) = self.image_size;
+        let req = SolveRequest {
+            hint: Some((wcs.ra0, wcs.dec0)),
+            fov_height: None,
+            pixel_scale: Some(solved),
+            scale_search: ScaleSearch::Never,
+            search_radius: 0.0,
+            index: None,
+            auto_index: false,
+            sip: false,
+            cancel: None,
+            ..self.request.clone()
+        };
+        let p = Plan::new(&req, w, h).ok()?;
+        let img: Cow<'_, ImageBuffer> = if p.binning > 1 {
+            Cow::Owned(unbinned.bin_image(p.binning))
+        } else {
+            Cow::Borrowed(unbinned)
+        };
+        let mut r = solve_image_with(&img, &p.params, ScaleTrust::Hypothesis).ok()?;
+        let sep = crate::math::coords::ang_sep(r.ra0, r.dec0, wcs.ra0, wcs.dec0);
+        log::info!(
+            "Solved again at {solved:.3}\"/px: {} stars verified (first {}), {:.1}\" from the first solution",
+            r.stars_matched,
+            wcs.stars_matched,
+            sep.to_degrees() * 3600.0
+        );
+        if sep > 0.1 * p.params.fov {
+            return None;
+        }
+        // The search that found the field is the one to report.
+        r.search_dist_deg = wcs.search_dist_deg;
+        r.step_distances.clone_from(&wcs.step_distances);
+        Some(r)
+    }
+
+    /// The catalogue search from `start` out to `radius`, trying other pixel
+    /// scales as [`SolveRequest::scale_search`] asks.
+    ///
+    /// With the scale unknown, the ladder of [`UNKNOWN_STEPS`] round the assumed
+    /// 1″/px is searched near the hint first ([`Self::scale_ladder`]), and then the
+    /// search at 1″/px runs as it always did, out to `radius`. With a known scale
+    /// and [`ScaleSearch::AlsoIfWrong`], a search that finds nothing is followed by
+    /// the ladder of [`WRONG_STEPS`] round that scale.
+    fn catalogue_search(
+        &self,
+        unbinned: &ImageBuffer,
+        img: &ImageBuffer,
+        start: (f64, f64),
+        radius: f64,
+    ) -> Result<WcsSolution> {
+        let params = SolveParams {
+            ra_hint: start.0,
+            dec_hint: start.1,
+            search_radius: radius,
+            ..self.params.clone()
+        };
+        if !self.searches_scales() {
+            return solve_image(img, &params);
+        }
+        if !self.scale_known {
+            let (lo, hi) = UNKNOWN_STEPS;
+            let hyps = ladder(self.arcsec_per_px, lo, hi, false);
+            if let Some(w) = self.scale_ladder(unbinned, img, start, radius, &hyps)? {
+                return Ok(w);
+            }
+            log::info!(
+                "No scale solved near the hint; searching {:.1}° at {:.2}\"/px.",
+                radius.to_degrees(),
+                self.arcsec_per_px
+            );
+            return solve_image(img, &params);
+        }
+        match solve_image(img, &params) {
+            Err(e @ ArcsecError::InsufficientQuads { .. }) => {
+                let hyps = ladder(self.arcsec_per_px, -WRONG_STEPS, WRONG_STEPS, true);
+                log::info!(
+                    "No solution at {:.3}\"/px; trying other scales round the hint.",
+                    self.arcsec_per_px
+                );
+                self.scale_ladder(unbinned, img, start, radius, &hyps)?
+                    .ok_or(e)
+            }
+            r => r,
+        }
+    }
+
+    /// Search each scale hypothesis in `hyps` (most likely first) within
+    /// [`LADDER_FIELDS`] fields of `start`, at most `radius`, and return the
+    /// solution of the first that verifies.
+    ///
+    /// Hypotheses whose field no star database covers (the named one, or any
+    /// installed) to within a factor 2 are left out, and so is one
+    /// whose binned image would be too small to detect stars in. They are run on
+    /// the solve's threads, in order: the first alone with all of them, the rest
+    /// one thread each, and none starts once one has solved; the earliest that
+    /// verifies wins, so the answer does not depend on the thread count (one
+    /// after it that is still running is cancelled). Each is
+    /// a [`ScaleTrust::Hypothesis`] search: at least 30 verified stars, and no
+    /// catalogue-seeded fallback.
+    ///
+    /// The cost of a search that finds nothing is bounded by the ladder: at most
+    /// one star detection per binning and minimum star size, and nine catalogue
+    /// positions per hypothesis.
+    fn scale_ladder(
+        &self,
+        unbinned: &ImageBuffer,
+        img: &ImageBuffer,
+        start: (f64, f64),
+        radius: f64,
+        hyps: &[Hypothesis],
+    ) -> Result<Option<WcsSolution>> {
+        let (w, h) = self.image_size;
+        let naxis = w.max(h) as f64;
+        let installed = available_dbs(&self.params.db_path);
+        let covers = |fov_deg: f64| {
+            let fits = |name: &str| {
+                DB_FOV_RANGES.iter().find(|r| r.0 == name).map_or(
+                    // A database arcsec has no range for: let it try.
+                    self.request.db_name.is_some(),
+                    |&(_, lo, hi, _)| fov_deg >= lo / 2.0 && fov_deg <= hi * 2.0,
+                )
+            };
+            match &self.request.db_name {
+                Some(name) => fits(name),
+                None => installed.iter().any(|d| fits(d)),
+            }
+        };
+        let plans: Vec<(Hypothesis, Plan)> = hyps
+            .iter()
+            .filter_map(|&hy| {
+                let fov = (naxis * hy.scale / 3600.0).to_radians();
+                if !covers(fov.to_degrees()) {
+                    return None;
+                }
+                let req = SolveRequest {
+                    hint: Some(start),
+                    fov_height: None,
+                    pixel_scale: Some(hy.scale),
+                    scale_search: ScaleSearch::Never,
+                    search_radius: radius.min(LADDER_FIELDS * fov),
+                    index: None,
+                    auto_index: false,
+                    sip: false,
+                    cancel: None,
+                    ..self.request.clone()
+                };
+                let p = Plan::new(&req, w, h).ok()?;
+                let (bw, bh) = p.binned_size();
+                (bw >= MIN_SOLVE_DIM && bh >= MIN_SOLVE_DIM).then_some((hy, p))
+            })
+            .collect();
+        if plans.is_empty() {
+            return Ok(None);
+        }
+        log::info!(
+            "Trying {} pixel scales, {:.3}–{:.3}\"/px, {} field round the hint each.",
+            plans.len(),
+            plans
+                .iter()
+                .map(|(h, _)| h.scale)
+                .fold(f64::INFINITY, f64::min),
+            plans.iter().map(|(h, _)| h.scale).fold(0.0, f64::max),
+            LADDER_FIELDS
+        );
+
+        // Each binning the ladder needs, made once.
+        let mut binned: Vec<(usize, Cow<'_, ImageBuffer>)> =
+            vec![(self.binning, Cow::Borrowed(img))];
+        for (_, p) in &plans {
+            if binned.iter().all(|(b, _)| *b != p.binning) {
+                let b = if p.binning > 1 {
+                    Cow::Owned(unbinned.bin_image(p.binning))
+                } else {
+                    Cow::Borrowed(unbinned)
+                };
+                binned.push((p.binning, b));
+            }
+        }
+        let image_for = |b: usize| {
+            binned.iter().find(|(bb, _)| *bb == b).map_or_else(
+                || unreachable!("binning {b} was made above"),
+                |(_, i)| i.as_ref(),
+            )
+        };
+
+        let n_threads = if self.params.threads > 0 {
+            self.params.threads
+        } else {
+            crate::max_threads()
+        }
+        .clamp(1, 64);
+        // Stars are detected once per binning and minimum star size, and shared by
+        // the hypotheses with both: the minimum size bottoms out at 0.8 px, so all
+        // but the finest few scales at a binning share one detection. The first
+        // hypothesis detects with every thread; the rest share them out.
+        let key = |p: &Plan| (p.binning, p.params.hfd_min.to_bits());
+        let mut keys: Vec<(usize, u64)> = plans.iter().map(|(_, p)| key(p)).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let detections: Vec<std::sync::OnceLock<Detected>> =
+            keys.iter().map(|_| std::sync::OnceLock::new()).collect();
+        let detect_threads = (n_threads / keys.len()).max(1);
+
+        let cancel = crate::cancel::current();
+        // The lowest hypothesis that has solved. A later one still running can no
+        // longer win, so it is stopped at its next checkpoint rather than finished.
+        let found = alloc::sync::Arc::new(core::sync::atomic::AtomicUsize::new(usize::MAX));
+        let (_, winner) = search_in_order(plans.len(), n_threads, |i| {
+            use core::sync::atomic::Ordering::Relaxed;
+            let (hy, p) = &plans[i];
+            if crate::cancel::fired(cancel.as_ref()) || found.load(Relaxed) < i {
+                return (None, None);
+            }
+            let token = {
+                let (found, outer) = (alloc::sync::Arc::clone(&found), cancel.clone());
+                CancelToken::with_poll(move || {
+                    found.load(Relaxed) < i || crate::cancel::fired(outer.as_ref())
+                })
+            };
+            let threads = if i == 0 { n_threads } else { 1 };
+            let params = SolveParams {
+                threads,
+                ..p.params.clone()
+            };
+            log::info!(
+                "Scale hypothesis {:.3}\"/px ({:.2}° field, binning {}, star database {})",
+                hy.scale,
+                p.params.fov.to_degrees(),
+                p.binning,
+                p.params.db_name.to_uppercase()
+            );
+            let img = image_for(p.binning);
+            let k = keys
+                .binary_search(&key(p))
+                .unwrap_or_else(|_| unreachable!());
+            let solved = crate::cancel::with_token(&token, || {
+                let stars = detections[k].get_or_init(|| {
+                    let t = if i == 0 { n_threads } else { detect_threads };
+                    crate::with_max_threads(t, || detect(img, &params))
+                });
+                crate::with_max_threads(threads, || {
+                    solve_detected(img, &params, ScaleTrust::Hypothesis, stars)
+                })
+            });
+            if solved.is_ok() {
+                found.fetch_min(i, Relaxed);
+            }
+            (None, solved.ok().map(|w| (hy.scale, w)))
+        });
+        if crate::cancel::fired(cancel.as_ref()) {
+            return Err(ArcsecError::Cancelled);
+        }
+        Ok(winner.map(|(_, (scale, wcs))| {
+            log::info!("Solved at the scale hypothesis {scale:.3}\"/px.");
+            wcs
+        }))
     }
 }
 

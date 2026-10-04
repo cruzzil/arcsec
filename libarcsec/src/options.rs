@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-use arcsec_core::auto::SolveRequest;
+use arcsec_core::auto::{ScaleSearch, SolveRequest};
 use arcsec_core::cancel::CancelToken;
 use arcsec_core::pipeline::{SearchSpeed, SolveMethod};
 use arcsec_io::header::HeaderCards;
@@ -329,6 +329,7 @@ pub(crate) unsafe fn read_options(
         hint: hint.map(|(ra, dec)| (ra.to_radians(), dec.to_radians())),
         fov_height,
         pixel_scale,
+        scale_search: ScaleSearch::IfUnknown,
         search_radius: o.search_radius_deg.to_radians(),
         downsample: Some(o.downsample as usize),
         // SAFETY: forwarded contract.

@@ -722,6 +722,20 @@ Recorded so they are not re-tried:
   makes this trap convincing if you look at the median alone. Reverted, with the reason
   recorded at the line.
 
+* **Accepting a scale hypothesis's solution as found** (§6.9). A field found at a
+  scale well away from its own has been verified against a catalogue window of the
+  wrong size. Measured with `--fov` × 0.5 and × 2 before the second solve existed: the
+  corners a median 0.07″ worse than at the true scale, up to 1.7″, and with the ladder at
+  × 0.25 two near misses past 5″ (`dens_lyra` 5.04″, `type_m45` 6.5″). Solving again at
+  the solved scale (radius 0) removed all three and made the rest identical; it is now
+  done whenever the solved scale is 5% off.
+* **Trying a database only within √2 of its published range** in the ladder. It
+  dropped the true scale of `stress_narrow` (0.1°, which d80, published from 0.15°,
+  solves), so a factor 2 is used.
+* **Cancelling ladder hypotheses after the winner**: kept, but it saves under 2% on the
+  slowest no-scale solves; the earlier hypotheses, which must finish, dominate. Sharing
+  detections between hypotheses saved another 5%.
+
 ### 6.4 What still fails (8 of 64 tier A, 0 of 34 tier B)
 
 ```
@@ -901,6 +915,81 @@ scripts/benchmark.py --auto-db --astap ~/astap_cli --radius 3 --jobs 1   # for t
 `benchmark.py` expects the star databases in `~/star_database` (`--db`) and the binary at
 `target/release/arcsec` (`--arcsec`). Without `--auto-db` it passes `-D d80`
 (`--db-name`), and `stress_wide15` (15°) then fails: 89/103 rather than 90.
+
+### 6.9 Unknown or wrong pixel scale (2026-10-05)
+
+The scale search and the second solve at the solved scale of
+[plate-solving.md §10.3e](plate-solving.md#103e-unknown-or-wrong-pixel-scale-autoscalers-2026-10-05),
+measured against 0.5.1 (`main`, e7e1f69). `--no-scale` withholds the scale (no `--fov`,
+and any FOCALLEN/XPIXSZ removed from a copy; no corpus image has both, so none needed
+it); `--fov-scale X` passes the true field times X; `--fov-search` is the new opt-in
+flag, passed with `--extra-arg`. `--auto-db`, true-centre hint, `-r 5`, no index in the
+catalogue or database directory (so the hinted path alone), 8 jobs; times are only
+comparable within a row.
+
+```bash
+scripts/benchmark.py --auto-db --no-scale
+scripts/benchmark.py --auto-db --fov-scale 0.5 [--extra-arg=--fov-search]
+```
+
+v1, 103 images (95 of them solvable at the true scale):
+
+| mode | 0.5.1 correct / FP | now correct / FP | now, `--fov-search` |
+|---|---|---|---|
+| true `--fov` | 95 / 0 | 95 / 0 (every `.wcs` scores identically) | – |
+| true `--fov`, hint 0.3 fields off | 95 / 0 | 95 / 0 | – |
+| no scale | 85 / 0 | **98 / 0** | – |
+| no scale, hint 0.3 fields off | 88 / 0 | **97 / 0** | – |
+| `--fov` × 0.5 | 79 / **1** (`dens_lyra`, 5.04″) | 80 / 0 | **98 / 0** |
+| `--fov` × 2 | 69 / 0 | 69 / 0 | **98 / 0** |
+| `--fov` × 4 | 3 / 0 | 3 / 0 | **95 / 0** |
+| `--fov` × 0.25 | 0 / 0 | 0 / 0 | **98 / 0** |
+
+98 is more than the 95 that solve at the true scale: `dens_scutum`, `type_dbl_clus` and
+`type_m8`, crowded fields of §6.4, solve at a hypothesis smaller than their scale (a
+catalogue window narrower than the frame), and then again at their own. Every image that
+solves both ways solves to the same answer: against the true-`--fov` run, 92 of 95
+identical with the scale withheld and 93 of 95 with `--fov-search` at every factor,
+none more than 0.004″ apart at the corners.
+
+The expanded corpus, 635 entries, same protocol:
+
+| | 0.5.1 | now |
+|---|---|---|
+| true `--fov`: correct / FP | 593 / 1 | 593 / 1 (589 identical; the other four are the `stress_fov_*` controls, which pass the field × 0.5–2 on purpose and are now solved again at their own scale: within 0.04″ of before, about 1 s more each) |
+| no scale: correct / FP | 433 / 0 | **585 / 1** |
+| no scale: time in failed searches (total) | 692 s | 168 s |
+| tier D (39 controls), no scale: total time | 93 s | 114 s |
+
+The one false positive is `wide_shassa_01`, which is the 0.5.1 false positive with the
+true field too (a 30″ corner on a wide SHASSA plate); with the scale withheld 0.5.1 did
+not solve it at all. No new image is solved wrongly.
+
+**Time.** `--jobs 1`, two interleaved rounds, v1 (s, median / mean / p90 / total):
+
+| | 0.5.1 | now |
+|---|---|---|
+| true `--fov`, all 103 | 0.086 / 0.244 / 0.56 / 25.1 | 0.087 / 0.242 / 0.56 / 25.0 |
+| no scale, all 103 | 0.088 / 0.302 / 0.84 / 31.2 | 0.18 / 0.57 / 1.6 / 58.9 |
+| no scale, the 5 negative controls, each | 0.03 | 0.06 |
+
+A solve with the scale known costs what it did. Without one, a solve costs about
+twice what it did when 1″/px happened to be close enough, because a solution more than
+5% from 1″/px is solved again at its own scale (the tier A frames are 1.24″/px), and
+the 13 images 0.5.1 could not solve take 0.9–6 s. The ladder's worst case is bounded:
+17 hypotheses of 9 positions, one detection per binning and minimum star size, no
+seeded fallback; on the corpus's controls it adds 0.04–1.7 s to a failure (`neg_hint_*`
+at `-r 10`: 4.6–8.1 s → 4.8–9.4 s).
+
+**With the blind index present** (287 MB `d80.arcsecix` beside the database), `-r 10`
+so that it is consulted: true `--fov` 95 / 0 in both; no scale 88 / 0 (0.5.1: the
+index, which searches 0.3–60″/px, rescues three) against **98 / 0**, and the failed
+searches' total time 71 s → 0.8 s.
+
+**astap_cli with `-fov 0`** does the same kind of search (`Trying FOV: 9.5`, 6.3, 4.2,
+… 0.37°, a full `-r` spiral at each), and prints and writes to its `.ini` the
+`Warning scale was inaccurate! Set FOV=…d, scale=…"` that arcsec now writes too. Probed
+on `decp20`/`decp40` with `-fov` × 0.94–1.06, it warns beyond about 5%.
 
 ## 7. Results — expanded corpus (635 entries)
 

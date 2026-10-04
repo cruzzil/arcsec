@@ -86,7 +86,19 @@ pub fn solver_command() -> Command {
                 .value_name("DEG")
                 .value_parser(value_parser!(f64))
                 .allow_hyphen_values(true)
-                .help("Field height in degrees; 0 or absent to take it from the header"),
+                .help(
+                    "Field height in degrees; 0 or absent to take it from the header, \
+                     else search pixel scales",
+                ),
+        )
+        .arg(
+            Arg::new("fov-search")
+                .long("fov-search")
+                .action(ArgAction::SetTrue)
+                .help(
+                    "If the solve at the given field (--fov or the header's) finds nothing, \
+                     try a quarter to four times it near the hint",
+                ),
         )
         .arg(
             Arg::new("ra")

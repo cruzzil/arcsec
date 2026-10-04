@@ -500,6 +500,18 @@ pub fn write_ini_file(
     nstars: usize,
     cmdline: &str,
 ) -> std::io::Result<()> {
+    write_ini_file_with_warning(path, wcs, nstars, cmdline, None)
+}
+
+/// [`write_ini_file`], with astap_cli's `WARNING` line after `CMDLINE` when there
+/// is one (for instance `Warning scale was inaccurate! Set FOV=1.00d, scale=1.2"`).
+pub fn write_ini_file_with_warning(
+    path: &Path,
+    wcs: &WcsSolution,
+    nstars: usize,
+    cmdline: &str,
+    warning: Option<&str>,
+) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
     writeln!(f, "PLTSOLVD=T")?;
@@ -517,6 +529,9 @@ pub fn write_ini_file(
     writeln!(f, "CD2_1={:.13E}", wcs.cd2_1)?;
     writeln!(f, "CD2_2={:.13E}", wcs.cd2_2)?;
     writeln!(f, "CMDLINE={cmdline}")?;
+    if let Some(w) = warning {
+        writeln!(f, "WARNING={w}")?;
+    }
     writeln!(f, "NSTARS={nstars}")?;
     writeln!(f, "NQUADS={}", wcs.stars_matched)?;
     writeln!(f, "RMS={:.4}", wcs.residual_rms)?;
@@ -766,6 +781,22 @@ mod tests {
         }
         assert_eq!(dict["CRPIX1"].parse::<f64>().unwrap(), 1450.5);
         assert_eq!(dict["CMDLINE"], "arcsec -f x.fits -fov 1");
+        assert!(!dict.contains_key("WARNING"));
+    }
+
+    #[test]
+    fn a_warning_is_written_as_astap_writes_it() {
+        let path = std::env::temp_dir().join(format!("arcsec_wini_{}.ini", std::process::id()));
+        let w = "Warning scale was inaccurate! Set FOV=1.00d, scale=1.2\"";
+        write_ini_file_with_warning(&path, &solution(), 500, "arcsec -f x.fits", Some(w)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let dict = read_like_nina(&path);
+        std::fs::remove_file(&path).ok();
+        // The value holds a '=' of its own; the key ends at the first one.
+        assert_eq!(dict["WARNING"], w);
+        assert_eq!(dict["PLTSOLVD"], "T");
+        // Straight after CMDLINE, as in astap_cli's .ini.
+        assert!(text.contains(&format!("CMDLINE=arcsec -f x.fits\nWARNING={w}\n")));
     }
 
     #[test]
