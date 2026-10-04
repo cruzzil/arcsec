@@ -14,6 +14,12 @@
 //! - On macOS, sets the dylib's install name to `@rpath/libarcsec.dylib`. rustc
 //!   leaves it as the path the library was built at, which no installed copy has;
 //!   with `@rpath` a program finds it through its own rpath (`arcsec.pc` adds one).
+//! - On MSVC, writes the DLL's debug info to its own PDB in `OUT_DIR`. The
+//!   library target is named `arcsec` so that the files are `arcsec.dll` and
+//!   `arcsec.lib`, but the CLI binary is `arcsec` too, and both would otherwise
+//!   link `target/<profile>/deps/arcsec.pdb`; when a workspace build links them
+//!   at the same moment, one fails with LNK1201. Cargo still warns about the
+//!   predicted collision (rust-lang/cargo#6313); the files no longer collide.
 //! - Passes the target and host triples to the crate's tests, which compile a C
 //!   program against the library with the `cc` crate.
 
@@ -39,6 +45,12 @@ fn main() {
     }
     if matches!(os.as_str(), "macos" | "ios") {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libarcsec.dylib");
+    }
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+        && let Ok(out) = std::env::var("OUT_DIR")
+    {
+        let pdb = std::path::Path::new(&out).join("arcsec.pdb");
+        println!("cargo:rustc-cdylib-link-arg=/PDB:{}", pdb.display());
     }
     println!("cargo:rustc-env=ARCSEC_BUILD_ABI={ABI}");
     println!(
