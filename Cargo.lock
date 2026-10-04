@@ -80,17 +80,26 @@ dependencies = [
 name = "arcsec"
 version = "0.5.0"
 dependencies = [
+ "arcsec-catalogue",
  "arcsec-core",
  "arcsec-io",
  "clap",
  "env_logger",
  "libc",
  "log",
+ "winresource",
+]
+
+[[package]]
+name = "arcsec-catalogue"
+version = "0.5.0"
+dependencies = [
+ "arcsec-core",
+ "libc",
  "lzma-rs",
  "tar",
  "ureq",
  "windows-sys 0.61.2",
- "winresource",
  "zip",
 ]
 

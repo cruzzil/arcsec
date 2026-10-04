@@ -20,6 +20,7 @@ on:
       - "arcsec/src/**"
       - "arcsec-core/src/**"
       - "arcsec-io/src/**"
+      - "arcsec-catalogue/src/**"
       - ".github/workflows/fuzz.yml"
 
 permissions:

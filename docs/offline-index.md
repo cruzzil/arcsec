@@ -282,7 +282,7 @@ arcsec -f image.fits -i idx.arcsecix --fov 1.2                # blind, scale kno
 The index started as an opt-in build. Since it costs seconds to a minute and a few
 hundred MB, and turns N.I.N.A.'s blind mode from minutes into seconds, `catalog install`
 now builds it after installing a solving database, warning first when the build is big
-(`arcsec/src/catalog_cmd/plan.rs`, `docs/catalogues.md` §5):
+(`arcsec-catalogue/src/index/plan.rs`, `docs/catalogues.md` §5):
 
 * **What**: one index per catalogue directory, from the deepest installed solving
   database (D80 > D50 > D20 > D05 > G05 > W08), covering the union of their default

@@ -43,6 +43,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      # arcsec-catalogue without its `download` feature: no HTTP, TLS or archive code.
+      - name: Clippy, arcsec-catalogue without downloads
+        run: cargo clippy -p arcsec-catalogue --all-targets --no-default-features --locked -- -D warnings
+
       - name: Build the documentation
         env:
           RUSTDOCFLAGS: -D warnings
