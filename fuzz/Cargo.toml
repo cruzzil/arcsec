@@ -89,10 +89,3 @@ path = "fuzz_targets/detect.rs"
 test = false
 doc = false
 bench = false
-
-# Fuzz rsfitsio's hardening branch (cruzzil/rsfitsio#139) until it is released:
-# 0.470.3 still panics on malformed headers that the branch reports as a status,
-# and the fuzzer would rediscover those instead of finding new problems. Remove
-# this and bump `rsfitsio` above once the release is out.
-[patch.crates-io]
-rsfitsio = { git = "https://github.com/cruzzil/rsfitsio", branch = "fuzz-hardening" }

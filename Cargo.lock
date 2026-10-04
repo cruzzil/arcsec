@@ -942,9 +942,9 @@ dependencies = [
 
 [[package]]
 name = "rsfitsio"
-version = "0.470.3"
+version = "0.470.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cdeb1d7afbbfb49ce01a14b6af3899b162217e0e70060d1d11eaf0b5a81e17e"
+checksum = "64874df93d773187b06fbbcdc1e6eeb4fa9edab93893a386a6df4767088599a6"
 dependencies = [
  "bytemuck",
  "chrono",

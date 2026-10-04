@@ -1010,9 +1010,10 @@ mod tests {
     }
 
     /// A tile-compressed image whose GZIP tile inflates past what ZBITPIX
-    /// allows: rsfitsio 0.470.3 panics. It is an unreadable file (exit 16).
+    /// declares: rsfitsio 0.470.3 panicked; 0.470.4 grows the buffer and decodes
+    /// the wider tile, as CFITSIO does.
     #[test]
-    fn a_corrupt_compressed_tile_is_an_error() {
+    fn a_gzip_tile_wider_than_zbitpix_decodes_as_cfitsio_does() {
         use rsfitsio::fitsio::{GZIP_1, SHORT_IMG};
         let path = std::env::temp_dir().join(format!("arcsec_fz_{}.fits", std::process::id()));
         std::fs::remove_file(&path).ok();
@@ -1038,7 +1039,9 @@ mod tests {
         bytes[at..at + 80]
             .copy_from_slice(format!("{:<80}", "ZBITPIX =                    8").as_bytes());
         std::fs::write(&path, &bytes).unwrap();
-        assert!(image_io::read_image(&path).is_err());
+        let img = image_io::read_image(&path).unwrap();
+        let expect: Vec<f32> = data.iter().map(|&v| f32::from(v)).collect();
+        assert_eq!(img.data, expect);
         std::fs::remove_file(&path).ok();
     }
 
