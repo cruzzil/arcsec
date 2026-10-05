@@ -1353,6 +1353,107 @@ on the corpus has at least 7.9 (the weakest, `tess_40`: 121 against 15.3), and n
 correct solve has an rms above 1.35 px. Neither rule changes the status of any image
 the spiral solved.
 
+### 10.3e Unknown or wrong pixel scale (`auto/scale.rs`, 2026-10-05)
+
+The spiral's step and its catalogue window are both one field, and the field is the
+pixel scale times the image size; the window's depth (`-s` × oversize²) and the density
+the star list is trimmed to (`density_star_limit`) follow it too. The quads are
+scale-free, but the catalogue they are matched against is not: measured on the
+103-image benchmark with the field passed wrong by a factor (`benchmark.py
+--fov-scale`), 95 solve at 1×, 95 at 0.84×, 91 at 1.19×, 79 at 0.5×, 69 at 2×, 3 at 4×
+and none at 0.25×. Too small a scale is tolerated better than too large: a window
+narrower than the frame still holds the stars of its middle, while a wider one holds
+too few stars per square degree, all brighter than the image's.
+
+What the plan does (`Plan::catalogue_solve`):
+
+```
+  scale known (-fov, or FOCALLEN/XPIXSZ)?
+    yes ─► spiral at that scale, out to -r ───────────────────┐
+             │ nothing, and --fov-search                      │
+             └─► ladder ¼×–4× of it (8 hypotheses) ───────────┤
+    no  ─► [blind index stage, as before: index installed, -r ≥ 10°]
+           ladder 0.25–64″/px (17 hypotheses) ────────────────┤
+             │ nothing                                        │
+             └─► spiral at 1″/px, out to -r (the old search) ─┤
+                                                              ▼
+                  solved scale more than 5% from the one searched with?
+                       yes ─► solve again at the solved scale, at the
+                              solved centre, radius 0 ("refine")
+                  print astap_cli's "Warning scale was inaccurate! ..."
+```
+
+**The ladder.** Hypotheses are the starting scale (1″/px when unknown, as before)
+times √2^k, the step astrometry.net's index scales use: a true scale is then within
+2^¼ = 19% of one of them, inside the measured tolerance above (0.84×–1.19× lose at most
+4 of 95). For an unknown scale k runs from −4 to 12 (0.25–64″/px, against the blind
+index's 0.3–60″/px); for `--fov-search` from −4 to 4 without 0 (¼×–4×, the given scale
+having just failed). A hypothesis whose field (the long side) is more than a factor 2
+outside every installed database's published range (or the `-D` one's) is dropped: a
+factor √2 lost `stress_narrow`, a 0.1° field that d80 (published from 0.15°) solves.
+Each hypothesis gets its own plan (`Plan::new`), so its own binning, minimum star size
+and database, and is searched only within `LADDER_FIELDS` = 1 field of the hint: the
+hint's position and the eight round it.
+
+**Order.** Nearest the starting scale first, in steps; of two equally near the larger
+scale first, because a wider field is the cheaper search and the usual way to have no
+scale at all is a camera lens: 1, 1.41, 0.71, 2, 0.5, 2.8, … ″/px. astap_cli's own
+`-fov 0` ladder (measured: 9.5°, 6.3°, 4.2°, … down to 0.37°, factor 1.5, a full `-r`
+spiral at each) goes from the widest field down.
+
+**Winner.** The hypotheses run on the solve's threads through the spiral's
+`search_in_order`: the first alone with every thread, the rest one thread each, none
+started after one has verified, and the earliest in the order that verifies wins, so the
+answer does not depend on the thread count (one after the winner still running is
+cancelled through its own token). Stars are detected once per (binning, minimum star
+size) and shared: the minimum size bottoms out at 0.8 px, so most hypotheses at one
+binning share a detection.
+
+**False positives.** More hypotheses are more chances of a coincidence, so a hypothesis
+is a `ScaleTrust::Hypothesis` search: it needs the full `MIN_VERIFIED_STARS` = 30 (the
+sparse-field relaxation of §11.1 is refused: its power comes from checking the plate
+against a *known* scale, which a ladder of 17 scales 19% apart would nearly cover), and
+the catalogue-seeded fallback (§10.3d), which searches ±5% of the scale, does not run.
+The other thresholds are not raised. A failed ladder tries at most 17 × 9 = 153
+positions; a failed `-r 10` spiral on a 0.2° field tries 6 000 with the same
+per-position test and has produced no false positive on either corpus, so the number of
+tries added is small against what the test already withstands. Measured: no false
+positive in any mode on either corpus (test-images.md §6.9).
+
+**Refine.** A solution found at a scale well away from its own has been verified, and
+its distortion modelled, against the catalogue of a window of the wrong size: half the
+true scale checks only the middle quarter of the frame. So when the solved scale is more
+than `INACCURATE_SCALE` = 5% from the one searched with, the field is solved once more
+at the solved scale, at the solved centre, radius 0 (strict acceptance, kept only if it
+lands within a tenth of a field of the first). Measured before keeping it: without it,
+solves at 0.5× and 2× were a median 0.07″ worse at the corners than at the true scale
+(up to 1.7″), and three were near misses past the 5″ false-positive limit (`dens_lyra`
+at 0.5×, 5.04″; `type_m45` at 0.25× with the ladder, 6.5″); with it, 93 of 95 are
+identical to the true-scale solve and none is more than 0.002″ different. It applies to
+every catalogue solve, including a plain wrong `-fov`, and costs one detection and one
+position, only when the scale was off.
+
+**The time bound.** A ladder that finds nothing costs at most one detection per
+(binning, minimum star size) — six at most on the corpus — and nine positions per
+hypothesis, with no seeded fallback; it is followed by the old search at 1″/px, so an
+unknown scale fails in the old time plus that. On the benchmark's five negative
+controls, 0.03 → 0.06 s each; on the expanded corpus see test-images.md §6.9. With a
+known scale nothing is added unless `--fov-search` is given, and then only after the
+ordinary search has failed. A `-fov` is never overridden: N.I.N.A. always sends one.
+
+**Output.** With the scale unknown the CLI says so on stderr (the plan logs it as a
+warning, which is what libarcsec reports). Whenever the solved scale is more than 5%
+from the one the solve started with, the CLI prints astap_cli's line after the solution
+and writes it to the `.ini` as `WARNING` after `CMDLINE`, exactly as astap_cli 2026.07.30
+does (measured: its threshold is 5% of the field):
+
+```
+Warning scale was inaccurate! Set FOV=0.50d, scale=1.3"
+```
+
+The FOV is the solved image height, as `-fov` takes it. N.I.N.A. logs a solved `.ini`'s
+`WARNING` and shows it as a notification, as it does for ASTAP's.
+
 ### 10.4 The blind solve (`pipeline/blind.rs`)
 
 ```
@@ -1457,6 +1558,12 @@ it prints a warning and runs the catalogue solve from the original hint and radi
 | `AUTO_MIN_RADIUS` | 10° | `arcsec` binary, `blind.rs` | smallest `-r` at which an installed arcsec index is consulted without `-i` |
 | `AUTO_SPIRAL_FIELDS` | 5 (at least 1°) | `arcsec` binary, `blind.rs` | radius the spiral searches before an automatically found index is consulted |
 | `ELSEWHERE_FIELDS` | 2 | `arcsec` binary, `blind.rs` | an index solution this many fields beyond `-r` ends the search, unsolved (§11.9, offline-index.md §2.7) |
+| `SCALE_STEP` | √2 | `auto/scale.rs` | ratio between neighbouring scale hypotheses (§10.3e) |
+| `UNKNOWN_STEPS` | −4 … 12 | `auto/scale.rs` | hypotheses round 1″/px when no scale is known: 0.25–64″/px |
+| `WRONG_STEPS` | ±4 | `auto/scale.rs` | hypotheses round a given scale that failed, with `--fov-search`: ¼×–4× |
+| `LADDER_FIELDS` | 1 | `auto/scale.rs` | fields round the hint each hypothesis searches (9 positions) |
+| database coverage | ×2 | `auto/mod.rs` | a hypothesis is tried if an installed (or the `-D`) database's published range, widened by this factor, covers its field |
+| `INACCURATE_SCALE` | 5% | `auto/scale.rs` | solved scale this far from the searched one: solve again at it, and print astap_cli's warning |
 
 ### 10.6 Measured performance
 
@@ -1661,7 +1768,14 @@ real cost on top of, not instead of, the correspondence problem described above.
 was removed once verification existed. See
 [test-images.md §6.2](test-images.md#62-what-moved-the-numbers).
 
-### 11.3 We cannot solve without a good pixel-scale estimate
+### 11.3 We cannot solve without a good pixel-scale estimate — FIXED 2026-10-05
+
+**Fixed 2026-10-05** for the hinted path too (§10.3e, §12.3): with no scale the solver
+says so and searches 0.25–64″/px round the hint before the old 1″/px search, so 98 of
+the 103 benchmark images solve with the scale withheld, against 85; with
+`--fov-search`, a given field from ¼× to 4× the true one solves 95–98. A solution at a
+scale more than 5% off is solved again at its own scale, which removed the near misses
+a wrong scale caused. The text below is the problem as it stood.
 
 **Partly fixed 2026-10-02** for blind solving: with arcsec's blind index
 ([offline-index.md](offline-index.md)) and no `--fov` or FOCALLEN/XPIXSZ, the index
@@ -1877,7 +1991,8 @@ and they interlock: one piece of machinery — *project the catalogue and match 
 stars* — fixes the verification gap, the accuracy cap and the distortion blocker at once.
 
 Status as of 0.1.0: §12.1 and §12.7 are done, §12.5 option 1 and §12.6 are partly done,
-§12.10 is partly done; the rest are open.
+§12.10 is partly done; the rest are open. Since then §12.3 (2026-10-05), §12.4 and §12.6
+are done (each marked below).
 
 ### 12.1 Add a star-level refit and verification pass ★ highest value — DONE 2026-09-02
 
@@ -1913,9 +2028,15 @@ With §12.1 in place, replace the bare count with the astrometry.net-style Bayes
 background, accumulated over detected stars — makes the accept/reject decision principled
 and scale-free, and gives a `LOGODDS` value to write into the `.ini` for downstream tools.
 
-### 12.3 Handle an unknown or wrong pixel scale
+### 12.3 Handle an unknown or wrong pixel scale — DONE
 
 Three levels, in increasing effort:
+
+**DONE 2026-10-05**, all three levels (§10.3e; measurements in test-images.md §6.9):
+warn (stderr, and astap_cli's `Warning scale was inaccurate!` on stdout and in the
+`.ini`), refine (kept because it measurably helps: wrong-scale solves become identical
+to right-scale ones, and three near misses go), and search (a √2 ladder, automatic when
+the scale is unknown, opt-in with `--fov-search` after a known scale fails).
 
 1. **Warn.** When neither `--fov` nor `FOCALLEN`/`XPIXSZ` is available, say so on stderr
    instead of silently assuming 1″/px. Cheap, and removes a whole class of confusing

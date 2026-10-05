@@ -161,8 +161,14 @@ arcsec -f image.fits --ra 5.58 --spd 82.0 --fov 1.5 -r 10
 
 `--ra` is in hours, `--spd` is south pole distance (90 + Dec) in degrees, `--fov` is the
 image height in degrees, and `-r` is the search radius around that position in degrees
-(default 180, the whole sky). Without `FOCALLEN`/`XPIXSZ` in the header, give `--fov`:
-otherwise arcsec assumes 1″ per pixel.
+(default 180, the whole sky). Without `FOCALLEN`/`XPIXSZ` in the header and without
+`--fov` (or with `--fov 0`), arcsec does not know the pixel scale: it says so on stderr,
+tries scales from 0.25″ to 64″ per pixel near the start position, and then searches the
+whole radius at 1″ per pixel, as earlier versions did. A solution whose scale differs by
+more than 5% from the one the solve started with prints astap_cli's
+`Warning scale was inaccurate! Set FOV=…d, scale=…"`, which is also written to the
+`.ini` as `WARNING`. `--fov` is otherwise taken as given; `--fov-search` lets a solve that
+finds nothing at it try a quarter to four times the field before giving up.
 
 Blind, with no position hint, using arcsec's own index:
 
@@ -196,6 +202,7 @@ Other useful flags:
 | `-d <dir>` | Star database directory, for this run only |
 | `-z <n>` | Bin the image n×n before solving; `0` or absent chooses automatically |
 | `-s <n>` | Maximum number of stars to use (default 500) |
+| `--fov-search` | If nothing solves at the given field size, try ¼–4× it near the start position (arcsec only; off by default) |
 | `--update` | Write the solution into the FITS header in place (FITS only) |
 | `--progress` | Log each step to stderr |
 | `--log` | Write the same log to `<base>.log` |

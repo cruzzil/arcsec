@@ -156,7 +156,10 @@ What the options mean, in brief (the header has the detail):
   give one, or an index.
 - **Scale.** `pixel_scale_arcsec` or `fov_deg` (the image *height*, as ASTAP's `-fov`).
   Without either, `fits_header` keywords FOCALLEN/XPIXSZ/XBINNING are used, and failing
-  those 1″/px is assumed (with a warning in the log). Pass the scale.
+  those the scale is searched for (with a warning in the log): 0.25–64″/px within a
+  field of the hint, then 1″/px out to the radius. Pass the scale if you know it. A
+  given scale is used as given; `fov_search` (default 0) also tries ¼–4× it when
+  nothing solves at it, as the CLI's `--fov-search`.
 - **Catalogues.** `catalog_dir` (NULL: where `arcsec catalog install` puts them),
   `database` (NULL: chosen by field size, D80 … W08), `index_path` (a blind index: tried
   first without a hint, as a fallback with one unless `index_first`), `auto_index`
