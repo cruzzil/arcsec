@@ -220,20 +220,44 @@ const RELAXED_SCALE_TOL: f64 = 0.10;
 /// and a scale 1.36 times the hint's.
 const RELAXED_MAX_RMS_PX: f64 = 0.5;
 
+/// How much [`solve_image_with`] may lean on `params.fov` being the image's real
+/// field size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScaleTrust {
+    /// The field size is the caller's (or the header's), or the one guess the
+    /// search has always made: a sparse field may be accepted on fewer than
+    /// [`MIN_VERIFIED_STARS`] stars when its plate has that scale
+    /// ([`Acceptance::accepts`]), and the catalogue-seeded fallback, which looks
+    /// for that scale, runs when the spiral finds nothing.
+    Trusted,
+    /// The field size is one hypothesis among several (a scale search): neither
+    /// of those runs, since both draw their power from knowing the scale, and a
+    /// handful of hypotheses would multiply their chances of a coincidence.
+    Hypothesis,
+}
+
 /// When a verified plate is believed.
 struct Acceptance {
     /// Fewest matched stars ([`min_verified_stars`]).
     min_stars: usize,
     /// The pixel scale the hint implies, arcsec per (binned) pixel.
     expected_scale: f64,
+    /// Whether that scale is known; if not, a sparse match is never enough.
+    trust: ScaleTrust,
 }
 
 impl Acceptance {
-    fn new(nrstars_image: usize, params: &SolveParams, img: &crate::types::ImageBuffer) -> Self {
+    fn new(
+        nrstars_image: usize,
+        params: &SolveParams,
+        img: &crate::types::ImageBuffer,
+        trust: ScaleTrust,
+    ) -> Self {
         Self {
             min_stars: min_verified_stars(nrstars_image),
             expected_scale: params.fov.to_degrees() * 3600.0
                 / img.width.max(img.height).max(1) as f64,
+            trust,
         }
     }
 
@@ -251,6 +275,13 @@ impl Acceptance {
         }
         if v.n() >= MIN_VERIFIED_STARS {
             return true;
+        }
+        if self.trust == ScaleTrust::Hypothesis {
+            log::info!(
+                "{} stars verified at a hypothetical scale: refused (needs {MIN_VERIFIED_STARS})",
+                v.n()
+            );
+            return false;
         }
         let p = &v.plate;
         let scale = (p.a * p.e - p.b * p.d).abs().sqrt();
@@ -1366,6 +1397,59 @@ fn seeded_fallback(ctx: &SpiralCtx<'_>, deep: &StarList) -> Option<PositionOutco
 /// - [`ArcsecError::Cancelled`] if the ambient [`crate::cancel::CancelToken`] fired
 ///   before a position verified.
 pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Result<WcsSolution> {
+    solve_image_with(img, params, ScaleTrust::Trusted)
+}
+
+/// [`solve_image`], told how far `params.fov` can be trusted ([`ScaleTrust`]).
+pub(crate) fn solve_image_with(
+    img: &crate::types::ImageBuffer,
+    params: &SolveParams,
+    trust: ScaleTrust,
+) -> Result<WcsSolution> {
+    check_params(params)?;
+    if crate::cancel::is_cancelled() {
+        return Err(ArcsecError::Cancelled);
+    }
+    let detected = detect(img, params);
+    solve_detected(img, params, trust, &detected)
+}
+
+/// The stars [`detect`] found, for [`solve_detected`].
+pub(crate) struct Detected {
+    /// The solve's stars: at most `max_stars`, the brightest.
+    stars: StarList,
+    /// The deeper list the catalogue-seeded fallback indexes.
+    deep: StarList,
+}
+
+/// Phase A of [`solve_image`]: detect the stars in `img`. Depends on `params`
+/// only through `hfd_min` and `max_stars`, so solves that share those (a scale
+/// search's hypotheses at one binning) can share it.
+pub(crate) fn detect(img: &crate::types::ImageBuffer, params: &SolveParams) -> Detected {
+    crate::cancel::progress(crate::cancel::stage::DETECTING, -1.0);
+    let bg = get_background(img, params.max_stars);
+    log::info!("Start finding stars");
+    let (stars, stars_raw, deep) =
+        find_stars_and_deep(img, &bg, params.hfd_min, params.max_stars, SEEDED_MAX_STARS);
+    log::info!(
+        "{} stars found of the requested {}. Background value is {:.0}. \
+         Detection level used {:.0} above background. Star level is {:.0} above background. \
+         Noise level is {:.0}",
+        stars_raw,
+        params.max_stars,
+        bg.mean,
+        bg.star_level,
+        bg.star_level,
+        bg.noise,
+    );
+    if stars_raw > params.max_stars {
+        log::info!("Selecting the {} brightest stars only.", params.max_stars);
+    }
+    Detected { stars, deep }
+}
+
+/// The checks [`solve_image`] makes before it starts.
+fn check_params(params: &SolveParams) -> Result<()> {
     // The spiral steps by one FOV out to the search radius, so a zero, negative or
     // NaN FOV would make the step count infinite (and saturate to i32::MAX).
     if !(params.fov.is_finite() && params.fov > 0.0) {
@@ -1404,36 +1488,25 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     if !crate::catalog::catalog_present(&params.db_path, &params.db_name) {
         return Err(ArcsecError::CatalogNotFound(params.db_path.clone()));
     }
+    Ok(())
+}
 
+/// Phases B-D of [`solve_image`], with the stars [`detect`] found in `img` for
+/// these `params` (or for any with the same `hfd_min` and `max_stars`).
+pub(crate) fn solve_detected(
+    img: &crate::types::ImageBuffer,
+    params: &SolveParams,
+    trust: ScaleTrust,
+    detected: &Detected,
+) -> Result<WcsSolution> {
+    check_params(params)?;
     // Polled before each spiral position, on whichever worker takes it.
     let cancel = crate::cancel::current();
     let cancelled = || crate::cancel::fired(cancel.as_ref());
     if cancelled() {
         return Err(ArcsecError::Cancelled);
     }
-
-    // --- Phase A: star detection ---
-    if let Some(c) = &cancel {
-        c.progress(crate::cancel::stage::DETECTING, -1.0);
-    }
-    let bg = get_background(img, params.max_stars);
-    log::info!("Start finding stars");
-    let (stars, stars_raw, deep_stars) =
-        find_stars_and_deep(img, &bg, params.hfd_min, params.max_stars, SEEDED_MAX_STARS);
-    log::info!(
-        "{} stars found of the requested {}. Background value is {:.0}. \
-         Detection level used {:.0} above background. Star level is {:.0} above background. \
-         Noise level is {:.0}",
-        stars_raw,
-        params.max_stars,
-        bg.mean,
-        bg.star_level,
-        bg.star_level,
-        bg.noise,
-    );
-    if stars_raw > params.max_stars {
-        log::info!("Selecting the {} brightest stars only.", params.max_stars);
-    }
+    let deep_stars = &detected.deep;
 
     // Detection is not trimmed to a fraction. Stars beyond `-s` are faint enough to
     // be absent from the catalog, which once corrupted 3-NN quads badly enough to
@@ -1447,7 +1520,7 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     // field (`rnd_080`) against ~100 catalogue stars build quads from stars the
     // catalogue has never heard of, and the field cannot match.
     let star_limit = density_star_limit(params, img);
-    let mut stars = stars;
+    let mut stars = detected.stars.clone();
     if stars.len() > star_limit {
         stars.0.sort_by(|a, b| b.snr.total_cmp(&a.snr));
         stars.0.truncate(star_limit);
@@ -1548,7 +1621,7 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
         oversize,
         min_quads,
         step_size,
-        accept: Acceptance::new(nrstars_image, params, img),
+        accept: Acceptance::new(nrstars_image, params, img, trust),
         aspect: img.width.max(img.height) as f64 / img.width.min(img.height).max(1) as f64,
         cancel: cancel.clone(),
     };
@@ -1592,8 +1665,8 @@ pub fn solve_image(img: &crate::types::ImageBuffer, params: &SolveParams) -> Res
     }
 
     // Nothing verified anywhere: the catalogue-seeded fallback, once, about the hint.
-    if winner.is_none() && params.method == SolveMethod::Quads {
-        winner = seeded_fallback(&ctx, &deep_stars);
+    if winner.is_none() && params.method == SolveMethod::Quads && trust == ScaleTrust::Trusted {
+        winner = seeded_fallback(&ctx, deep_stars);
     }
 
     if let Some(o) = winner.as_ref().filter(|o| o.refused) {
@@ -1675,7 +1748,7 @@ type Tried<T> = (usize, Option<f64>, Option<T>);
 /// waits on a batch: an earlier version ran the positions in batches of
 /// `n_threads`, and every batch waited for its slowest position, while the cost of
 /// a position varies several times with the density of the catalogue.
-fn search_in_order<T: Send>(
+pub(crate) fn search_in_order<T: Send>(
     n: usize,
     n_threads: usize,
     try_at: impl Fn(usize) -> (Option<f64>, Option<T>) + Sync,
@@ -2042,6 +2115,7 @@ mod tests {
     const STRICT: Acceptance = Acceptance {
         min_stars: MIN_VERIFIED_STARS,
         expected_scale: 3.2,
+        trust: ScaleTrust::Trusted,
     };
 
     fn star_at(x: f64, y: f64) -> Star {
@@ -2451,6 +2525,131 @@ mod tests {
         assert!(solved.index_estimate.is_none());
     }
 
+    /// A 5″/px field, and a plan for it from a hint 0.2° off with the scale `req`
+    /// says (none, by default).
+    fn scale_plan(
+        s: &Scene,
+        req: crate::auto::SolveRequest,
+    ) -> (crate::auto::Plan, crate::auto::SolveRequest) {
+        let req = crate::auto::SolveRequest {
+            hint: Some((deg(84.3 + 0.2), deg(-5.2))),
+            search_radius: deg(0.5),
+            db_path: Some(s.dir.path().to_path_buf()),
+            db_name: Some("t50".into()),
+            threads: 4,
+            ..req
+        };
+        (
+            crate::auto::Plan::new(&req, s.img.width, s.img.height).unwrap(),
+            req,
+        )
+    }
+
+    #[test]
+    fn an_unknown_scale_is_found_by_the_ladder() {
+        use crate::auto::{ScaleSearch, SolveRequest};
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        let (plan, req) = scale_plan(&s, SolveRequest::default());
+        assert!(!plan.scale_known && plan.searches_scales());
+        assert!((plan.arcsec_per_px - 1.0).abs() < 1e-12, "1\"/px assumed");
+        let wcs = plan.solve(&s.img).expect("the ladder finds 5\"/px").wcs;
+        assert_solved(&s, &wcs, 1.0);
+        // Five times the assumed scale: astap_cli's warning, with the solved field.
+        assert_eq!(
+            plan.scale_warning(&wcs).as_deref(),
+            Some("Warning scale was inaccurate! Set FOV=0.44d, scale=5.0\"")
+        );
+
+        // Without the ladder, 1"/px reads a catalogue a fifth of the field wide.
+        let (never, _) = scale_plan(
+            &s,
+            SolveRequest {
+                scale_search: ScaleSearch::Never,
+                ..req
+            },
+        );
+        assert!(!never.searches_scales());
+        assert!(never.solve(&s.img).is_err());
+    }
+
+    #[test]
+    fn a_wrong_scale_is_searched_only_when_asked() {
+        use crate::auto::{ScaleSearch, SolveRequest};
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        // Four times too coarse, as a focal length entered as a quarter of itself.
+        let wrong = SolveRequest {
+            pixel_scale: Some(20.0),
+            ..SolveRequest::default()
+        };
+        let (plan, req) = scale_plan(&s, wrong);
+        assert!(plan.scale_known && !plan.searches_scales());
+        assert!(
+            plan.solve(&s.img).is_err(),
+            "a given scale is authoritative"
+        );
+
+        let (search, _) = scale_plan(
+            &s,
+            SolveRequest {
+                scale_search: ScaleSearch::AlsoIfWrong,
+                ..req
+            },
+        );
+        assert!(search.searches_scales());
+        let wcs = search.solve(&s.img).expect("the ladder reaches 5\"/px").wcs;
+        assert_solved(&s, &wcs, 1.0);
+        assert!(search.scale_warning(&wcs).is_some());
+
+        // A right scale solves at once, without a warning.
+        let (right, _) = scale_plan(
+            &s,
+            SolveRequest {
+                pixel_scale: Some(5.0),
+                scale_search: ScaleSearch::AlsoIfWrong,
+                ..SolveRequest::default()
+            },
+        );
+        let wcs = right.solve(&s.img).expect("solve").wcs;
+        assert_eq!(right.scale_warning(&wcs), None);
+    }
+
+    #[test]
+    fn a_hypothetical_scale_never_accepts_a_sparse_match() {
+        let truth = TruthWcs::new(deg(84.3), deg(-5.2), 5.0, 23.0, false, 400, 320);
+        let s = scene(truth, Db::Areas1476, 130, 1);
+        let p = params_for(&s, truth.ra0, truth.dec0);
+        let mut v = Verified {
+            plate: PlateConstants {
+                a: 5.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 5.0,
+                f: 0.0,
+            },
+            rms: 0.5,
+            img_pos: (0..20).map(|i| (f64::from(i) * 20.0, 160.0)).collect(),
+            cat_pos: vec![(0.0, 0.0); 20],
+            chance: 0.1,
+        };
+        let trusted = Acceptance::new(20, &p, &s.img, ScaleTrust::Trusted);
+        let hypothesis = Acceptance::new(20, &p, &s.img, ScaleTrust::Hypothesis);
+        // `p.fov` is the height, so the expected scale is 5 × 320/400 = 4"/px.
+        v.plate.a = 4.0;
+        v.plate.e = 4.0;
+        assert!(
+            trusted.accepts(&v, 0.5),
+            "a sparse match at the known scale"
+        );
+        assert!(!hypothesis.accepts(&v, 0.5));
+        // 30 stars are enough either way.
+        v.img_pos = (0..30).map(|i| (f64::from(i) * 13.0, 160.0)).collect();
+        v.cat_pos = vec![(0.0, 0.0); 30];
+        assert!(hypothesis.accepts(&v, 0.5));
+    }
+
     #[test]
     fn solves_a_mirrored_image_on_a_290_database() {
         let truth = TruthWcs::new(deg(201.0), deg(47.5), 6.0, 160.0, true, 360, 360);
@@ -2647,6 +2846,7 @@ mod tests {
         let accept = Acceptance {
             min_stars: 12,
             expected_scale: 3.2,
+            trust: ScaleTrust::Trusted,
         };
         // Enough stars: scale is not looked at, and the residual only as far as
         // the last match radius (`significant`).
@@ -2759,7 +2959,7 @@ mod tests {
             oversize,
             min_quads: 3 + n / 140,
             step_size: p.fov,
-            accept: Acceptance::new(n, p, img),
+            accept: Acceptance::new(n, p, img, ScaleTrust::Trusted),
             aspect: img.width.max(img.height) as f64 / img.width.min(img.height) as f64,
             cancel: None,
         };

@@ -14,7 +14,7 @@ use std::process;
 use std::time::Instant;
 
 use arcsec_core::ArcsecError;
-use arcsec_core::auto::{Event, MIN_SOLVE_DIM, Plan, SolveRequest};
+use arcsec_core::auto::{Event, MIN_SOLVE_DIM, Plan, ScaleSearch, SolveRequest};
 use arcsec_core::pipeline::{SearchSpeed, SolveMethod, format_dec, format_ra, format_radec};
 use arcsec_core::types::{ImageBuffer, WcsSolution};
 use arcsec_core::wcs::TanWcs;
@@ -196,6 +196,11 @@ fn run() {
         } else {
             image_io::read_pixel_scale(file)
         },
+        scale_search: if matches.get_flag("fov-search") {
+            ScaleSearch::AlsoIfWrong
+        } else {
+            ScaleSearch::IfUnknown
+        },
         search_radius: arg::<f64>(&matches, "radius").to_radians(),
         downsample: matches
             .get_one::<u32>("downsample")
@@ -226,6 +231,8 @@ fn run() {
     };
     let binning = plan.binning;
     let (binned_w, binned_h) = plan.binned_size();
+    // Without a scale, the plan warns on stderr when it starts solving (warnings are
+    // printed with or without --progress).
     log::info!(
         "Using star database {} for a {:.2}° field",
         plan.params.db_name.to_uppercase(),
@@ -303,6 +310,12 @@ fn run() {
         (ra_hint_rad, dec_hint_rad),
         do_progress,
     );
+    // As astap_cli: the scale the solve started from was more than 5% off.
+    let warning = plan.scale_warning(&wcs);
+    if let Some(w) = &warning {
+        println!("{w}");
+        log::info!("{w}");
+    }
 
     // ── Write output files ───────────────────────────────────────────────────
     // Solved: a later panic (in --update or --extract2) must not mark it unsolved.
@@ -314,7 +327,13 @@ fn run() {
     if let Err(e) = fits_io::write_wcs_file(&wcs_path, &wcs) {
         eprintln!("Warning: could not write {}: {e}", wcs_path.display());
     }
-    if let Err(e) = fits_io::write_ini_file(ini_path, &wcs, max_stars, &unsolved.cmdline) {
+    if let Err(e) = fits_io::write_ini_file_with_warning(
+        ini_path,
+        &wcs,
+        max_stars,
+        &unsolved.cmdline,
+        warning.as_deref(),
+    ) {
         eprintln!("Warning: could not write {}: {e}", ini_path.display());
     }
 
