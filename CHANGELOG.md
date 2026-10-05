@@ -12,6 +12,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-06
+
 ### Added
 
 - **A pixel-scale search when the scale is unknown.** With no `-fov` (or `-fov 0`) and no
@@ -516,7 +518,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/cruzzil/arcsec/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cruzzil/arcsec/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cruzzil/arcsec/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cruzzil/arcsec/compare/v0.3.0...v0.4.0

@@ -11,7 +11,7 @@ members = [
 # Shared by every crate; each opts in with `field.workspace = true`. Bump `version`
 # here and in [workspace.dependencies] below together - see CONTRIBUTING.md.
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 # The oldest toolchain that builds the workspace. Set by the dependencies rather than
 # the code: rsfitsio declares 1.96. CI builds and tests on exactly this version, so
@@ -76,8 +76,8 @@ strip = "debuginfo"
 # `version` alongside `path` so the CLI can be published: crates.io ignores `path` and
 # resolves these from the registry, so arcsec-core must be published first, then
 # arcsec-io and arcsec-catalogue.
-arcsec-core = { version = "0.5.1", path = "arcsec-core" }
-arcsec-io = { version = "0.5.1", path = "arcsec-io" }
-arcsec-catalogue = { version = "0.5.1", path = "arcsec-catalogue" }
+arcsec-core = { version = "0.6.0", path = "arcsec-core" }
+arcsec-io = { version = "0.6.0", path = "arcsec-io" }
+arcsec-catalogue = { version = "0.6.0", path = "arcsec-catalogue" }
 log = { version = "0.4.34", features = ["std"] }
 env_logger = "0.11.11"

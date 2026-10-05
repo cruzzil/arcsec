@@ -82,7 +82,7 @@ cc myapp.c $(pkg-config --cflags arcsec) /path/to/libarcsec.a $(pkg-config --sta
 CMake:
 
 ```cmake
-find_package(arcsec 0.5 REQUIRED)            # CMAKE_PREFIX_PATH=<install tree>
+find_package(arcsec 0.6 REQUIRED)            # CMAKE_PREFIX_PATH=<install tree>
 target_link_libraries(myapp PRIVATE arcsec::arcsec)          # shared
 target_link_libraries(myapp PRIVATE arcsec::arcsec_static)   # static
 ```
