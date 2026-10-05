@@ -21,6 +21,7 @@ everything below.
 | `-f <file>` | Image to solve: FITS, XISF or ASDF, recognised from the file's contents | required |
 | `-r <deg>` | Radius of the area to search around the start position, in degrees | `180` (whole sky) |
 | `--fov <deg>` | Field **height** in degrees; `0` or absent to take it from the header | from header |
+| `--fov-search` | If nothing solves at the given field size, try ¼ to 4× it near the start position before giving up (arcsec only) | off |
 | `--ra <hours>` | Right ascension of the search centre, in **hours** | from header |
 | `--spd <deg>` | South pole distance of the search centre (90 + Dec), in degrees | from header |
 | `-s <n>` | Maximum number of stars to use | `500` |
@@ -74,8 +75,16 @@ should), and SIP terms are added only when the distortion is statistically signi
 Without `--ra`/`--spd`, arcsec takes the start position from the image's `RA` and `DEC`
 keywords (in degrees), falling back to `CRVAL1`/`CRVAL2`. Without `--fov`, it works out
 the pixel scale from `FOCALLEN` (mm), `XPIXSZ` (µm) and `XBINNING`. If neither is
-available it assumes 1″ per pixel, which is rarely right, so give `--fov`. XISF files
-carry the same keywords; ASDF files are read from their metadata tree.
+available, arcsec says so on stderr and searches for the scale: it tries 17 scales from
+0.25″ to 64″ per pixel (√2 apart, nearest 1″ first) within one field of the start
+position, then searches the whole radius at 1″ per pixel. Giving `--fov` is still
+faster. A `--fov` you give is used as given; add `--fov-search` to let a solve that finds
+nothing at it try a quarter to four times the field.
+
+When the solved scale differs from the starting one by more than 5%, arcsec prints
+astap_cli's `Warning scale was inaccurate! Set FOV=…d, scale=…"` after the solution and
+writes it to the `.ini` as `WARNING`. XISF files carry the same keywords; ASDF files are
+read from their metadata tree.
 
 ### Automatic binning
 
