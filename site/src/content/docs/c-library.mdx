@@ -110,7 +110,8 @@ int solve(const float *pixels, uint32_t width, uint32_t height) {
 - **Solving** from pixels in memory (8-, 16- and 32-bit integers, `float`, `double`;
   one or several planes, which are averaged; any row stride) or from a file, with a
   position hint or blind with an index. Options cover everything the command line
-  has: search radius, field size or pixel scale, star database, blind index, star
+  has: search radius, field size or pixel scale (searched for when unknown, and, with
+  `fov_search`, when the one given does not solve), star database, blind index, star
   count, binning, threads, SIP.
 - **Results**: the WCS as numbers or as 80-character FITS header cards, the matched
   star pairs, pixel↔sky conversion through the solution, and how the solve went.

@@ -31,6 +31,9 @@ one is called out as such.
   `auto::ladder` helpers. `SolveRequest` gained a field, so code that builds one without
   `..SolveRequest::default()` must add it.
 - `arcsec-io`: `fits_io::write_ini_file_with_warning`.
+- libarcsec: `arcsec_solve_options.fov_search`, the C form of `--fov-search` (default
+  0). It is appended to the struct, so ABI 1 is unchanged: a program built against an
+  older header has a smaller `struct_size` and gets the default.
 
 ### Changed
 

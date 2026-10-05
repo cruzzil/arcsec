@@ -58,8 +58,12 @@ pub struct arcsec_solve_options {
     /// unknown. Takes precedence over `pixel_scale_arcsec`.
     pub fov_deg: f64,
     /// Pixel scale of the image as passed (unbinned), arcseconds per pixel; 0 if
-    /// unknown. With neither this nor `fov_deg` nor header optics, 1″/px is
-    /// assumed, which is usually wrong: pass the scale if you know it.
+    /// unknown. With neither this nor `fov_deg` nor header optics, the scale is
+    /// searched for (with a warning in the log): 17 scales from 0.25 to 64″/px,
+    /// √2 apart, each within one field of the hint, then the search out to
+    /// `search_radius_deg` at 1″/px. That costs time and needs a hint: pass the
+    /// scale if you know it. A scale given here (or by `fov_deg` or the header)
+    /// is used as given, unless `fov_search` is set.
     pub pixel_scale_arcsec: f64,
     /// Optional FITS header text: 80-character cards run together (as CFITSIO's
     /// `fits_hdr2str` writes them) or one per line. Used only for what the fields
@@ -122,10 +126,19 @@ pub struct arcsec_solve_options {
     pub progress: arcsec_progress_fn,
     /// Passed to `progress`.
     pub progress_user: *mut c_void,
+
+    /// Nonzero: if nothing solves at the scale given (`fov_deg`,
+    /// `pixel_scale_arcsec` or the header's), try a quarter to four times it, √2
+    /// apart, within one field of the hint, before giving up (the CLI's
+    /// `--fov-search`). Default 0: a given scale is authoritative, and a solve
+    /// that fails costs no more than it did. Added after arcsec 0.5.1; a caller built
+    /// against an older header gets the default.
+    pub fov_search: i32,
 }
 
-/// Size of the first ABI's options struct.
-pub(crate) const OPTIONS_V1_SIZE: usize = core::mem::size_of::<arcsec_solve_options>();
+/// Size of the first ABI's options struct: everything before the fields added
+/// since (which a caller built against the first header does not have).
+pub(crate) const OPTIONS_V1_SIZE: usize = core::mem::offset_of!(arcsec_solve_options, fov_search);
 
 // SAFETY: repr(C), starts with struct_size, and every field (numbers, raw
 // pointers, an optional function pointer) is valid for any bit pattern.
@@ -158,6 +171,7 @@ unsafe impl Versioned for arcsec_solve_options {
             cancel_user: core::ptr::null_mut(),
             progress: None,
             progress_user: core::ptr::null_mut(),
+            fov_search: 0,
         }
     }
 }
@@ -329,7 +343,11 @@ pub(crate) unsafe fn read_options(
         hint: hint.map(|(ra, dec)| (ra.to_radians(), dec.to_radians())),
         fov_height,
         pixel_scale,
-        scale_search: ScaleSearch::IfUnknown,
+        scale_search: if o.fov_search != 0 {
+            ScaleSearch::AlsoIfWrong
+        } else {
+            ScaleSearch::IfUnknown
+        },
         search_radius: o.search_radius_deg.to_radians(),
         downsample: Some(o.downsample as usize),
         // SAFETY: forwarded contract.
@@ -542,5 +560,31 @@ mod tests {
             .unwrap()
             .request;
         assert_eq!(r.max_stars, 77);
+    }
+
+    #[test]
+    fn a_first_abi_caller_has_no_fov_search_and_gets_the_default() {
+        use arcsec_core::auto::ScaleSearch;
+        // The first ABI's struct ended at progress_user: 8-aligned, so the new
+        // field is appended without moving anything.
+        assert_eq!(
+            OPTIONS_V1_SIZE,
+            core::mem::offset_of!(arcsec_solve_options, progress_user)
+                + core::mem::size_of::<*mut c_void>()
+        );
+        let mut o = init();
+        assert_eq!(o.fov_search, 0);
+        o.fov_search = 1;
+        let r = unsafe { read_options(&raw const o, HeaderHints::default(), stop()) }
+            .unwrap()
+            .request;
+        assert_eq!(r.scale_search, ScaleSearch::AlsoIfWrong);
+        // The same bytes from a caller built against the first header, which
+        // stops before fov_search: whatever follows is not read.
+        o.struct_size = OPTIONS_V1_SIZE;
+        let r = unsafe { read_options(&raw const o, HeaderHints::default(), stop()) }
+            .unwrap()
+            .request;
+        assert_eq!(r.scale_search, ScaleSearch::IfUnknown);
     }
 }
