@@ -49,6 +49,12 @@ one is called out as such.
   benchmark this makes a solve at a wrong `-fov` the same as one at the right `-fov` (93
   of 95 identical), and removes a false positive at half the true field size.
 
+### Fixed
+
+- A gzip-wrapped FITS file over 10 kB whose trailer gave a size smaller than the file
+  made the reader allocate and fill 4 GiB before failing (12 s and 4 GB of memory for a
+  10 kB file). It now fails at once (rsfitsio 0.470.5).
+
 ## [0.5.1] - 2026-10-04
 
 ### Added

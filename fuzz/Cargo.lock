@@ -25,7 +25,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "arcsec-catalogue"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arcsec-core",
  "libc",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "libc",
  "log",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "arcsec-io"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arcsec-core",
  "asdf-rs",
@@ -687,9 +687,9 @@ dependencies = [
 
 [[package]]
 name = "rsfitsio"
-version = "0.470.4"
+version = "0.470.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64874df93d773187b06fbbcdc1e6eeb4fa9edab93893a386a6df4767088599a6"
+checksum = "05a787987ee109b62910f2bb1c314728334dc42c01048e8e1f70e956e0b1fd96"
 dependencies = [
  "bytemuck",
  "chrono",

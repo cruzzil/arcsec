@@ -26,5 +26,5 @@ test-support = []
 libc = "0.2"
 log = { workspace = true }
 memmap2 = "0.9.11"
-rsfitsio = "0.470.4"
+rsfitsio = "0.470.5"
 
