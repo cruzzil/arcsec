@@ -163,12 +163,6 @@ fn solve_buffer(
     // estimator needs. 16-bit data is left untouched.
     arcsec_core::with_max_threads(request.threads, || img.normalize_for_detection());
     let plan = Plan::new(request, img.width, img.height)?;
-    if !plan.scale_known {
-        log::warn!(
-            "No pixel scale given (pixel_scale_arcsec, fov_deg or header FOCALLEN/XPIXSZ): \
-             assuming 1\"/px, which will not solve unless it is roughly right."
-        );
-    }
     log::info!(
         "Solving a {}x{} image with star database {} for a {:.2}° field, binning {}",
         img.width,

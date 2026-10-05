@@ -12,6 +12,43 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **A pixel-scale search when the scale is unknown.** With no `-fov` (or `-fov 0`) and no
+  `FOCALLEN`/`XPIXSZ` in the header, arcsec no longer just assumes 1″/px: it says so on
+  stderr, tries 17 scales from 0.25″ to 64″ per pixel, √2 apart, within one field of
+  the start position, and then searches out to `-r` at 1″/px as before. astap_cli does
+  the same with `-fov 0`, with field sizes from 9.5° down. On the 103-image benchmark
+  with the scale withheld, 98 images solve instead of 85, with no false positives.
+  libarcsec does the same when neither `fov_deg`, `pixel_scale_arcsec` nor the header
+  gives a scale. See docs/plate-solving.md §10.3e.
+- `--fov-search`: when nothing solves at the given field size (`-fov` or the header's),
+  try a quarter to four times it near the start position before giving up. Off by
+  default, so a correctly configured solve that fails costs no more than it did. Not an
+  ASTAP option.
+- `arcsec-core`: `auto::SolveRequest::scale_search` (`ScaleSearch::{Never, IfUnknown,
+  AlsoIfWrong}`), `auto::Plan::scale_warning` and `Plan::searches_scales`, and the
+  `auto::ladder` helpers. `SolveRequest` gained a field, so code that builds one without
+  `..SolveRequest::default()` must add it.
+- `arcsec-io`: `fits_io::write_ini_file_with_warning`.
+- libarcsec: `arcsec_solve_options.fov_search`, the C form of `--fov-search` (default
+  0). It is appended to the struct, so ABI 1 is unchanged: a program built against an
+  older header has a smaller `struct_size` and gets the default.
+
+### Changed
+
+- A solution whose pixel scale is more than 5% from the one the solve started with
+  (given, from the header, or assumed) prints astap_cli's
+  `Warning scale was inaccurate! Set FOV=1.00d, scale=1.2"` on stdout after the
+  solution, and writes the same text to the `.ini` as `WARNING=`, after `CMDLINE`, as
+  astap_cli does. Both are additions to the output; N.I.N.A. reads `WARNING` as it does
+  from ASTAP.
+- Such a solution is solved once more at its own scale, at its own position, before it
+  is reported: the catalogue window and depth follow the scale, so a field found at half
+  its true scale had been verified against the middle of the frame only. On the
+  benchmark this makes a solve at a wrong `-fov` the same as one at the right `-fov` (93
+  of 95 identical), and removes a false positive at half the true field size.
+
 ## [0.5.1] - 2026-10-04
 
 ### Added

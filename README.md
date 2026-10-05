@@ -63,8 +63,9 @@ arcsec -f image.fits --ra 5.58 --spd 82.0 --fov 1.5 -r 10
 
 `--ra` is in hours, `--spd` is 90 + Dec in degrees, `--fov` is the image height in
 degrees and `-r` is the search radius in degrees. ASTAP's single-dash spellings (`-fov`,
-`-ra`, `-spd`) work too. With no position at all, arcsec solves blind using the index
-that `catalog install` built.
+`-ra`, `-spd`) work too. With no pixel scale, arcsec searches 0.25–64″/px for one, and
+`--fov-search` lets it try ¼ to 4× a field size that turns out to be wrong. With no
+position at all, it solves blind using the index that `catalog install` built.
 
 A successful solve writes `image.wcs` (the WCS as a FITS header) and `image.ini`
 (ASTAP's summary), and `--update` also writes the solution into a FITS image's own

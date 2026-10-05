@@ -16,6 +16,7 @@
 #include "arcsec.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -229,6 +230,36 @@ int main(int argc, char **argv) {
     ofile.search_radius_deg = 3.0;
     st = arcsec_solve_file(solver, fits_path, &ofile, &result);
     CHECK(st == ARCSEC_OK);
+    arcsec_result_free(result);
+    result = NULL;
+
+    /* ── A wrong scale: authoritative by default, searched with fov_search ─── */
+    CHECK(opts.fov_search == 0);
+    arcsec_solve_options wrong = opts;
+    wrong.pixel_scale_arcsec = scale * 4.0; /* a focal length a quarter of the truth */
+    wrong.search_radius_deg = 0.5;
+    wrong.auto_index = 0;
+    wrong.sip_order = 0;
+    CHECK(arcsec_solve(solver, &image, &wrong, &result) == ARCSEC_NO_SOLUTION);
+    CHECK(result == NULL);
+    /* A caller built against the first header has no fov_search: whatever lies
+       past its struct_size is not read, so this is still the default. */
+    wrong.fov_search = 1;
+    wrong.struct_size = offsetof(arcsec_solve_options, fov_search);
+    CHECK(arcsec_solve(solver, &image, &wrong, &result) == ARCSEC_NO_SOLUTION);
+    wrong.struct_size = sizeof wrong;
+    st = arcsec_solve(solver, &image, &wrong, &result);
+    CHECK(st == ARCSEC_OK);
+    if (result) {
+        arcsec_wcs ws;
+        memset(&ws, 0, sizeof ws);
+        ws.struct_size = sizeof ws;
+        CHECK(arcsec_result_wcs(result, &ws) == ARCSEC_OK);
+        printf("fov_search: solved at %.3f\"/px (given %.3f)\n", ws.pixel_scale_arcsec,
+               wrong.pixel_scale_arcsec);
+        CHECK(fabs(ws.pixel_scale_arcsec - scale) < 0.01);
+        CHECK(angle_diff(ws.crval1, ra) < 0.01 && fabs(ws.crval2 - dec) < 0.01);
+    }
     arcsec_result_free(result);
     result = NULL;
 

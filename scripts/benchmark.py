@@ -13,7 +13,8 @@ Usage:
                          [--images resources/testset] [--manifest scripts/test-images.tsv]
                          [--corpus] [--set v1] [--source ztf] [--dataset DSS2]
                          [--workdir /tmp/arcsec_bench_out] [--radius 5] [--timeout 300]
-                         [--offset-hint 0.0] [--method quads|tetra] [--stars N]
+                         [--offset-hint 0.0] [--fov-scale 1.0] [--no-fov | --no-scale]
+                         [--method quads|tetra] [--stars N]
                          [--max-corner-err 5] [--tier A] [--id foo] [--csv out.csv]
                          [--astap ~/astap_cli] [--astap-db auto|d80]
                          [--seiza seiza] [--seiza-data DIR] [--seiza-mode hinted|astap]
@@ -42,10 +43,17 @@ Per-entry options in the manifest's `extra` column (key=value;...):
     file=<id>        solve another entry's image (negative controls reuse real fields)
     hint_dra=<deg>   hint offset in RA (true degrees on the sky), added to --offset-hint
     hint_ddec=<deg>  hint offset in Dec
-    fov_scale=<x>    pass the FOV multiplied by x (wrong-scale controls)
+    fov_scale=<x>    pass the FOV multiplied by x (wrong-scale controls), on top of
+                     --fov-scale
     radius=<deg>     override -r for this entry
     expect=nosolve   (default for tier D) any reported solution is a false positive
     expect=any       tier D stress case: a correct solve is fine, a wrong one is not
+
+--fov-scale X passes every image's FOV multiplied by X (a wrong scale, as a misconfigured
+focal length gives). --no-scale withholds the scale altogether: no --fov, and an image
+whose header carries FOCALLEN or XPIXSZ is solved from a copy in --workdir with those
+keywords renamed, so arcsec has nothing to derive a scale from. ASTAP (--astap) then gets
+-fov 0, its automatic field size.
 
 The exit status is 1 if arcsec returned any false positive, 0 otherwise.
 
@@ -193,7 +201,9 @@ def run_astap(args, ctx):
         cmd += ["-D", args.astap_db]
     cmd += ["-ra", f"{(ctx['hint_ra'] % 360.0) / 15.0:.9f}",
             "-spd", f"{ctx['hint_dec'] + 90.0:.9f}",
-            "-fov", f"{ctx['fov_hint']:.9f}",
+            # --no-fov / --no-scale: ASTAP's "auto" field, which tries a ladder of
+            # field sizes when the header has no FOCALLEN/XPIXSZ.
+            "-fov", "0" if args.no_fov else f"{ctx['fov_hint']:.9f}",
             "-r", str(ctx["radius"]),
             "-o", out_base]
     t0 = time.perf_counter()
@@ -418,7 +428,7 @@ def run_one(entry, args):
     ddec = args.offset_hint * fov_deg + float(opts.get("hint_ddec", 0.0))
     hint_ra = cra + dra / cosd
     hint_dec = max(-89.9, min(89.9, cdec + ddec))
-    fov_hint = fov_height_deg * float(opts.get("fov_scale", 1.0))
+    fov_hint = fov_height_deg * float(opts.get("fov_scale", 1.0)) * args.fov_scale
     radius = opts.get("radius", args.radius)
     if args.blind:
         # A hint at the antipode tells the solver nothing (and keeps it from
@@ -427,6 +437,8 @@ def run_one(entry, args):
         radius = args.radius
 
     out_base = os.path.join(args.workdir, iid)
+    if args.no_scale:
+        path = without_optics(path, out_base)
     ctx = {"path": path, "hint_ra": hint_ra, "hint_dec": hint_dec, "fov_hint": fov_hint,
            "radius": radius, "out_base": out_base, "truth": truth, "naxis1": naxis1,
            "naxis2": naxis2, "limit": limit}
@@ -511,6 +523,35 @@ def run_arcsec(args, ctx):
             elif line.startswith("RMS="):
                 res["note"] = "rms=" + line.strip().split("=")[1]
     return res
+
+
+# Header keywords arcsec derives a pixel scale from (arcsec_io::image_io::pixel_scale_from).
+OPTICS_KEYS = (b"FOCALLEN", b"XPIXSZ  ")
+
+
+def without_optics(path, out_base):
+    """`path`, or for --no-scale a copy without the keywords arcsec reads a pixel scale
+    from. The keyword is renamed in place (same length, so FITS blocks and XISF header
+    offsets are unchanged): a FITS card becomes COMMENT, an XISF FITSKeyword gets a name
+    nothing reads. Gzip-compressed files cannot be edited this way and are used as they
+    are, with a warning."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if not any(k.strip() in data for k in OPTICS_KEYS):
+        return path
+    if path.endswith(".gz"):
+        print(f"warning: {path} carries optics keywords but is gzipped; not stripped",
+              file=sys.stderr)
+        return path
+    for k in OPTICS_KEYS:
+        data = data.replace(k + b"=", b"COMMENT  ")
+        name = k.strip()
+        data = data.replace(b'name="' + name + b'"', b'name="' + b"X" * len(name) + b'"')
+    ext = next((e for e in IMAGE_EXTS if path.endswith(e)), ".fits")
+    copy = out_base + "_noscale" + ext
+    with open(copy, "wb") as f:
+        f.write(data)
+    return copy
 
 
 # ── manifest ─────────────────────────────────────────────────────────────────
@@ -615,6 +656,11 @@ def main():
     ap.add_argument("--no-fov", action="store_true",
                     help="do not pass --fov: arcsec gets the pixel scale from the header "
                          "(FOCALLEN/XPIXSZ) or not at all")
+    ap.add_argument("--no-scale", action="store_true",
+                    help="withhold the pixel scale entirely: no --fov, and FOCALLEN/XPIXSZ "
+                         "removed from a copy of any image that has them")
+    ap.add_argument("--fov-scale", type=float, default=1.0,
+                    help="pass --fov multiplied by this factor (a wrong scale)")
     ap.add_argument("--method", default="quads")
     ap.add_argument("--stars", type=int, default=None,
                     help="pass -s to arcsec (max detected stars)")
@@ -676,6 +722,8 @@ def main():
     args = ap.parse_args()
     if args.blind_index:
         args.blind = True
+    if args.no_scale:
+        args.no_fov = True
     if args.blind and args.seiza and not (args.seiza_index or args.seiza_data):
         ap.error("--blind with --seiza needs --seiza-index or --seiza-data (seiza's blind index)")
 
@@ -726,6 +774,12 @@ def main():
               + (f"; arcsec -i {args.blind_index}" if args.blind_index else ""))
     else:
         print(f"hint     : truth centre + {args.offset_hint} field widths, -r {args.radius}")
+    if args.no_scale:
+        print("scale    : withheld (no --fov, header optics removed)")
+    elif args.no_fov:
+        print("scale    : no --fov (header FOCALLEN/XPIXSZ if present)")
+    elif args.fov_scale != 1.0:
+        print(f"scale    : --fov x {args.fov_scale}")
     if args.astap:
         print(f"ASTAP    : {args.astap} (-D {args.astap_db})")
     if args.seiza:

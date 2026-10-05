@@ -369,8 +369,12 @@ typedef struct arcsec_solve_options {
     double fov_deg;
     /**
      * Pixel scale of the image as passed (unbinned), arcseconds per pixel; 0 if
-     * unknown. With neither this nor `fov_deg` nor header optics, 1″/px is
-     * assumed, which is usually wrong: pass the scale if you know it.
+     * unknown. With neither this nor `fov_deg` nor header optics, the scale is
+     * searched for (with a warning in the log): 17 scales from 0.25 to 64″/px,
+     * √2 apart, each within one field of the hint, then the search out to
+     * `search_radius_deg` at 1″/px. That costs time and needs a hint: pass the
+     * scale if you know it. A scale given here (or by `fov_deg` or the header)
+     * is used as given, unless `fov_search` is set.
      */
     double pixel_scale_arcsec;
     /**
@@ -469,6 +473,15 @@ typedef struct arcsec_solve_options {
      * Passed to `progress`.
      */
     void *progress_user;
+    /**
+     * Nonzero: if nothing solves at the scale given (`fov_deg`,
+     * `pixel_scale_arcsec` or the header's), try a quarter to four times it, √2
+     * apart, within one field of the hint, before giving up (the CLI's
+     * `--fov-search`). Default 0: a given scale is authoritative, and a solve
+     * that fails costs no more than it did. Added after arcsec 0.5.1; a caller built
+     * against an older header gets the default.
+     */
+    int32_t fov_search;
 } arcsec_solve_options;
 
 /**
