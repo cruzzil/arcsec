@@ -6,7 +6,7 @@ description: libarcsec lets C and C++ programs plate-solve in-process with arcse
 import { Aside } from '@astrojs/starlight/components';
 
 **libarcsec** is arcsec as a library for C and C++ programs. Hand it the pixels of an
-image (or the path of a FITS, XISF or ASDF file) and a rough idea of the field, and it
+image (or the path of a FITS, XISF, ASDF, JPEG, PNG or TIFF file) and a rough idea of the field, and it
 returns a FITS WCS: CRVAL, CRPIX, the CD matrix and, if you ask, SIP distortion terms.
 It makes the same choices the command line does, and reads the same catalogues from the
 same place, so a user who has run `arcsec catalog install` needs to configure nothing.

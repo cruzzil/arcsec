@@ -1,14 +1,18 @@
 //! Format dispatch for input images.
 //!
-//! arcsec reads three container formats. They agree on nothing except that a
-//! two-dimensional grid of numbers comes out the other end, so each has its own
-//! reader and this module picks between them:
+//! arcsec reads three astronomical container formats and three ordinary picture
+//! formats. They agree on nothing except that a two-dimensional grid of numbers
+//! comes out the other end, so each has its own reader and this module picks
+//! between them:
 //!
 //! | Format | Detected by | Reader |
 //! |---|---|---|
 //! | FITS | `SIMPLE  =` | [`crate::fits_io`], via CFITSIO |
 //! | XISF | `XISF0100` | [`crate::xisf_io`], via the `xisf` crate |
 //! | ASDF | `#ASDF ` | [`crate::asdf_io`], via the `asdf-rs` crate |
+//! | JPEG | `FF D8 FF` | [`crate::raster_io`], via `zune-jpeg` |
+//! | PNG | `89 PNG` | [`crate::raster_io`], via `png` |
+//! | TIFF | `II*` / `MM*` | [`crate::raster_io`], via `tiff` |
 //!
 //! Detection reads the file's first bytes rather than trusting the extension: a
 //! `.fit`, `.fits`, `.fts` or no extension at all are all common for FITS, and an
@@ -20,7 +24,7 @@ use std::path::Path;
 use arcsec_core::types::{ImageBuffer, WcsSolution};
 use arcsec_core::wcs::TanWcs;
 
-use crate::{asdf_io, fits_io, xisf_io};
+use crate::{asdf_io, fits_io, raster_io, xisf_io};
 
 /// A container format arcsec can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +32,9 @@ pub enum ImageFormat {
     Fits,
     Xisf,
     Asdf,
+    Jpeg,
+    Png,
+    Tiff,
 }
 
 impl ImageFormat {
@@ -36,7 +43,15 @@ impl ImageFormat {
             Self::Fits => "FITS",
             Self::Xisf => "XISF",
             Self::Asdf => "ASDF",
+            Self::Jpeg => "JPEG",
+            Self::Png => "PNG",
+            Self::Tiff => "TIFF",
         }
+    }
+
+    /// JPEG, PNG or TIFF: pixels only, with no header arcsec reads.
+    pub const fn is_raster(self) -> bool {
+        matches!(self, Self::Jpeg | Self::Png | Self::Tiff)
     }
 }
 
@@ -74,6 +89,16 @@ pub fn detect_format(path: &Path) -> Result<ImageFormat, String> {
         Ok(ImageFormat::Xisf)
     } else if head.starts_with(b"#ASDF ") {
         Ok(ImageFormat::Asdf)
+    } else if head.starts_with(b"\xff\xd8\xff") {
+        Ok(ImageFormat::Jpeg)
+    } else if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Ok(ImageFormat::Png)
+    } else if [b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"]
+        .iter()
+        .any(|m| head.starts_with(*m))
+    {
+        // Classic TIFF and BigTIFF, either byte order.
+        Ok(ImageFormat::Tiff)
     } else if head.starts_with(b"SIMPLE  =")
         || head.starts_with(b"\x1f\x8b")  // gzip
         || head.starts_with(b"BZh")      // bzip2
@@ -83,7 +108,7 @@ pub fn detect_format(path: &Path) -> Result<ImageFormat, String> {
         Ok(ImageFormat::Fits)
     } else {
         Err(format!(
-            "{}: not a FITS, XISF or ASDF image (no recognised magic bytes)",
+            "{}: not a FITS, XISF, ASDF, JPEG, PNG or TIFF image (no recognised magic bytes)",
             path.display()
         ))
     }
@@ -198,6 +223,9 @@ pub fn read_image(path: &Path) -> Result<ImageBuffer, String> {
         ImageFormat::Fits => fits_io::read_fits_image(path),
         ImageFormat::Xisf => xisf_io::read_xisf_image(path),
         ImageFormat::Asdf => asdf_io::read_asdf_image(path),
+        f @ (ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff) => {
+            raster_io::read_raster_image(path, f)
+        }
     })?;
     // Every reader promises this; the solver indexes `data[y * width + x]`.
     if img.data.len() != img.width * img.height {
@@ -220,6 +248,7 @@ pub fn read_ra_dec(path: &Path) -> Option<(f64, f64)> {
             ImageFormat::Fits => fits_io::read_fits_ra_dec(path),
             ImageFormat::Xisf => xisf_io::read_xisf_ra_dec(path),
             ImageFormat::Asdf => asdf_io::read_asdf_ra_dec(path),
+            ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff => None,
         })
     })
     .inspect_err(|e| log::warn!("{e}"))
@@ -235,6 +264,7 @@ pub fn read_pixel_scale(path: &Path) -> Option<f64> {
             ImageFormat::Fits => fits_io::read_fits_pixel_scale(path),
             ImageFormat::Xisf => xisf_io::read_xisf_pixel_scale(path),
             ImageFormat::Asdf => asdf_io::read_asdf_pixel_scale(path),
+            ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff => None,
         })
     })
     .inspect_err(|e| log::warn!("{e}"))
@@ -250,6 +280,9 @@ pub fn read_dimensions(path: &Path) -> Option<(u32, u32)> {
             ImageFormat::Fits => fits_io::read_fits_dimensions(path),
             ImageFormat::Xisf => xisf_io::read_xisf_dimensions(path),
             ImageFormat::Asdf => asdf_io::read_asdf_dimensions(path),
+            f @ (ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff) => {
+                raster_io::read_raster_dimensions(path, f)
+            }
         })
     })
     .inspect_err(|e| log::warn!("{e}"))
@@ -267,7 +300,7 @@ pub fn read_header_wcs(path: &Path) -> Option<TanWcs> {
         Ok(match format {
             ImageFormat::Fits => fits_io::read_fits_header_wcs(path),
             ImageFormat::Xisf => xisf_io::read_xisf_header_wcs(path),
-            ImageFormat::Asdf => None,
+            ImageFormat::Asdf | ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff => None,
         })
     })
     .inspect_err(|e| log::warn!("{e}"))
@@ -285,6 +318,9 @@ pub fn read_channels(path: &Path) -> usize {
             ImageFormat::Fits => fits_io::read_fits_channels(path),
             ImageFormat::Xisf => xisf_io::read_xisf_channels(path),
             ImageFormat::Asdf => 1,
+            f @ (ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff) => {
+                raster_io::read_raster_channels(path, f)
+            }
         })
     })
     .inspect_err(|e| log::warn!("{e}"))
@@ -295,7 +331,8 @@ pub fn read_channels(path: &Path) -> usize {
 ///
 /// Only FITS supports this. XISF and ASDF would each need the whole file
 /// rewritten — neither crate edits headers in place — and silently rewriting a
-/// user's master light to add four keywords is not a reasonable default. The
+/// user's master light to add four keywords is not a reasonable default. JPEG,
+/// PNG and TIFF have no header for the keywords at all. The
 /// `.wcs` and `.ini` sidecars are written for every format regardless, and
 /// `main` reports this as a warning rather than a failure.
 pub fn update_wcs(path: &Path, wcs: &WcsSolution) -> Result<(), String> {
@@ -398,7 +435,17 @@ mod tests {
         );
         let a = write("arcsec_fmt_c.fits", b"#ASDF 1.0.0\n#ASDF_STANDARD 1.6.0\n");
         assert_eq!(detect_format(&a), Ok(ImageFormat::Asdf));
-        for p in [f, x, a] {
+        let j = write("arcsec_fmt_g.fits", b"\xff\xd8\xff\xe0\0\x10JFIF\0");
+        assert_eq!(detect_format(&j), Ok(ImageFormat::Jpeg));
+        let p = write("arcsec_fmt_h.jpg", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        assert_eq!(detect_format(&p), Ok(ImageFormat::Png));
+        let mut tiffs = Vec::new();
+        for (i, magic) in [b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"].iter().enumerate() {
+            let t = write(&format!("arcsec_fmt_t{i}.png"), *magic);
+            assert_eq!(detect_format(&t), Ok(ImageFormat::Tiff), "{magic:?}");
+            tiffs.push(t);
+        }
+        for p in [f, x, a, j, p].into_iter().chain(tiffs) {
             std::fs::remove_file(p).ok();
         }
     }

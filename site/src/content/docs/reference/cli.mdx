@@ -18,7 +18,7 @@ everything below.
 
 | Option | Meaning | Default |
 |---|---|---|
-| `-f <file>` | Image to solve: FITS, XISF or ASDF, recognised from the file's contents | required |
+| `-f <file>` | Image to solve: FITS, XISF, ASDF, JPEG, PNG or TIFF, recognised from the file's contents | required |
 | `-r <deg>` | Radius of the area to search around the start position, in degrees | `180` (whole sky) |
 | `--fov <deg>` | Field **height** in degrees; `0` or absent to take it from the header | from header |
 | `--fov-search` | If nothing solves at the given field size, try ¼ to 4× it near the start position before giving up (arcsec only) | off |
@@ -84,7 +84,9 @@ nothing at it try a quarter to four times the field.
 When the solved scale differs from the starting one by more than 5%, arcsec prints
 astap_cli's `Warning scale was inaccurate! Set FOV=…d, scale=…"` after the solution and
 writes it to the `.ini` as `WARNING`. XISF files carry the same keywords; ASDF files are
-read from their metadata tree.
+read from their metadata tree. JPEG, PNG and TIFF files carry neither a position nor a
+scale that arcsec reads, so give `--ra`/`--spd` (or have a blind index) and, for speed,
+`--fov`.
 
 ### Automatic binning
 
@@ -150,7 +152,7 @@ code 16) or a mistake on the command line.
 
 With **`--update`**, arcsec also writes the solution into the image's own FITS header,
 in place, first removing any `PC` matrix and SIP terms an earlier solve left there, so
-the header describes only the new solution. This is FITS only; for XISF and ASDF input
+the header describes only the new solution. This is FITS only; for any other input
 it prints a warning and writes the `.wcs` and `.ini` files as usual. With **`--log`**, it writes the step-by-step log that
 `--progress` prints to `<base>.log`.
 

@@ -120,7 +120,7 @@ fn run() {
     let db_abbrev: Option<String> = matches.get_one::<String>("db-abbrev").cloned();
     log::info!("Creating grayscale image for solving");
 
-    // ── Read image (FITS, XISF or ASDF) ──────────────────────────────────────
+    // ── Read image (FITS, XISF, ASDF, JPEG, PNG or TIFF) ─────────────────────
     let mut img = match image_io::read_image(file) {
         Ok(i) => i,
         Err(e) => {

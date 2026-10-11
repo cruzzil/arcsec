@@ -11,7 +11,7 @@ Please report vulnerabilities privately through GitHub's
 rather than in a public issue. Include the arcsec version, the platform, and the steps
 or input file that trigger the problem.
 
-arcsec parses untrusted image files (FITS, XISF, ASDF) and catalogue files, and
+arcsec parses untrusted image files (FITS, XISF, ASDF, JPEG, PNG, TIFF) and catalogue files, and
 downloads catalogues over HTTPS, so problems in those areas - crashes or excessive
 memory use on a malformed file, path traversal when unpacking a catalogue archive -
 are in scope.

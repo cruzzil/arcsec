@@ -20,7 +20,7 @@ pub enum arcsec_status {
     ARCSEC_NO_SOLUTION = 1,
     /// Too few stars were detected to solve (CLI exit 2).
     ARCSEC_INSUFFICIENT_STARS = 2,
-    /// The image file could not be read, or is not FITS, XISF or ASDF (CLI exit 16).
+    /// The image file could not be read, or is not in a format arcsec reads (CLI exit 16).
     ARCSEC_FILE_ERROR = 16,
     /// The star database or blind index was not found (CLI exit 32).
     ARCSEC_DATABASE_NOT_FOUND = 32,

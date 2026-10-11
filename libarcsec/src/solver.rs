@@ -215,8 +215,8 @@ pub unsafe extern "C" fn arcsec_solve(
     })
 }
 
-/// Solve an image file: FITS (including compressed), XISF or ASDF, told apart by
-/// content. The file's header supplies the hint and pixel scale where the
+/// Solve an image file: FITS (including compressed), XISF, ASDF, JPEG, PNG or
+/// TIFF, told apart by content. The file's header supplies the hint and pixel scale where the
 /// options (and their `fits_header`) do not, exactly as the `arcsec` command
 /// line reads them. Colour images are averaged to one channel, except FITS cubes,
 /// which are read as their first plane (as the CLI does).

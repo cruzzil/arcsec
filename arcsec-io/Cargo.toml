@@ -1,6 +1,6 @@
 [package]
 name = "arcsec-io"
-description = "Image readers for the arcsec plate solver: FITS, XISF and ASDF pixels and pointing metadata"
+description = "Image readers for the arcsec plate solver: FITS, XISF, ASDF, JPEG, PNG and TIFF pixels and pointing metadata"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,3 +24,9 @@ libc = "0.2"
 rsfitsio = "0.470.5"
 xisf = "0.5.1"
 asdf-rs = "0.2.1"
+png = "0.18"
+zune-jpeg = "0.5"
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw", "jpeg"] }
+
+[dev-dependencies]
+jpeg-encoder = { version = "0.7.1", default-features = false, features = ["std"] }
