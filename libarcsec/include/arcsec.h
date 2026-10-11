@@ -73,7 +73,7 @@ typedef enum arcsec_status {
      */
     ARCSEC_INSUFFICIENT_STARS = 2,
     /**
-     * The image file could not be read, or is not FITS, XISF or ASDF (CLI exit 16).
+     * The image file could not be read, or is not in a format arcsec reads (CLI exit 16).
      */
     ARCSEC_FILE_ERROR = 16,
     /**
@@ -952,8 +952,8 @@ enum arcsec_status arcsec_solve(const struct arcsec_solver *solver,
                                 struct arcsec_result **out);
 
 /**
- * Solve an image file: FITS (including compressed), XISF or ASDF, told apart by
- * content. The file's header supplies the hint and pixel scale where the
+ * Solve an image file: FITS (including compressed), XISF, ASDF, JPEG, PNG or
+ * TIFF, told apart by content. The file's header supplies the hint and pixel scale where the
  * options (and their `fits_header`) do not, exactly as the `arcsec` command
  * line reads them. Colour images are averaged to one channel, except FITS cubes,
  * which are read as their first plane (as the CLI does).

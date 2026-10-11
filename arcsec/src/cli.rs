@@ -69,7 +69,7 @@ pub fn solver_command() -> Command {
                 .short('f')
                 .value_name("FILE")
                 .value_parser(value_parser!(PathBuf))
-                .help("Image to solve: FITS, XISF or ASDF"),
+                .help("Image to solve: FITS, XISF, ASDF, JPEG, PNG or TIFF"),
         )
         .arg(
             Arg::new("radius")

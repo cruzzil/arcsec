@@ -25,7 +25,7 @@ set-up guides and the full command-line reference.
 - **Catalogue management built in:** `arcsec catalog install` downloads a star database
   to a place the solver already looks.
 - **Reads FITS** (including compressed), **XISF** (PixInsight) and **ASDF**
-  (Roman/astropy).
+  (Roman/astropy), and **JPEG, PNG and TIFF** from cameras, phones and stacking tools.
 - **Writes ASTAP's `.wcs` and `.ini` files**, and can update the FITS header in place,
   with optional SIP distortion terms.
 - **Tested against hundreds of images with known answers** from public sky surveys,
@@ -98,7 +98,7 @@ database suits which field size.
 | Crate | For |
 |---|---|
 | [`arcsec-core`](https://crates.io/crates/arcsec-core) | The solver, for Rust programs ([README](arcsec-core/README.md)) |
-| [`arcsec-io`](https://crates.io/crates/arcsec-io) | Reading FITS, XISF and ASDF images; writing `.wcs`/`.ini` |
+| [`arcsec-io`](https://crates.io/crates/arcsec-io) | Reading FITS, XISF, ASDF, JPEG, PNG and TIFF images; writing `.wcs`/`.ini` |
 | [`arcsec-catalogue`](https://crates.io/crates/arcsec-catalogue) | Installing and managing star databases and the blind index ([README](arcsec-catalogue/README.md)) |
 | [`libarcsec`](libarcsec/README.md) | A C library and header, also shipped prebuilt with each release |
 

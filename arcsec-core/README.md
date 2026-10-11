@@ -8,8 +8,8 @@ The solving library behind [arcsec](https://github.com/cruzzil/arcsec), an astro
 plate solver: given the pixels of an astronomical image and a rough idea of where it
 points, it finds the exact position, scale and rotation as a WCS solution.
 
-**Most people want the command-line tool instead**, which reads FITS, XISF and ASDF
-files, installs star catalogues, writes ASTAP-compatible output files and is a drop-in
+**Most people want the command-line tool instead**, which reads FITS, XISF, ASDF,
+JPEG, PNG and TIFF files, installs star catalogues, writes ASTAP-compatible output files and is a drop-in
 replacement for `astap_cli`:
 
 ```bash

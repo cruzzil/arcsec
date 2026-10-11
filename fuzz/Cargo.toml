@@ -49,6 +49,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "image_raster"
+path = "fuzz_targets/image_raster.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "catalog_tiles"
 path = "fuzz_targets/catalog_tiles.rs"
 test = false

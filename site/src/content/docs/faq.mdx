@@ -87,10 +87,16 @@ catalogue.
 
 ## Which image formats does it read?
 
-FITS, XISF (PixInsight) and ASDF (used by the Roman telescope and astropy). The format
-is recognised from the file's contents, not its name. Compressed FITS is read directly
-in gzip (`.fits.gz`), bzip2 and Unix `compress` (`.Z`) form. XISF colour images are
-averaged to greyscale for solving.
+FITS, XISF (PixInsight) and ASDF (used by the Roman telescope and astropy), and JPEG,
+PNG and TIFF. The format is recognised from the file's contents, not its name.
+Compressed FITS is read directly in gzip (`.fits.gz`), bzip2 and Unix `compress` (`.Z`)
+form. Colour images are averaged to greyscale for solving.
+
+JPEG, PNG and TIFF files say nothing arcsec can use about where the camera pointed or
+its pixel scale, so pass `--ra` and `--spd` (or install a blind index) and preferably
+`--fov`. As in ASTAP, the solution's pixel 1,1 is the picture's bottom-left corner, the
+FITS convention. Camera raw files (CR2, NEF, ARW, ...) are not read; convert them to
+FITS or TIFF first.
 
 ## Which imaging programs can use it?
 

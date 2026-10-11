@@ -1,7 +1,7 @@
 //! Image input and output for the [arcsec] plate solver.
 //!
-//! [`arcsec_core`] solves pixels; this crate gets them out of files. It reads three
-//! container formats, telling them apart by their first bytes rather than the
+//! [`arcsec_core`] solves pixels; this crate gets them out of files. It reads six
+//! formats, telling them apart by their first bytes rather than the
 //! extension ([`image_io::detect_format`]):
 //!
 //! | Format | Reader |
@@ -9,6 +9,7 @@
 //! | FITS (also gzip/bzip2/compress-compressed) | [`fits_io`], via CFITSIO (`rsfitsio`) |
 //! | XISF (PixInsight) | [`xisf_io`], via the `xisf` crate |
 //! | ASDF (Roman, astropy) | [`asdf_io`], via the `asdf-rs` crate |
+//! | JPEG, PNG, TIFF | [`raster_io`], via `zune-jpeg`, `png` and `tiff` |
 //!
 //! Each supplies the pixels as an [`arcsec_core::ImageBuffer`] and what the header
 //! says about pointing and pixel scale; [`image_io`] dispatches between them and
@@ -32,4 +33,5 @@ pub mod asdf_io;
 pub mod fits_io;
 pub mod header;
 pub mod image_io;
+pub mod raster_io;
 pub mod xisf_io;

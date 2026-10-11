@@ -4,10 +4,12 @@
 Every seed is synthetic, so the corpus carries no third-party data: small valid
 FITS images (every BITPIX, a cube, an image extension, gzip and bzip2 wrapping,
 and tile-compressed variants when CFITSIO's `fpack` is on PATH or given with
---fpack), XISF and ASDF images, ASTAP .1476/.290/.001 tiles, catalogue archives
+--fpack), XISF, ASDF, PNG and TIFF images, ASTAP .1476/.290/.001 tiles, catalogue archives
 (zip, .deb, tar, xz), raw pixel arrays and solver parameters. The `anet_index` and
 `arcsecix` seeds are index files written by arcsec-core's own test fixtures
-(`RawIndex::fits_bytes`, `build_index`), checked in as they are.
+(`RawIndex::fits_bytes`, `build_index`), checked in as they are, and so are the
+`image_raster` JPEG seeds (`*.jpg`, synthetic star fields written with the
+`jpeg-encoder` crate), since Python's standard library has no JPEG encoder.
 
 Usage: fuzz/make_seeds.py [--fpack PATH]
 """
@@ -202,6 +204,64 @@ def asdf_seeds():
         "data: !core/ndarray-1.0.0 {data: [[1, 2, 3], [4, 5, 6]], datatype: int64, shape: [2, 3]}\nra: 1.0\ndec: 2.0\n", []))
 
 
+# ── PNG and TIFF ─────────────────────────────────────────────────────────────
+
+def png(w, h, colour_type, depth, raw_rows, extra=b""):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    ihdr = struct.pack(">IIBBBBB", w, h, depth, colour_type, 0, 0, 0)
+    idat = zlib.compress(b"".join(b"\0" + r for r in raw_rows))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + extra + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def tiff(w, h, spp, bits, fmt, data, planar=False):
+    """An uncompressed little-endian TIFF, one strip (one per plane when planar)."""
+    planes = spp if planar else 1
+    plane_len = len(data) // planes
+    entries = [(256, 4, 1, w), (257, 4, 1, h), (258, 3, 1, bits), (259, 3, 1, 1),
+               (262, 3, 1, 2 if spp >= 3 else 1), (277, 3, 1, spp), (278, 4, 1, h),
+               (284, 3, 1, 2 if planar else 1), (339, 3, 1, fmt)]
+    if spp == 4:
+        entries.append((338, 3, 1, 2))  # ExtraSamples: unassociated alpha
+    n_ifd = len(entries) + 2
+    ifd_len = 2 + 12 * n_ifd + 4
+    arrays_at = 8 + ifd_len
+    offs_at, counts_at = arrays_at, arrays_at + 4 * planes
+    data_at = counts_at + 4 * planes
+    offsets = [data_at + i * plane_len for i in range(planes)]
+    if planes == 1:
+        entries += [(273, 4, 1, offsets[0]), (279, 4, 1, plane_len)]
+    else:
+        entries += [(273, 4, planes, offs_at), (279, 4, planes, counts_at)]
+    entries.sort()
+    out = b"II*\0" + struct.pack("<I", 8) + struct.pack("<H", len(entries))
+    for tag, typ, count, value in entries:
+        v = struct.pack("<HH", value, 0) if typ == 3 and count == 1 else struct.pack("<I", value)
+        out += struct.pack("<HHI", tag, typ, count) + v
+    out += struct.pack("<I", 0)
+    out += struct.pack(f"<{planes}I", *offsets) + struct.pack(f"<{planes}I", *[plane_len] * planes)
+    return out + data
+
+
+def raster_seeds():
+    w, h = 17, 11
+    img = star_image(w, h)
+    g8 = [bytes(min(255, int(v / 100)) for v in r) for r in img]
+    g16 = [b"".join(struct.pack(">H", min(65535, int(v))) for v in r) for r in img]
+    put("image_raster", "grey8.png", png(w, h, 0, 8, g8))
+    put("image_raster", "grey16.png", png(w, h, 0, 16, g16))
+    put("image_raster", "rgba8.png", png(w, h, 6, 8, [bytes(c for v in r for c in (v, v, v, 255)) for r in g8]))
+    plte = struct.pack(">I", 6) + b"PLTE" + b"\0\0\0\xff\xff\xff"
+    plte += struct.pack(">I", zlib.crc32(b"PLTE\0\0\0\xff\xff\xff"))
+    put("image_raster", "palette1.png", png(8, 2, 3, 1, [b"\x5a", b"\xa5"], plte))
+    u16 = b"".join(struct.pack("<H", min(65535, int(v))) for r in img for v in r)
+    put("image_raster", "grey16.tif", tiff(w, h, 1, 16, 1, u16))
+    f32 = [v / 70000.0 for r in img for v in r]
+    put("image_raster", "rgb_f32.tif", tiff(w, h, 3, 32, 3, b"".join(struct.pack("<3f", v, v, v) for v in f32)))
+    put("image_raster", "rgb8_planar.tif", tiff(w, h, 3, 8, 1, b"".join(bytes(r) for r in g8) * 3, planar=True))
+    put("image_raster", "rgba8.tif", tiff(w, h, 4, 8, 1, b"".join(bytes((v, v, v, 255)) for r in g8 for v in r)))
+
+
 # ── Catalogue tiles ──────────────────────────────────────────────────────────
 
 def tile(record_size, dec_deg=None, groups=6, per=8):
@@ -301,6 +361,7 @@ def main():
     archive_seeds()
     detect_seeds()
     solve_params_seeds()
+    raster_seeds()  # last, so the random stream of the seeds above is unchanged
 
 
 if __name__ == "__main__":

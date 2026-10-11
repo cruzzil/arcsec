@@ -1856,7 +1856,7 @@ were implemented; now every ASTAP option does what `astap_cli` does (§12.6):
 | `--extract` / `--extract2` | the star list as CSV; `--extract2` solves first and adds RA/Dec |
 | `--speed` | `auto` or `slow` (a catalogue window of twice the field at every position) |
 | `--wcs` | accepted and ignored; the help text says the `.wcs` file is `{always written}` |
-| `-f` help text | ~~claims "fits, tiff, png, pbm, jpg"~~ — **fixed**: reads FITS, XISF and ASDF, and the help text says so |
+| `-f` help text | ~~claims "fits, tiff, png, pbm, jpg"~~ — **fixed**: reads FITS, XISF, ASDF, JPEG, PNG and TIFF, and the help text says so (raw camera files and PBM are still not read) |
 
 ### 11.7 Documentation drift
 

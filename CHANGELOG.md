@@ -12,6 +12,21 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **JPEG, PNG and TIFF input.** `-f` now reads the formats DSLR and phone exports,
+  all-sky cameras and stacking tools produce, as ASTAP does: 8- and 16-bit PNG
+  (greyscale, colour and palette), baseline and progressive JPEG, and TIFF with integer
+  or floating-point samples, greyscale or colour, interleaved or planar, uncompressed or
+  LZW, deflate or JPEG compressed. Colour is averaged to
+  greyscale (JPEG is read as its luma) and alpha is ignored. Like ASTAP, arcsec turns
+  these images upside down as it reads them, so that the solution's pixel 1,1 is the
+  picture's bottom-left corner as in FITS; on test fields its `.wcs` and `.ini` match
+  astap_cli's for the same PNG, TIFF or JPEG, and the original FITS's. These files carry
+  no pointing or pixel scale, so give `--ra`/`--spd` (or have a blind index) and
+  preferably `--fov`. `--update` stays FITS-only. The decoders (`zune-jpeg`, `png`,
+  `tiff`) are pure Rust. libarcsec's `arcsec_solve_file` reads them too.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added
