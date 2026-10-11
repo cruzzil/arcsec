@@ -265,3 +265,10 @@ library (`libarcsec`) share one version, set in `[workspace.package]` in the roo
    `--workspace` publishes in that order and waits for each crate to reach the index
    before publishing the ones that depend on it. A version on crates.io cannot be replaced, only
    yanked, so check the dry run.
+
+   The workflow uses crates.io
+   [trusted publishing](https://crates.io/docs/trusted-publishing), so there is no API
+   token to store or rotate. Each crate (`arcsec-core`, `arcsec-io`, `arcsec-catalogue`,
+   `arcsec`, `libarcsec`) has a trusted publisher under its **Settings** on crates.io:
+   owner `cruzzil`, repository `arcsec`, workflow `publish.yml`, environment
+   `crates-io`. A new crate has to be published once by hand before one can be added.
