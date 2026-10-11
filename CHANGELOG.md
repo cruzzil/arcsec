@@ -12,6 +12,8 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-12
+
 ### Added
 
 - **JPEG, PNG and TIFF input.** `-f` now reads the formats DSLR and phone exports,
@@ -26,6 +28,11 @@ one is called out as such.
   no pointing or pixel scale, so give `--ra`/`--spd` (or have a blind index) and
   preferably `--fov`. `--update` stays FITS-only. The decoders (`zune-jpeg`, `png`,
   `tiff`) are pure Rust. libarcsec's `arcsec_solve_file` reads them too.
+
+### Changed
+
+- `arcsec-io`: `ImageFormat` has three new variants (`Jpeg`, `Png`, `Tiff`) and a new
+  `raster_io` module; code that matches `ImageFormat` exhaustively needs a new arm.
 
 ## [0.6.0] - 2026-10-06
 
@@ -533,7 +540,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/cruzzil/arcsec/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/cruzzil/arcsec/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cruzzil/arcsec/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cruzzil/arcsec/compare/v0.4.0...v0.5.0
