@@ -12,6 +12,13 @@ one is called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- Using arcsec with SharpCap: a README entry and a website page,
+  [Use with SharpCap](https://cruzzil.github.io/arcsec/sharpcap/). SharpCap's Astap
+  engine runs arcsec when its path is entered manually, and `-d` under Additional
+  Options points arcsec at ASTAP's star databases. Tested by a user on Windows.
+
 ## [0.7.0] - 2026-10-12
 
 ### Added
