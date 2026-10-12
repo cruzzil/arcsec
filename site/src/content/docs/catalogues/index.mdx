@@ -3,7 +3,7 @@ title: Catalogue guide
 description: Which star catalogue suits which field, how to install and remove them, where they are stored on each platform, and how to share them with ASTAP.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 import CatalogueTable from '../../../components/CatalogueTable.astro';
 
 arcsec cannot solve anything without a star catalogue. Getting one is a single
@@ -95,9 +95,29 @@ solving catalogue you already have, so there is nothing more to download, and
 (a search radius of 10° or more, as N.I.N.A.'s blind solve sends), and `-i` with the
 catalogue folder makes any solve blind:
 
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
+
 ```sh
 arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
+
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+for /f "delims=" %d in ('arcsec catalog path') do arcsec -f image.fits -i "%d"
+```
+
+</TabItem>
+<TabItem label="PowerShell">
+
+```powershell
+arcsec -f image.fits -i (arcsec catalog path)
+```
+
+</TabItem>
+</Tabs>
 
 One index serves the whole folder. It is built from the densest solving catalogue
 there, for the fields of every catalogue installed:
@@ -151,13 +171,35 @@ prints the folder in effect.
 To use another folder, for example on a larger disk, set the `ARCSEC_CATALOG_DIR`
 environment variable, or pass `--dir` to a single `catalog` command:
 
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
+
 ```sh
-export ARCSEC_CATALOG_DIR=/mnt/data/star_databases              # Linux and macOS
+export ARCSEC_CATALOG_DIR=/mnt/data/star_databases
 ```
 
-```powershell
-setx ARCSEC_CATALOG_DIR "D:\star_databases"                      # Windows
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+setx ARCSEC_CATALOG_DIR "D:\star_databases"
+set "ARCSEC_CATALOG_DIR=D:\star_databases"
 ```
+
+</TabItem>
+<TabItem label="PowerShell">
+
+```powershell
+setx ARCSEC_CATALOG_DIR "D:\star_databases"
+$env:ARCSEC_CATALOG_DIR = "D:\star_databases"
+```
+
+</TabItem>
+</Tabs>
+
+On Windows, `setx` keeps the setting for programs started from now on, and the second
+line applies it to the window you are in. On macOS and Linux, add the `export` line to
+your shell's startup file (`~/.zshrc` or `~/.bashrc`) to keep it.
 
 The solver reads this folder automatically as long as a star database is installed
 there; otherwise it falls back to the current working directory, as ASTAP does. `-d`
@@ -170,13 +212,36 @@ Astrometry.net index files install there too, as `index-*.fits`. The solver only
 those when asked, so blind solving with them means passing that folder (or one index
 file) to `-i`:
 
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
+
 ```sh
 arcsec -f image.fits -i "$(arcsec catalog path)" --fov 3
 ```
 
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+for /f "delims=" %d in ('arcsec catalog path') do arcsec -f image.fits -i "%d" --fov 3
+```
+
+</TabItem>
+<TabItem label="PowerShell">
+
+```powershell
+arcsec -f image.fits -i (arcsec catalog path) --fov 3
+```
+
+</TabItem>
+</Tabs>
+
 ## If you already have ASTAP
 
 Point arcsec at ASTAP's databases and skip the download:
+
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
 
 ```sh
 export ARCSEC_CATALOG_DIR=~/star_database    # or wherever ASTAP keeps them
@@ -184,8 +249,32 @@ arcsec catalog list                          # confirms what it found
 arcsec catalog index build                   # once: the blind index
 ```
 
-On Windows, ASTAP's default folder is `C:\Program Files\astap`; the
-[N.I.N.A. guide](../nina/#reusing-astaps-star-databases) shows how to set the variable.
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+setx ARCSEC_CATALOG_DIR "C:\Program Files\astap"
+set "ARCSEC_CATALOG_DIR=C:\Program Files\astap"
+arcsec catalog list
+arcsec catalog index build
+```
+
+</TabItem>
+<TabItem label="PowerShell">
+
+```powershell
+setx ARCSEC_CATALOG_DIR "C:\Program Files\astap"
+$env:ARCSEC_CATALOG_DIR = "C:\Program Files\astap"
+arcsec catalog list                          # confirms what it found
+arcsec catalog index build                   # once: the blind index
+```
+
+</TabItem>
+</Tabs>
+
+`C:\Program Files\astap` is ASTAP's default folder on Windows. Only an administrator
+can write there, so run `arcsec catalog index build` from a window opened with **Run as
+administrator**. The [N.I.N.A. guide](../nina/#reusing-astaps-star-databases) has more.
 
 arcsec reads ASTAP's files directly and the solver never modifies them, so the two
 programs can share a folder. The blind index is the one file arcsec adds to it

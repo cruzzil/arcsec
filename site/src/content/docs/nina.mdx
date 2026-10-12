@@ -3,7 +3,7 @@ title: Use with N.I.N.A.
 description: Set arcsec up as N.I.N.A.'s ASTAP plate solver, reuse ASTAP's star databases, and troubleshoot a failed solve.
 ---
 
-import { Steps, Aside } from '@astrojs/starlight/components';
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 [N.I.N.A.](https://nighttime-imaging.eu/) runs ASTAP as a command-line program and
 reads the `.ini` file it writes. arcsec accepts the same command line and writes the
@@ -123,15 +123,28 @@ too, as ASTAP does.
 
 With N.I.N.A.'s log level set to Debug, its log records the full command line it runs
 for each solve. The `.ini` file arcsec writes also records it, on the `CMDLINE=` line,
-whether the solve succeeded or not. Paste that command into PowerShell and add
-`--progress` to watch each step:
+whether the solve succeeded or not. Paste that command into Command Prompt or
+PowerShell and add `--progress` to watch each step:
+
+<Tabs syncKey="shell">
+<TabItem label="Command Prompt">
+
+```bat
+"C:\Program Files\arcsec\arcsec.exe" -f "C:\...\image.fits" -fov 1.2 -z 0 -r 30 --progress
+```
+
+</TabItem>
+<TabItem label="PowerShell">
 
 ```powershell
 & "C:\Program Files\arcsec\arcsec.exe" -f "C:\...\image.fits" -fov 1.2 -z 0 -r 30 --progress
 ```
 
-The exit code tells you why a solve failed: run `$LASTEXITCODE` straight afterwards and
-look it up in the [exit code table](../reference/cli/#exit-codes). `2` means too few
+</TabItem>
+</Tabs>
+
+The exit code tells you why a solve failed: run `echo %ERRORLEVEL%` (Command Prompt) or
+`$LASTEXITCODE` (PowerShell) straight afterwards and look it up in the [exit code table](../reference/cli/#exit-codes). `2` means too few
 stars were detected, `32` that no star database was found.
 
 ### "No output file found"

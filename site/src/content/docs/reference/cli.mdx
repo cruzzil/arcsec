@@ -3,7 +3,7 @@ title: Command line
 description: Every arcsec option, ASTAP's single-dash spellings, exit codes, output files and the catalog subcommands.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ```sh
 arcsec -f <image> [options]
@@ -103,9 +103,29 @@ the catalogue folder that holds it, arcsec finds the field with no position hint
 with no pixel scale if neither `--fov` nor the header gives one; the result is then
 verified against the star catalogue like any other solve.
 
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
+
 ```sh
 arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
+
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+for /f "delims=" %d in ('arcsec catalog path') do arcsec -f image.fits -i "%d"
+```
+
+</TabItem>
+<TabItem label="PowerShell">
+
+```powershell
+arcsec -f image.fits -i (arcsec catalog path)
+```
+
+</TabItem>
+</Tabs>
 
 Without `-i`, a search of `-r` 10° or more that reaches past five fields round the
 position (N.I.N.A.'s blind solve sends `-r 180`) uses the installed index once those
