@@ -2272,3 +2272,97 @@ one image at a time, wall time:
 | the seven that solve (all correct, `rnd_022` included) | 0.94–3.36 s | 0.36–2.70 s |
 | `wide_dss_01` (no solution) | 22.2 s | 3.9 s |
 | total, eight images | 33.3 s | 10.5 s |
+
+## 10. Results: arcsec 0.7.0 vs ASTAP (2026-10-12)
+
+Re-measured for the website's comparison page (`site/src/content/docs/compared.mdx`),
+which quotes these numbers. arcsec 0.7.0 (release build), `astap_cli` CLI-2026.07.30,
+the expanded corpus as delivered (the 43 compressed files not decompressed; ASTAP reads
+the `.fz` frames and not the one `.gz`), databases D80, G05 and W08 in `~/star_database`,
+`--auto-db` (so ASTAP also gets no `-D` and picks by field size). True-centre hint,
+`-r 5`, one image at a time (`--jobs 1`), default threads, on a quiet 24-core machine.
+
+### 10.1 Hinted
+
+Two full runs. The first used ASTAP's defaults; the second ran ASTAP through a wrapper
+adding `-z 1`, because a spot check showed its automatic downsampling (`-z 0`, which
+bins a 5000 px image 2×2) is why it failed `fov_3p00`, which it solves in 1.9 s at
+`-z 1`. arcsec ran in both, with identical results (589 correct both times).
+
+| | arcsec | ASTAP defaults | ASTAP `-z 1` |
+|---|---|---|---|
+| correct (of 596 in A/B/C/S) | **589** | 303 | 339 |
+| false positives | 1 (`wide_shassa_01`) | 2 (`rnd_074`, `wide_tess_06`) | 2 |
+| inexact | 1 | 9 | 9 |
+| tier D answered (of 35) | 0 | 0 | 0 |
+| wrong-FOV stress (4) solved | 4 | 0 | 0 |
+
+arcsec solves every image ASTAP does at either setting. ASTAP at `-z 1` gains 43 over
+its defaults and loses 7 (346 solved by one setting or the other).
+
+| Tier | n | arcsec | ASTAP defaults | ASTAP `-z 1` |
+|---|---|---|---|---|
+| A | 234 | 230 | 131 | 136 |
+| B | 255 | 252 | 97 | 128 |
+| C | 42 | 42 | 41 | 41 |
+| S | 65 | 65 | 34 | 34 |
+
+| FOV (long side) | n | arcsec | ASTAP defaults | ASTAP `-z 1` |
+|---|---|---|---|---|
+| < 0.3° | 119 | 119 | 39 | 67 |
+| 0.3–0.6° | 125 | 125 | 97 | 99 |
+| 0.6–1.2° | 177 | 173 | 111 | 114 |
+| 1.2–2.5° | 88 | 86 | 52 | 54 |
+| 2.5–6° | 43 | 43 | 1 | 2 |
+| 6–20° | 36 | 35 | 3 | 3 |
+| > 20° | 8 | 8 | 0 | 0 |
+
+The 2.5–6° band is 28 TESS images (20.5″/px) plus 12–13″/px TESS-derived and DSS fields;
+ASTAP solves almost none of them at either setting.
+
+Accuracy and time on the images both solve (medians):
+
+| | run 1: arcsec / ASTAP defaults (303) | run 2: arcsec / ASTAP `-z 1` (339) |
+|---|---|---|
+| centre | 0.251″ / 0.258″ | 0.245″ / 0.257″ |
+| corner | 0.456″ / 0.706″ | 0.420″ / 0.633″ |
+| time | 0.101 s / 0.210 s | 0.155 s / 0.276 s |
+| time, not solved | 0.323 s / 0.660 s | 0.360 s / 1.032 s |
+| total, all 635 | 162 s / 700 s | 196 s / 1285 s |
+
+arcsec's own times differ by about 45 % between the runs with the same binary and
+results, so the machine's speed varied; compare within a run.
+
+### 10.2 Blind
+
+`benchmark.py --blind --radius 180` now admits `--astap`: both solvers get the antipode
+of the truth with `-r 180` and the true field size, as N.I.N.A.'s blind solve would
+(`--blind-index` still excludes ASTAP, which has no index). ASTAP runs its whole-sky
+spiral; arcsec runs five fields round the hint and then the index it finds installed
+(`ARCSEC_CATALOG_DIR` pointing at the index; the default D80 index, 287 MB, fields
+0.3° and up). ASTAP's whole-sky search took up to 10 minutes per image, so this ran on
+a sample: 5 images from each FOV band of tiers A/B/C/S, the first 5 by SHA-1 of the id
+(40 images), with `--jobs 4 --threads 4` (16 arcsec threads plus 4 single-threaded
+ASTAP processes on 24 cores) and `--timeout 600`. A first attempt at `--jobs 6` with
+arcsec's default threads loaded the machine to 100+ and was discarded.
+
+| | n | arcsec | ASTAP |
+|---|---|---|---|
+| ≥ 0.3°: correct | 30 | **28** | 9 (+2 inexact) |
+| median time, solved | | 1.3 s | 39 s |
+| < 0.3°: correct | 10 | 0 (all 10 hit the 600 s timeout) | 0 (1 false positive) |
+| false positives | 40 | 0 | 1 (`smss_05`, 0.17°, ~98° away) |
+
+On the 9 both solve: median 1.08 s vs 39.0 s, corner 0.40″ vs 0.85″. arcsec's two
+misses at ≥ 0.3° are `wide_shassa_07`/`_08` (47° and 53°). `rnd_006` solved only after
+the index missed and the spiral found it (321 s). ASTAP gives up on a small field in
+under a second; arcsec, whose default index stops at 0.3°, falls back to the whole-sky
+spiral and runs to the timeout. That is worth fixing: a blind search below the index's
+smallest field should end with the hint to build a deeper index rather than search
+the sky field by field.
+
+With the deeper index (`--min-fov 0.15`, 698 MB, 17 s to build), the 10 small fields
+re-run alone (`--jobs 4 --threads 4 --timeout 600`, arcsec only): `ls2_10` (0.17°) and
+`ls_p27_a` (0.27°) solve in 0.7 s; the other 3 between 0.15° and 0.3° (`ls_field3`,
+`ls_north`, `smss_05`) and the 5 below 0.15° still run to the timeout. As §9.6 found, the
+Legacy Survey frames are the hard ones.

@@ -1,0 +1,175 @@
+---
+title: arcsec compared with ASTAP
+description: How often arcsec and ASTAP's command-line solver solve, how accurately and how fast, on 635 test images with known answers - with a position hint and blind.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+arcsec and ASTAP's command-line solver, `astap_cli`, were run on the same 635 test
+images, given the same position hint, field size and star databases, and scored the
+same way. The images have known correct solutions, so every answer could be checked,
+not just counted.
+
+Measured on 12–13 October 2026: arcsec 0.7.0 against `astap_cli` CLI-2026.07.30, both
+with the D80, G05 and W08 databases.
+
+## At a glance
+
+596 of the images can be solved; the other 39 are controls (below). A solve counts only
+if all four corners of the image land within 5″ of the truth (or one pixel, on very
+coarse images); a solution further out than that counts as a wrong answer.
+
+ASTAP is shown twice: with its default settings, which is how N.I.N.A. and SharpCap run
+it unless told otherwise, and with `-z 1`, which turns off its automatic downsampling of
+large images. That setting is the one change that helped it most.
+
+| | arcsec | ASTAP, defaults | ASTAP, `-z 1` |
+|---|---|---|---|
+| Solved correctly (of 596) | **589 (99 %)** | 303 (51 %) | 339 (57 %) |
+| Wrong answers | 1 | 2 | 2 |
+| Controls answered (of 35 that must fail) | 0 | 0 | 0 |
+
+arcsec solved every image that ASTAP solved, at either setting.
+
+## Accuracy
+
+Measured on the images both solvers solved, median error in arcseconds:
+
+| | arcsec | ASTAP |
+|---|---|---|
+| Centre, against ASTAP's defaults (303 images) | 0.25″ | 0.26″ |
+| Corners, against ASTAP's defaults (303 images) | **0.46″** | 0.71″ |
+| Centre, against ASTAP `-z 1` (339 images) | 0.25″ | 0.26″ |
+| Corners, against ASTAP `-z 1` (339 images) | **0.42″** | 0.63″ |
+
+The two agree at the centre. At the corners, where an error in scale or rotation shows
+most, arcsec is closer.
+
+## Speed
+
+Wall-clock time per image, start to finish, one image at a time on a 24-core Linux PC:
+
+| | arcsec | ASTAP, defaults | ASTAP, `-z 1` |
+|---|---|---|---|
+| Median, images both solve | 0.10–0.15 s | 0.21 s | 0.28 s |
+| Median, images that did not solve | 0.32–0.36 s | 0.66 s | 1.03 s |
+| All 635 images, total | 162–196 s | 700 s | 1285 s |
+
+arcsec ran in both runs and its own times differed between them, so the ranges show
+how much the machine varied. Within each run, arcsec took about half ASTAP's time on
+the images both solved, and gave up on an unsolvable image in a third to half the time.
+
+## By kind of image
+
+| Images | n | arcsec | ASTAP, defaults | ASTAP, `-z 1` |
+|---|---|---|---|---|
+| Telescope frames: single exposures from 0.4–2 m telescopes | 42 | 42 | 41 | 41 |
+| Survey cutouts: sky-survey images cut to a chosen size and position | 234 | 230 | 131 | 136 |
+| Survey frames: original images from SDSS, Pan-STARRS, Legacy Surveys, TESS and others | 255 | 252 | 97 | 128 |
+| Simulated camera problems: gradients, hot pixels, colour mosaics, trailing, defocus, clouds, lens distortion | 65 | 65 | 34 | 34 |
+
+On the real telescope frames the two are level. The difference is in the other three
+sets, which cover a wider range of field sizes and image quality than most people's
+own frames.
+
+## By field of view
+
+Long side of the image:
+
+| Field | n | arcsec | ASTAP, defaults | ASTAP, `-z 1` |
+|---|---|---|---|---|
+| under 0.3° | 119 | 119 | 39 | 67 |
+| 0.3°–0.6° | 125 | 125 | 97 | 99 |
+| 0.6°–1.2° | 177 | 173 | 111 | 114 |
+| 1.2°–2.5° | 88 | 86 | 52 | 54 |
+| 2.5°–6° | 43 | 43 | 1 | 2 |
+| 6°–20° | 36 | 35 | 3 | 3 |
+| over 20° | 8 | 8 | 0 | 0 |
+
+Most of the 2.5°–6° fields are coarse: 28 of the 43 are TESS images at 20″ per pixel,
+and most of the rest are 12–13″ per pixel. ASTAP failed nearly all of them with either
+setting, with G05 and W08 installed.
+
+## Blind solving
+
+With no position to start from, arcsec uses its [blind index](../catalogues/#the-blind-index),
+built from the star database you already have. ASTAP has no index: given `-r 180`, as
+N.I.N.A. sends for a blind solve, it searches the sky field by field.
+
+Both were given a position on the opposite side of the sky with `-r 180`, so neither
+could use it, and the right field size. The sample was 40 of the images, five from each
+field-size band, chosen by a fixed rule before the run. arcsec had the default index
+from D80 (287 MB, for fields of 0.3° and up).
+
+| | n | arcsec | ASTAP |
+|---|---|---|---|
+| Fields of 0.3° and up: solved | 30 | **28** | 9 (and 2 inexact) |
+| … median time when solved | | **1.3 s** | 39 s |
+| Fields under 0.3°: solved | 10 | 0 | 0 (and 1 wrong answer) |
+| Wrong answers | 40 | 0 | 1 |
+
+On the 9 fields both solved, the median time was 1.1 s for arcsec and 39 s for ASTAP.
+ASTAP's one wrong answer put a 0.17° field on the wrong part of the sky.
+
+**Fields under 0.3°** are arcsec's weak spot in blind solving. The default index stops
+at 0.3°, so for smaller fields arcsec falls back to searching the sky field by field,
+which can run for many minutes; ASTAP gives up on them in under a second. A deeper index
+(`arcsec catalog index build --min-fov 0.15`, 698 MB from D80) reaches down to 0.15°:
+with it arcsec solved 2 of the 5 sample fields between 0.15° and 0.3°, in under a second
+each, and still none below 0.15°. With a position hint, arcsec solves all 119 fields
+under 0.3° (ASTAP 39, or 67 at `-z 1`).
+
+<Aside>
+These blind runs solved four images at a time, with arcsec limited to 4 threads per
+image so that the machine was not overloaded. arcsec's own default uses every core, so
+its blind times here are on the slow side. Each attempt was stopped after 10 minutes.
+</Aside>
+
+## Other differences
+
+- **Wrong focal length.** With `--fov-search`, arcsec still solves when the scale it is
+  given is up to four times too large or too small, for example a forgotten reducer.
+- **No scale at all.** A blind solve does not need the field size either: without one,
+  arcsec tries pixel scales from 0.3″ to 60″.
+- **Image formats.** arcsec reads XISF, ASDF, JPEG, PNG and TIFF as well as FITS.
+- **Catalogues.** `arcsec catalog recommend` and `arcsec catalog install` pick and
+  fetch the right star database for your field, and build the blind index from it.
+- **Embedding.** arcsec is also a [C library](../c-library/), which is how a Siril
+  build can call it directly.
+
+What arcsec does not do: ASTAP is also an image viewer, stacker and photometry tool,
+and arcsec replaces only its command-line solver. The two can share one set of star
+databases.
+
+## How this was measured
+
+<Aside type="caution" title="Read these numbers with this in mind">
+The test images and the scoring script were made by arcsec's authors, and the images
+were chosen to find arcsec's weak spots; arcsec has been improved against them since,
+and ASTAP has not. Most of them are survey images rather than frames from amateur
+cameras. Read the results as where the two solvers differ, not as how often either will
+solve your own frames.
+</Aside>
+
+- **The images.** 635 FITS images with known solutions: 42 telescope frames from Las
+  Cumbres Observatory with their pipeline's solutions, 489 survey cutouts and frames,
+  65 simulated camera problems, and 39 controls. The controls are 35 images that must
+  not solve (noise, flat fields, fake star fields, shuffled fields, bright nebula cores,
+  real fields with a hint 30°–60° away) and 4 given a deliberately wrong field size.
+- **The same inputs for both.** Each solver was given the true centre as its position
+  hint, the image height as `-fov`, and `-r 5`. ASTAP chose its own database by field
+  size, as arcsec does.
+- **Defaults otherwise.** Apart from `-z 1` in the second ASTAP run, neither solver
+  was tuned. ASTAP might solve more with other settings for particular images, such as
+  its star count (`-s`).
+- **Scoring.** Each solution was checked at the centre and the four corners against
+  the known answer.
+
+The full method, every image and its source, and earlier results are in
+[docs/test-images.md](https://github.com/cruzzil/arcsec/blob/main/docs/test-images.md)
+in the repository. To repeat the comparison:
+
+```sh
+scripts/fetch-corpus.py
+scripts/benchmark.py --corpus --auto-db --astap ~/astap_cli --jobs 1
+```

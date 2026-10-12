@@ -31,8 +31,11 @@ the same for seiza (https://github.com/theatrus/seiza), with the same position, 
 and radius; see run_seiza for how it is driven. Every solver is scored by the same
 rules. Use --jobs 1 for meaningful timings, and alternate --order between rounds.
 
---blind INDEX_DIR compares blind solving: arcsec with -i INDEX_DIR (astrometry.net
-index files) and seiza against its prebuilt index (--seiza-index). Both keep the scale.
+--blind-index INDEX compares blind solving: arcsec with -i INDEX (an arcsec index or
+astrometry.net index files) and seiza against its prebuilt index (--seiza-index). Both
+keep the scale. --blind --radius 180 instead hints at the antipode with a whole-sky
+radius, as N.I.N.A. does for a blind solve: ASTAP (--astap) then runs its spiral search
+over the sky, and arcsec uses an index it finds installed.
 
 A reported solve whose worst corner error exceeds --max-corner-err arcsec (or
 --max-corner-px pixels, whichever is larger) counts as a false positive. When the truth has SIP or TPV distortion, the linear plate model arcsec
@@ -739,8 +742,10 @@ def main():
         args.astap_db = "auto" if args.auto_db else args.db_name
     if args.seiza:
         args.seiza = os.path.abspath(os.path.expanduser(args.seiza))
-    if args.blind and args.astap:
-        print("--blind compares arcsec and seiza only; drop --astap", file=sys.stderr)
+    if args.blind and args.astap and args.blind_index:
+        # ASTAP has no index: its blind mode is the spiral search at -r 180.
+        print("--blind-index has no ASTAP equivalent; use --blind --radius 180 to compare "
+              "ASTAP's whole-sky search", file=sys.stderr)
         return 2
     enabled = {"arcsec": True, "astap": bool(args.astap), "seiza": bool(args.seiza)}
     args.order = [n.strip() for n in args.order.split(",") if enabled.get(n.strip())]
