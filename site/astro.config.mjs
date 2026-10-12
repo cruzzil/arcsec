@@ -79,6 +79,7 @@ export default defineConfig({
 				{ label: 'Use with Siril', slug: 'siril' },
 				{ label: 'Which catalogue do I need?', slug: 'which-catalogue' },
 				{ label: 'Catalogue guide', slug: 'catalogues' },
+				{ label: 'Compared with ASTAP', slug: 'compared' },
 				{ label: 'FAQ', slug: 'faq' },
 				{
 					label: 'Reference',

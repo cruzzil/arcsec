@@ -18,6 +18,12 @@ one is called out as such.
   [Use with SharpCap](https://cruzzil.github.io/arcsec/sharpcap/). SharpCap's Astap
   engine runs arcsec when its path is entered manually, and `-d` under Additional
   Options points arcsec at ASTAP's star databases. Tested by a user on Windows.
+- A website page, [arcsec compared with ASTAP](https://cruzzil.github.io/arcsec/compared/):
+  solve rate, accuracy and speed on the 635-image test corpus, re-measured on 0.7.0,
+  with ASTAP at its defaults and at `-z 1`, and blind solving against ASTAP's whole-sky
+  search.
+- The website gives commands that differ between shells in synced tabs for macOS/Linux,
+  Command Prompt and PowerShell.
 
 ## [0.7.0] - 2026-10-12
 

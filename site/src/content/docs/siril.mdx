@@ -3,7 +3,7 @@ title: Use with Siril
 description: Solve images with arcsec and use the solution in Siril - for annotations, colour calibration and astrometric registration - and why arcsec cannot be set as Siril's plate solver.
 ---
 
-import { Steps, Aside } from '@astrojs/starlight/components';
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 [Siril](https://siril.org/) has its own plate solver, and can also run a local
 Astrometry.net installation. Unlike N.I.N.A., it has no setting to run ASTAP's
@@ -57,15 +57,29 @@ terms when the field needs them, and Siril applies them too.
 To use Siril's astrometric registration, or to build a mosaic, solve every frame before
 Siril does. In a terminal, in the folder holding the frames:
 
-```bash
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
+
+```sh
 for f in *.fit; do arcsec -f "$f" --update; done
 ```
 
-or in PowerShell on Windows:
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+for %f in (*.fit) do arcsec -f "%f" --update
+```
+
+</TabItem>
+<TabItem label="PowerShell">
 
 ```powershell
 Get-ChildItem *.fit | ForEach-Object { arcsec -f $_.FullName --update }
 ```
+
+</TabItem>
+</Tabs>
 
 Then build the sequence in Siril and solve it with **Skip already solved images**
 ticked (the `seqplatesolve` command skips them by default). Siril keeps arcsec's

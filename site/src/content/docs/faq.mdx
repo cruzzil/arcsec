@@ -3,13 +3,16 @@ title: FAQ
 description: Common questions about arcsec - how it relates to ASTAP, catalogues, blind solving, file formats, and how to report a problem.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 ## Why use arcsec?
 
 It is an alternative for the plate-solving step: a small, self-contained program that
 fetches its own catalogues, runs on Windows, macOS and Linux, and is open source under
 the MIT licence. It takes the same options and writes the same files as ASTAP's
 command-line solver, so trying it in N.I.N.A. means changing one path, and changing it
-back is just as easy. If ASTAP already works well for you, there is no need to switch.
+back is just as easy. On our test images it solves more fields than ASTAP, faster and
+with slightly better accuracy at the corners: see [arcsec compared with ASTAP](../compared/).
 
 ## Does it replace ASTAP?
 
@@ -23,8 +26,9 @@ is not affiliated with the ASTAP project.
 
 ## How fast is it?
 
-Typically well under a second per image; the median across the test images is
-0.15 seconds, about the same as ASTAP.
+Typically well under a second per image: a median of 0.10–0.15 seconds across the test
+images, about half the time ASTAP took on the same images. A blind solve with the
+index takes a second or two. See [arcsec compared with ASTAP](../compared/).
 
 ## Does it need an internet connection?
 
@@ -62,9 +66,29 @@ Yes. Installing a solving catalogue also builds arcsec's
 [blind index](../catalogues/#the-blind-index) from it, with nothing more to download,
 and with that arcsec finds a field anywhere on the sky in a second or two:
 
+<Tabs syncKey="shell">
+<TabItem label="macOS / Linux">
+
 ```sh
 arcsec -f image.fits -i "$(arcsec catalog path)"
 ```
+
+</TabItem>
+<TabItem label="Command Prompt">
+
+```bat
+for /f "delims=" %d in ('arcsec catalog path') do arcsec -f image.fits -i "%d"
+```
+
+</TabItem>
+<TabItem label="PowerShell">
+
+```powershell
+arcsec -f image.fits -i (arcsec catalog path)
+```
+
+</TabItem>
+</Tabs>
 
 It does not even need the field size: without `--fov` or `FOCALLEN` and `XPIXSZ` in
 the header it tries pixel scales from 0.3″ to 60″. A wide search (`-r` of 10° or more,

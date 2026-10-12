@@ -3,7 +3,7 @@ title: Use with SharpCap
 description: Set arcsec up as SharpCap's ASTAP plate solver, with ASTAP's star databases or arcsec's own, and troubleshoot a failed solve.
 ---
 
-import { Steps, Aside } from '@astrojs/starlight/components';
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 import { Image } from 'astro:assets';
 import settings from '../../assets/screenshots/sharpcap-settings.png';
 
@@ -106,15 +106,28 @@ ASTAP ignores that file. arcsec finds the index next to the database that `-d` n
 
 SharpCap's log records the full command line for each solve, on a line starting
 `Running external command`. The `.ini` file arcsec writes next to the image records it
-too, on the `CMDLINE=` line. Paste that command into PowerShell and add `--progress`
-to watch each step:
+too, on the `CMDLINE=` line. Paste that command into Command Prompt or PowerShell and add
+`--progress` to watch each step:
+
+<Tabs syncKey="shell">
+<TabItem label="Command Prompt">
+
+```bat
+"C:\Program Files\arcsec\arcsec.exe" -f "C:\...\image.fits" -ra 20.979 -spd 133.530 -r 15 -z 0 -d "C:\Program Files\astap" --progress
+```
+
+</TabItem>
+<TabItem label="PowerShell">
 
 ```powershell
 & "C:\Program Files\arcsec\arcsec.exe" -f "C:\...\image.fits" -ra 20.979 -spd 133.530 -r 15 -z 0 -d "C:\Program Files\astap" --progress
 ```
 
-The exit code tells you why a solve failed. Run `$LASTEXITCODE` straight afterwards
-and look it up in the [exit code table](../reference/cli/#exit-codes). `2` means too
+</TabItem>
+</Tabs>
+
+The exit code tells you why a solve failed. Run `echo %ERRORLEVEL%` (Command Prompt) or
+`$LASTEXITCODE` (PowerShell) straight afterwards and look it up in the [exit code table](../reference/cli/#exit-codes). `2` means too
 few stars were detected, and `32` means no star database was found.
 
 ### "Star database not found" (exit code 32)
