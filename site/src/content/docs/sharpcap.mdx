@@ -1,0 +1,135 @@
+---
+title: Use with SharpCap
+description: Set arcsec up as SharpCap's ASTAP plate solver, with ASTAP's star databases or arcsec's own, and troubleshoot a failed solve.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import settings from '../../assets/screenshots/sharpcap-settings.png';
+
+[SharpCap](https://www.sharpcap.co.uk/) runs ASTAP as a command-line program for its
+plate solving, for example to sync the mount or re-centre a target. arcsec accepts the same command line and writes the same files, so SharpCap
+can run it in ASTAP's place. SharpCap lets you choose the program it runs and add your
+own options to its command line, which is all the set-up needs.
+
+<Aside>
+This set-up has been tested by a user on Windows with SharpCap's **Astap** plate
+solving engine. If you try a different version or set-up, please
+[report how it went](https://github.com/cruzzil/arcsec/issues).
+</Aside>
+
+## Setting up
+
+<Steps>
+
+1. **Install arcsec.** Download the Windows `.zip` from the
+   [latest release](https://github.com/cruzzil/arcsec/releases/latest), extract it and
+   put `arcsec.exe` in a permanent folder, for example `C:\Program Files\arcsec\`.
+   [Getting started](../getting-started/) has the details.
+
+2. **Have a star catalogue for your field of view.** Either:
+
+   - **Reuse ASTAP's databases.** If ASTAP is installed with its star databases, arcsec
+     can read them where they are. They are in `C:\Program Files\astap` for a default
+     install. You will give arcsec this folder in step 4.
+   - **Install one with arcsec.** Use [Which catalogue do I need?](../which-catalogue/),
+     or in PowerShell:
+
+     ```powershell
+     arcsec catalog recommend --fov 1.2     # your field height in degrees
+     arcsec catalog install d50             # what it recommended
+     ```
+
+     arcsec finds catalogues it installed itself, so step 4 needs no extra options.
+
+3. **Point SharpCap at arcsec.** Open **File > SharpCap Settings > Plate Solving**.
+   Set **Select Plate Solving Engine** to **Astap**. In **Plate Solving Engine
+   Configuration**, on the **Astap** tab, choose **Enter Manually** and enter the full
+   path of `arcsec.exe`, for example:
+
+   ```
+   C:\Program Files\arcsec\arcsec.exe
+   ```
+
+   Type or paste the path into the field. The **Browse...** button only shows files
+   named `astap.exe`, so it cannot select `arcsec.exe`.
+
+4. **Tell arcsec where ASTAP's catalogue is**, if you are reusing it. In **Additional
+   Options (added to Astap command line)** enter:
+
+   ```
+   -d "C:\Program Files\astap"
+   ```
+
+   Leave the field empty if you installed the catalogue with arcsec.
+
+5. **Check the status.** The **Astap Status** box at the bottom should show
+   `Found at` and the path to `arcsec.exe` on the manual location line. Click **OK**,
+   then plate solve from SharpCap as usual.
+
+</Steps>
+
+These settings worked, using ASTAP's star databases:
+
+<Image src={settings} alt="SharpCap Settings, Plate Solving tab. The engine is Astap, the focal length is set to Do not use, the search radius is 15 degrees and Always send 8 bit images is unticked. On the Astap tab, Enter Manually is selected with the path C:\arcsec-v0.7.0-x86_64-pc-windows-msvc\arcsec.exe, Additional Options is -d &quot;C:\Program Files\astap&quot;, and the status box reports both the auto-detected ASTAP and the manual location as found." />
+
+## The other settings
+
+- **Focal Length of Telescope.** This is optional. arcsec works out the image scale
+  from the image when SharpCap sends none. If you do set it, include any Barlow or
+  reducer, because a wrong value makes solves fail.
+- **Search radius.** This sets how far from the mount's reported position arcsec
+  looks, in degrees. SharpCap's default of 15 is fine. A search this wide is quick
+  with arcsec's [blind index](#the-blind-index-for-wide-searches).
+- **Always send 8 bit images to the plate solving application.** Leave this unticked.
+  An 8-bit copy loses the faint stars that solving needs.
+
+## The blind index, for wide searches
+
+When the mount's reported position could be far off, arcsec's
+[blind index](../catalogues/#the-blind-index) finds the field in a second or two
+instead of searching the sky field by field. `arcsec catalog install` builds it when
+it installs a catalogue. For ASTAP's databases, build it once yourself. ASTAP's folder
+under Program Files can only be written by an administrator, so run this from a
+PowerShell opened with **Run as administrator**:
+
+```powershell
+arcsec catalog index build --dir "C:\Program Files\astap"
+```
+
+It takes about half a minute and adds one file to the folder, about 290 MB for D50.
+ASTAP ignores that file. arcsec finds the index next to the database that `-d` names.
+
+## Troubleshooting
+
+### See exactly what SharpCap ran
+
+SharpCap's log records the full command line for each solve, on a line starting
+`Running external command`. The `.ini` file arcsec writes next to the image records it
+too, on the `CMDLINE=` line. Paste that command into PowerShell and add `--progress`
+to watch each step:
+
+```powershell
+& "C:\Program Files\arcsec\arcsec.exe" -f "C:\...\image.fits" -ra 20.979 -spd 133.530 -r 15 -z 0 -d "C:\Program Files\astap" --progress
+```
+
+The exit code tells you why a solve failed. Run `$LASTEXITCODE` straight afterwards
+and look it up in the [exit code table](../reference/cli/#exit-codes). `2` means too
+few stars were detected, and `32` means no star database was found.
+
+### "Star database not found" (exit code 32)
+
+arcsec found no star database. If you are reusing ASTAP's folder, check that the path
+in **Additional Options** is in quotes and names the folder that holds the `d50_*`
+(or `d80_*`, ...) files. Otherwise run `arcsec catalog list` to see which folder arcsec
+uses and what is installed there.
+
+### It fails on images that should solve
+
+- If you set a focal length, check it, including any Barlow or reducer.
+- Untick **Always send 8 bit images to the plate solving application**.
+- Check the catalogue covers your field: see [Which catalogue do I need?](../which-catalogue/).
+
+If a solve still fails, please
+[open an issue](https://github.com/cruzzil/arcsec/issues) with the command line, the
+`.ini` file and, if you can share it, the image.

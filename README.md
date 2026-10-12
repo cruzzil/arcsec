@@ -82,6 +82,10 @@ distortion fitting.
 - **N.I.N.A.:** choose ASTAP as the plate solver and type the full path to `arcsec.exe`
   as the ASTAP location. N.I.N.A.'s file browser only lists files named `astap.exe`, so
   type the path rather than browsing. [Set-up guide](https://cruzzil.github.io/arcsec/nina/)
+- **SharpCap:** choose Astap as the plate solving engine, select **Enter Manually** and
+  type the full path to `arcsec.exe` (its Browse button only shows `astap.exe`). To use
+  ASTAP's star databases, add `-d "C:\Program Files\astap"` under Additional Options.
+  [Set-up guide](https://cruzzil.github.io/arcsec/sharpcap/)
 - **Siril:** solve with `arcsec -f image.fit --update`, then open the file in Siril,
   which treats it as plate solved. [Guide](https://cruzzil.github.io/arcsec/siril/)
 - **Anything that runs `astap_cli`:** point it at `arcsec` instead.
