@@ -37,3 +37,27 @@
 .sl-markdown-content td:first-child code {
 	white-space: nowrap;
 }
+
+/* Diagrams on the "How it works" pages: inline SVG drawn in currentColor. */
+.hiw-figure {
+	margin-block: 1.5rem;
+	text-align: center;
+}
+.hiw-figure svg {
+	max-width: 100%;
+	height: auto;
+	color: var(--sl-color-gray-2);
+}
+.hiw-figure figcaption {
+	margin-top: 0.5rem;
+	font-size: var(--sl-text-sm);
+	color: var(--sl-color-gray-3);
+	text-align: start;
+}
+
+/* Long display equations scroll rather than widen the page on a phone. */
+.katex-display {
+	overflow-x: auto;
+	overflow-y: hidden;
+	padding-block: 0.25rem;
+}
