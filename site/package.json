@@ -16,8 +16,10 @@
     "astro": "astro"
   },
   "dependencies": {
+    "@astrojs/markdown-satteri": "^0.4.2",
     "@astrojs/starlight": "^0.42.4",
-    "astro": "^7.3.5"
+    "astro": "^7.3.5",
+    "katex": "^0.16.22"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",

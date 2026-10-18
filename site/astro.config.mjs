@@ -1,6 +1,8 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { satteri } from '@astrojs/markdown-satteri';
+import { katexPlugin } from './src/lib/katex.mjs';
 
 // Hosting: GitHub Pages project site at https://cruzzil.github.io/arcsec/.
 //
@@ -37,6 +39,11 @@ export default defineConfig({
 	site,
 	base,
 	trailingSlash: 'always',
+	// $…$ and $$…$$ in the pages are typeset by KaTeX at build time (the "How it works"
+	// pages); the stylesheet is in customCss below. No JavaScript reaches the browser.
+	markdown: {
+		processor: satteri({ features: { math: true }, mdastPlugins: [katexPlugin] }),
+	},
 	vite: {
 		build: {
 			rolldownOptions: {
@@ -63,7 +70,7 @@ export default defineConfig({
 			editLink: {
 				baseUrl: `${repo}/edit/main/site/`,
 			},
-			customCss: ['./src/styles/custom.css', ...logos[LOGO].css],
+			customCss: ['katex/dist/katex.min.css', './src/styles/custom.css', ...logos[LOGO].css],
 			components: {
 				Hero: './src/components/Hero.astro',
 				// Adds text links to the main pages beside the GitHub icon in the header.
@@ -81,6 +88,18 @@ export default defineConfig({
 				{ label: 'Catalogue guide', slug: 'catalogues' },
 				{ label: 'Compared with ASTAP', slug: 'compared' },
 				{ label: 'FAQ', slug: 'faq' },
+				{
+					label: 'How it works',
+					items: [
+						{ label: 'Overview', slug: 'how-it-works' },
+						{ label: 'Finding the stars', slug: 'how-it-works/detection' },
+						{ label: 'Star patterns', slug: 'how-it-works/patterns' },
+						{ label: 'Searching the sky', slug: 'how-it-works/search' },
+						{ label: 'Fitting the plate', slug: 'how-it-works/fitting' },
+						{ label: 'Checking the answer', slug: 'how-it-works/verification' },
+						{ label: 'Blind solving', slug: 'how-it-works/blind' },
+					],
+				},
 				{
 					label: 'Reference',
 					items: [

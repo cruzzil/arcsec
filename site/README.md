@@ -26,6 +26,7 @@ and deploys on every push to `main` that does.
 | Path | What it is |
 |---|---|
 | `src/content/docs/` | The pages, in MDX. `index.mdx` is the home page. |
+| `src/content/docs/how-it-works/` | How a solve works, with the maths: plain Markdown, `$…$` and `$$…$$` typeset by KaTeX at build time (`src/lib/katex.mjs`). |
 | `src/components/` | The home page's hero, three steps and download table; the header links; the catalogue picker. |
 | `src/lib/catalogues.ts` | The catalogue list and the `catalog recommend` rule, for the picker. |
 | `src/lib/release.ts` | Fetches the latest release for the download links. |
@@ -51,6 +52,10 @@ The site states facts about the CLI; when those change, the site must too.
   `.github/workflows/release.yml`), the status codes, the threading and memory rules.
   `src/lib/release.ts` offers only the CLI's archives (`arcsec-v*`), not the library's
   (`arcsec-lib-v*`).
+- **How it works.** `src/content/docs/how-it-works/` simplifies `docs/plate-solving.md`
+  (§3–§10) and `docs/offline-index.md` (§2); its constants (tolerance, match radii,
+  thresholds) are the code's. After changing the pipeline or a calibrated constant,
+  re-read the page that describes it.
 - **Figures** in the FAQ (solve time, tetra's solve count, the 15° field) come from
   `docs/test-images.md` §6.
 
