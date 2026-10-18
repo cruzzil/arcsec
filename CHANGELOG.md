@@ -12,6 +12,27 @@ one is called out as such.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-18
+
+### Security
+
+- Updated `rustls` to 0.23.46 for RUSTSEC-2026-0346, -0347, -0348 and -0349. rustls
+  is the TLS library `arcsec catalog install` downloads catalogues through.
+- Updated `zip` to 9.0.3 for RUSTSEC-2026-0368 and -0369: in the 8.x versions,
+  `ZipArchive::extract` could follow a symlink in an archive to a path outside the
+  directory it was extracting into. arcsec was not exposed to these, because it never
+  calls `extract`: it writes each catalogue file itself, as a regular file, and skips
+  any entry whose path leaves the catalogue directory. The update clears the advisory.
+- Updated `asdf-rs` to 0.2.2, whose release limits the work of rendering a crafted ASDF
+  tree. arcsec reads only image arrays from ASDF files and did not use that code.
+
+### Changed
+
+- Updated the image-format libraries to their latest releases: `rsfitsio` 0.470.6
+  (fixes a panic reading images too large for one buffer, in some integer and scaled
+  formats), `xisf` 0.5.2 and `asdf-rs` 0.2.2. Also `winresource` and `cc`, which are
+  only used at build time.
+
 ### Added
 
 - Using arcsec with SharpCap: a README entry and a website page,
@@ -553,7 +574,8 @@ First public release.
   90 images correctly with no false positives, against 47 for ASTAP CLI-2026.07.30 given
   the same hints.
 
-[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/cruzzil/arcsec/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/cruzzil/arcsec/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/cruzzil/arcsec/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/cruzzil/arcsec/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cruzzil/arcsec/compare/v0.5.0...v0.5.1

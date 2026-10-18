@@ -21,9 +21,9 @@ workspace = true
 arcsec-core = { workspace = true }
 log = { workspace = true }
 libc = "0.2"
-rsfitsio = "0.470.5"
-xisf = "0.5.1"
-asdf-rs = "0.2.1"
+rsfitsio = "0.470.6"
+xisf = "0.5.2"
+asdf-rs = "0.2.2"
 png = "0.18"
 zune-jpeg = "0.5"
 tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw", "jpeg"] }
